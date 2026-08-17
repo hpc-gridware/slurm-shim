@@ -1,0 +1,21 @@
+# clearml.conf snippet -- point clearml-agent's SLURM mode at the shim's CLIs.
+# Merge into your ~/clearml.conf (agent section). Exact keys depend on the
+# clearml-agent (Enterprise) version; reconcile names against its docs.
+
+agent {
+    # The shim symlinks must be on PATH ahead of any real SLURM client.
+    # (srun, sbatch, squeue, scancel, scontrol, sinfo all resolve to slurm-shim.)
+
+    slurm {
+        # Site template rendered per task and submitted with `sbatch`.
+        sbatch_template: "clearml_slurm_template.sh"
+
+        # Commands the agent shells out to. These are the shim binaries.
+        sbatch_command:  "sbatch"
+        squeue_command:  "squeue"
+        scancel_command: "scancel"
+
+        # Poll cadence for squeue while a task runs.
+        polling_interval_sec: 30
+    }
+}

@@ -1,0 +1,32 @@
+==============================================================
+job_number:                     268
+exec_file:                      job_scripts/268
+submission_time:                2026-08-14 14:42:30.631798
+submit_cmd_line:                qsub -N memjob -l h_vmem=2G -j y -o /home/gridware/mem.log -q all.q@ocs-worker1 /tmp/gpujob.sh
+effective_submit_cmd_line:      qsub -A sge -binding NONE -o /home/gridware/mem.log -j yes -M gridware@ocs-master -N memjob -pty no -r yes -scope global -hard -l h_vmem=2G -hard -q all.q@ocs-worker1 /tmp/gpujob.sh
+owner:                          gridware
+uid:                            1000
+group:                          gridware
+gid:                            1000
+groups:                         NOT-AVAILABLE-IN-OCS
+sge_o_home:                     /home/gridware
+sge_o_log_name:                 gridware
+sge_o_path:                     /opt/ocs/bin/lx-arm64:/opt/ocs/bin/lx-arm64:/usr/local/bin:/usr/bin:/bin
+sge_o_shell:                    /bin/bash
+sge_o_workdir:                  /home/gridware
+sge_o_host:                     ocs-master
+account:                        sge
+merge:                          y
+hard_resource_list:             h_vmem=2G
+hard_queue_list:                all.q@ocs-worker1
+mail_list:                      gridware@ocs-master
+notify:                         FALSE
+job_name:                       memjob
+stdout_path_list:               NONE:NONE:/home/gridware/mem.log
+priority:                       0
+jobshare:                       0
+env_list:                       NONE
+script_file:                    /tmp/gpujob.sh
+department:                     defaultdepartment
+binding:                        NONE
+scheduling info:                (Collecting of scheduler job information is turned off - use qalter -w p job_id to verify if the job can be scheduled)

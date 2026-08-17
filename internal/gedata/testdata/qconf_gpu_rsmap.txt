@@ -1,0 +1,8 @@
+#name               shortcut   type        relop requestable consumable default  urgency 
+gpu                 gpu        RSMAP       <=    YES         YES        0        0
+---worker1---
+hostname              ocs-worker1
+complex_values        gpu=2(0 1)
+---worker2---
+hostname              ocs-worker2
+complex_values        gpu=2(0 1)

@@ -1,0 +1,18 @@
+=== gpu1 (gpu=1) ===
+=== SGE_HGR_gpu=[0] ===
+JOB_ID=266
+NSLOTS=1
+SGE_HGR_gpu=0
+SGE_TASK_FIRST=undefined
+SGE_TASK_ID=undefined
+SGE_TASK_LAST=undefined
+SGE_TASK_STEPSIZE=undefined
+=== gpu2 (gpu=2) ===
+=== SGE_HGR_gpu=[0 1] ===
+JOB_ID=267
+NSLOTS=1
+SGE_HGR_gpu=0 1
+SGE_TASK_FIRST=undefined
+SGE_TASK_ID=undefined
+SGE_TASK_LAST=undefined
+SGE_TASK_STEPSIZE=undefined

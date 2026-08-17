@@ -1,0 +1,37 @@
+==============================================================
+job_number:                     267
+exec_file:                      job_scripts/267
+submission_time:                2026-08-14 14:29:25.692691
+submit_cmd_line:                qsub -N gpu2 -l gpu=2 -j y -o /home/gridware/gpu2.log -q all.q@ocs-worker2 /tmp/gpujob.sh
+effective_submit_cmd_line:      qsub -A sge -binding NONE -o /home/gridware/gpu2.log -j yes -M gridware@ocs-master -N gpu2 -pty no -r yes -scope global -hard -l gpu=2 -hard -q all.q@ocs-worker2 /tmp/gpujob.sh
+owner:                          gridware
+uid:                            1000
+group:                          gridware
+gid:                            1000
+groups:                         NOT-AVAILABLE-IN-OCS
+sge_o_home:                     /home/gridware
+sge_o_log_name:                 gridware
+sge_o_path:                     /opt/ocs/bin/lx-arm64:/opt/ocs/bin/lx-arm64:/usr/local/bin:/usr/bin:/bin
+sge_o_shell:                    /bin/bash
+sge_o_workdir:                  /home/gridware
+sge_o_host:                     ocs-master
+account:                        sge
+merge:                          y
+hard_resource_list:             gpu=2
+hard_queue_list:                all.q@ocs-worker2
+mail_list:                      gridware@ocs-master
+notify:                         FALSE
+job_name:                       gpu2
+stdout_path_list:               NONE:NONE:/home/gridware/gpu2.log
+priority:                       0
+jobshare:                       0
+env_list:                       NONE
+script_file:                    /tmp/gpujob.sh
+department:                     defaultdepartment
+binding:                        NONE
+job_state                  1:   qw
+exec_queue_list            1:   NONE
+start_time                 1:   2026-08-14 14:29:25.693961
+resource_map               1:   gpu=ocs-worker2=(0 1)
+error reason               1:   2026-08-14 14:30:55.713068 [0:319]: unable to find epilog file "/home/gridware/fake_usage_epilog.sh"
+scheduling info:                (Collecting of scheduler job information is turned off - use qalter -w p job_id to verify if the job can be scheduled)

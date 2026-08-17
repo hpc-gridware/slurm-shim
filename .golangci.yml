@@ -1,0 +1,55 @@
+# golangci-lint v2 configuration.
+#
+# Beyond the default set, two project-specific rules are enforced:
+#   depguard  - external process execution (os/exec) is confined to the two
+#               packages that own GE client invocation (REQ-IMP-001, D-7).
+#   forbidigo - direct stdout printing is banned so command output only ever
+#               travels through an injected writer (REQ-LOG-003).
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - depguard
+    - forbidigo
+  settings:
+    errcheck:
+      # A failed write to stdout/stderr is unrecoverable for a CLI; the shim
+      # cannot report the failure through the same broken stream. Whitelisting
+      # the print family keeps the diagnostic sites readable.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+    depguard:
+      rules:
+        confine-os-exec:
+          # Rule applies everywhere except the packages allowed to spawn
+          # processes and the internal stepper (which forks ranks). Tests and
+          # the dev tools tree are exempt.
+          files:
+            - "!**/internal/launch/**"
+            - "!**/internal/gedata/**"
+            - "!**/internal/stepper/**"
+            - "!**/tools/**"
+          deny:
+            - pkg: os/exec
+              desc: "os/exec is confined to internal/launch and internal/gedata (REQ-IMP-001); route external commands through the Runner/Launcher seam"
+    forbidigo:
+      forbid:
+        - pattern: 'fmt\.Print(ln|f)?'
+          msg: "stdout is reserved for command output; write to an explicit io.Writer with fmt.Fprint* (REQ-LOG-003)"
+  exclusions:
+    rules:
+      # The trace tool is a developer utility, not the shim binary; it prints
+      # its report to stdout by design.
+      - path: 'tools/'
+        linters:
+          - forbidigo
+          - depguard
+      # Test files drive dispatch through injected buffers (may print) and spawn
+      # helper processes (may import os/exec).
+      - path: '_test\.go'
+        linters:
+          - forbidigo
+          - depguard

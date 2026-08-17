@@ -1,0 +1,18 @@
+# Build output (binary + symlink farm)
+/bin/
+
+# Go coverage and test artifacts
+*.out
+*.test
+coverage.txt
+
+/docs/plans/
+/docs/specs/
+/docs/req-milestones.yaml
+/tools
+
+# Local internal notes
+/info.md
+
+# Editor/OS noise
+.DS_Store

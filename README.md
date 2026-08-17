@@ -1,0 +1,205 @@
+# slurm-shim
+
+**Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run unmodified AI workloads.**
+
+`sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing `torchrun` launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration.
+
+> **Status: pre-release / not yet cluster-validated.** The six client commands and the `SLURM_*` environment contract are implemented and covered by a green unit-test suite, and the launch mechanics have been grounded against real Open Cluster Scheduler 9.0.10 output (RSMAP, `qstat`, `qconf`, `qrsh` signatures). What has **not** happened yet is an end-to-end run on a live multi-GPU cluster. Treat every "supported" below as "implemented + unit-tested", not "battle-tested". If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+
+---
+
+## Why
+
+SLURM won HPC mindshare, and most modern AI tooling assumes it — `torchrun` tutorials, `submitit`, Hugging Face `accelerate`. Meanwhile the Grid Engine lineage still schedules enormous fleets in EDA, life sciences, and engineering, and is under active development as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
+
+This shim bridges the two worlds: keep your SLURM-native tooling, run it on OCS. It is a single static Go binary (busybox-style symlink dispatch) that shells out to the GE clients (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`) and fabricates the SLURM environment inside GE PE jobs.
+
+## Quickstart
+
+> **TODO:** there is no installer yet. Today you build the binary and lay down the symlink farm by hand. `install.sh` and packaged releases are planned.
+
+```bash
+git clone https://github.com/hpc-gridware/slurm-shim
+cd slurm-shim
+make build                       # -> bin/slurm-shim (static, CGO-off)
+# The one binary answers to every command via argv[0]; create the symlinks:
+for cmd in sbatch srun squeue scancel scontrol sinfo; do ln -sf slurm-shim bin/$cmd; done
+export PATH="$PWD/bin:$PATH"
+
+# Point it at a config that maps your partitions to GE queues + PEs:
+export SLURM_SHIM_CONFIG=/etc/slurm-shim/config.yaml   # see Configuration below
+
+sbatch train.sh
+squeue
+```
+
+`train.sh` — a SLURM-style script. Note the honest caveats inline:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=llm-train
+#SBATCH --partition=gpu           # mapped to a GE queue + PE + slot count
+#SBATCH --nodes=4                 # feeds the slot count; GE's PE places the nodes
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+# NOTE: #SBATCH --gpus-per-node / --mem / --time / --array are NOT translated yet
+# (see the matrix). Request GPUs via a GPU-configured partition/PE for now.
+
+srun torchrun --nnodes=4 --nproc-per-node=8 train.py
+```
+
+`sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE job exports the `SLURM_*` variables your application reads.
+
+*(TODO: record an asciinema/GIF of sbatch -> squeue -> job output.)*
+
+## Try it without a cluster
+
+> **TODO:** no in-repo demo container yet. A small containerized OCS cluster (qmaster + 2 execution hosts) lives in the sibling [`quickinstall`](https://github.com/hpc-gridware) repo and was used to capture the fixtures in this repo; a self-contained `demo/` compose file is planned.
+
+## What is implemented (unit-tested, not yet live-validated)
+
+Grounded in the [compatibility matrix](#compatibility-matrix) below:
+
+- Multi-node PyTorch **DDP/FSDP** via `sbatch` + `srun torchrun` — the core path.
+- Hugging Face **`accelerate launch`** and **torchrun** multi-node (env + `scontrol show hostnames`).
+- **DeepSpeed** and **Ray** (and multi-node vLLM) via the [`docs/recipes/`](docs/recipes/) launch patterns.
+- The full per-rank `SLURM_*` environment, including compressed nodelists and per-rank `CUDA_VISIBLE_DEVICES` from GE RSMAP grants.
+
+Partial / not yet: `submitit` (submission + requeue work; `--array`/`--dependency` are not mapped), array **submission** via `--array`, `dask-jobqueue`, Nextflow/Snakemake executors — see the matrix.
+
+> **TODO:** add runnable `examples/` and a community `tests/` harness so the matrix below can be verified on a real cluster and pass/fail reports filed as issues. Neither exists yet.
+
+## Compatibility matrix
+
+This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial (see note) / `❌` not implemented / `🚧` planned.
+
+### Commands
+
+| Command | Status | Notes |
+|---|---|---|
+| `sbatch` | ✅ | `#SBATCH` directives -> `qsub -terse`; prints `Submitted batch job <id>`. Flag coverage is limited (below). |
+| `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + `CUDA_VISIBLE_DEVICES`. See [srun notes](#srun-semantics). |
+| `srun` (standalone) | ⚠️ | `standalone: local` runs the command with a synthetic single-node env; default `standalone: reject` exits 1. |
+| `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
+| `scancel` | ✅ | Maps to `qdel`; array `scancel 4711_2` -> `qdel -t`; `-u` passthrough. `--signal` unsupported. |
+| `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; minimal `show job` record; `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
+| `sinfo` | ⚠️ | Bare `sinfo` prints a partition table from config; `-V`. Other invocations unsupported. |
+| `sacct` | ❌ | Not implemented (`qacct` is used internally for squeue completion detection, but there is no `sacct` command yet). |
+| `salloc` | ❌ | Not implemented. |
+
+### `sbatch` flags
+
+`sbatch` currently translates a **partition into a queue + PE + slot count** and passes through name/output/error/workdir. The geometry flags feed the slot computation; resource flags are **not yet mapped** and are warn-and-ignored.
+
+| Flag | Status | Mapped to |
+|---|---|---|
+| `--partition` / `-p` | ✅ | queue + PE + slots, via `partitions` config |
+| `--nodes` / `-N` | ✅ | feeds the slot count (GE's PE `allocation_rule` places the nodes) |
+| `--ntasks` / `-n` | ✅ | feeds the slot count |
+| `--ntasks-per-node` | ✅ | feeds the slot count |
+| `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule) |
+| `--job-name` / `-J` | ✅ | `qsub -N` |
+| `--output` / `--error` | ⚠️ | passed to `qsub -o`/`-e`; SLURM `%j`/`%a` filename patterns are **not** expanded by `sbatch` (GE's own patterns apply) |
+| `--chdir` / `-D` | ✅ | `qsub -wd` |
+| `--wrap` | ✅ | wraps the command string in a submitted script |
+| `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ❌ | **not translated** — request GPUs via a GPU-configured partition/PE for now |
+| `--mem` / `--mem-per-cpu` | ❌ | not translated to `h_vmem` (the shim *reads* a job's `h_vmem` request for `SLURM_MEM_PER_NODE`, but `sbatch` does not *set* it) |
+| `--time` / `-t` | ❌ | not translated to `h_rt` |
+| `--array` | ❌ | not translated to `qsub -t` (array **env** vars are set for GE array jobs submitted directly; see below) |
+| `--dependency` | ❌ | not translated to `-hold_jid` |
+| `--export` | ❌ | not a recognized `sbatch` flag here (it is on `srun`) |
+| `--exclusive` | ❌ | not translated |
+
+Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. This means a script relying on `--mem`/`--time`/`--array` will submit and run **without** those constraints. 🚧 A strict mode that fails loud on dropped resource directives is planned.
+
+### `srun` flags
+
+| Flag | Status |
+|---|---|
+| `-N/--nodes`, `-n/--ntasks`, `--ntasks-per-node`, `-c/--cpus-per-task` | ✅ |
+| `-w/--nodelist` (subset of the allocation) | ✅ |
+| `--gpus-per-task` | ✅ (per-rank contiguous GPU partition; over-subscription errors) |
+| `--export=ALL\|NONE\|<list>` | ✅ |
+| `-o/--output`, `-e/--error` (`%j %J %t %n %N %s %%` patterns) | ✅ |
+| `-l/--label`, `-K/--kill-on-bad-exit`, `-J/--job-name`, `-D/--chdir`, `--quiet`, `-v`, `-V` | ✅ |
+| `--mpi=none` | ✅ (no-op) |
+| `--mpi=<anything else>` (e.g. `pmix`) | ❌ (hard-errors by design — no PMI/PMIx; see below) |
+
+### `SLURM_*` environment variables
+
+This is the strongest area — the fabricated environment is the whole point, and it is complete and unit-tested.
+
+| Variable | Status |
+|---|---|
+| `SLURM_JOB_ID` / `SLURM_JOBID` | ✅ |
+| `SLURM_JOB_NODELIST` / `SLURM_NODELIST` | ✅ compressed hostlist (`node[001-003,007]`), PE_HOSTFILE first-seen order (not sorted) |
+| `SLURM_NNODES` / `SLURM_JOB_NUM_NODES` | ✅ |
+| `SLURM_NTASKS` / `SLURM_NPROCS` | ✅ |
+| `SLURM_NTASKS_PER_NODE` / `SLURM_TASKS_PER_NODE` | ✅ (per-node counts; omitted when non-uniform — see limitations) |
+| `SLURM_PROCID` / `SLURM_LOCALID` / `SLURM_NODEID` | ✅ (per-rank, via `srun`) |
+| `SLURM_ARRAY_TASK_ID` / `_TASK_COUNT` / `_JOB_ID` (+ min/max/step) | ✅ (from GE `SGE_TASK_ID`) |
+| `SLURM_CPUS_PER_TASK` / `SLURM_CPUS_ON_NODE` | ✅ |
+| `SLURM_GPUS_ON_NODE` / `SLURM_JOB_GPUS` (+ per-rank `CUDA_VISIBLE_DEVICES`) | ✅ (from GE RSMAP grant; `gpu.isolation: cgroup` passes GE's masking through instead) |
+| `SLURM_MEM_PER_NODE` | ✅ (from the job's requested memory complex) |
+| `SLURM_SUBMIT_DIR` / `SLURM_SUBMIT_HOST` / `SLURM_JOB_PARTITION` | ✅ |
+| `MASTER_ADDR` / `MASTER_PORT` | ⚠️ off by default (`export_master_addr: false`) — derive in your job script, or enable in config |
+
+### srun semantics
+
+- `srun` launches one process per task over **`qrsh -inherit` tight integration**: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
+- **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
+- **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach`, `salloc`, `sacct`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
+
+### Known limitations
+
+- No `sacct` / `salloc` / `sattach`; no job-step overlap or heterogeneous steps.
+- `sbatch` does not yet translate `--time`, `--mem`, `--array`, `--dependency`, `--gpus`/`--gres`, or `--exclusive` (warn-and-ignored). This is the biggest gap for portability of arbitrary SLURM scripts.
+- No PMI/PMIx (MPI via the PE's `mpirun`).
+- **Not yet validated end-to-end on a live GPU cluster** — unit-tested and fixture-grounded only.
+- PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
+
+## Requirements
+
+- **Open Cluster Scheduler** — launch mechanics grounded against OCS **9.0.10** (fixtures in the repo). The binary itself has not been deployed on a live cluster yet.
+- Also targets **Gridware Cluster Scheduler** (same lineage); other SGE-compatible variants: untested.
+- A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). 🚧 A `docs/pe-setup.md` guide is planned; the PE hook scripts are in [`docs/install/`](docs/install/).
+- Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).
+
+## Configuration
+
+The shim reads a YAML file at `$SLURM_SHIM_CONFIG`, else `/etc/slurm-shim/config.yaml`. Key settings:
+
+```yaml
+partitions:                       # SLURM --partition -> GE queue + PE + slots
+  gpu:   {queue: gpu.q, pe: gpu.pe, slots: "per-task"}   # per-task = ntasks * cpus_per_task
+  batch: {queue: all.q, pe: smp.pe, slots: "16"}          # or a fixed slot count
+pes:
+  gpu.pe: {task_policy: gpu}      # gpu | node | slot -> how SLURM_NTASKS is derived
+gpu:
+  discovery: qstat-gres           # RSMAP grant -> CUDA_VISIBLE_DEVICES
+  isolation: shim                 # shim (per-rank masking) | cgroup (GE devices_allow)
+  gres_complex: gpu
+memory_complex: h_vmem            # source for SLURM_MEM_PER_NODE ("" disables)
+export_master_addr: false         # set true to publish MASTER_ADDR/MASTER_PORT
+launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)
+```
+
+🚧 A full configuration reference is planned; the authoritative source today is [`internal/config`](internal/config/config.go).
+
+## Support
+
+The shim is open source (Apache-2.0) and community-supported via GitHub issues — bug reports with the failing SLURM script attached are the most useful.
+
+*(TODO: confirm internally whether commercial [Gridware Cluster Scheduler](https://hpc-gridware.com/gridware-cluster-scheduler/) support will cover the shim before advertising it here.)*
+
+## Contributing
+
+🚧 `CONTRIBUTING.md` and `good-first-issue` labels are not set up yet. Most future "add support for sbatch flag X" work touches a single mapping table (`internal/cli/sbatch/translate.go`); the `SLURM_*` contract lives in `internal/fabricator`. Run `make test` and `make lint` before submitting.
+
+## Trademarks
+
+Developed by [HPC-Gridware](https://hpc-gridware.com), the company behind Open Cluster Scheduler. This project is not affiliated with or endorsed by SchedMD®. SLURM is a trademark of SchedMD LLC.
+
+## License
+
+Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Copyright 2026 HPC-Gridware.

@@ -1,0 +1,16 @@
+Real `qrsh -inherit` stderr signatures captured on OCS 9.0.10 (see memory ocs-test-cluster).
+Used to ground classifyRejection. One signature per block.
+
+# FATAL - misconfiguration, not retryable (no JOB_ID in env: preflight/wiring bug)
+error: "qrsh" called with option "-inherit", but "JOB_ID" not set in environment
+
+# RETRYABLE (job race, SI-09) - slave execd has not yet learned of the job, or rejects the task
+error: executing task of job 999999 failed: execution daemon on host "ocs-worker1" didn't accept task
+
+# FATAL - missing SGE_TASK_ID (misconfiguration)
+error: executing task of job 999999 failed: missing "SGE_TASK_ID" in environment
+
+# RETRYABLE (slot exhaustion, SI-55) - NOT captured live (needs a real over-slot PE job);
+# pattern below is the documented GE wording and MUST be confirmed against a live over-slot
+# rejection before relying on it. Kept conservative so a miss falls through to the race retry.
+error: no suitable queues
