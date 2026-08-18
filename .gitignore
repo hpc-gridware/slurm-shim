@@ -16,3 +16,6 @@ coverage.txt
 
 # Editor/OS noise
 .DS_Store
+
+# quickinstall clone (test cluster; fetched on demand)
+/test/cluster/.quickinstall/

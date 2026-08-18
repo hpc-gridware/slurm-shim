@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
 )
 
@@ -220,7 +221,7 @@ func (h *qrshHandle) Kill() error  { return h.proc.Kill() }
 // the child's stderr to tee while also buffering a bounded tail for rejection
 // classification.
 func spawnQrsh(ctx context.Context, args, env []string, tee io.Writer) (childProc, error) {
-	cmd := exec.CommandContext(ctx, "qrsh", args...)
+	cmd := exec.CommandContext(ctx, gedata.ResolveCommand("qrsh"), args...)
 	cmd.Env = env
 	buf := &tailBuffer{limit: 8192}
 	if tee != nil {

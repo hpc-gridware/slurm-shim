@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -107,12 +108,6 @@ func (s *supervisor) launch() int {
 		errln(s.stderr, "srun: error: token: "+err.Error())
 		return 1
 	}
-	srv, err := proto.Listen(s.bindAddr(), token)
-	if err != nil {
-		errln(s.stderr, "srun: error: opening control channel: "+err.Error())
-		return exitLauncher
-	}
-	defer func() { _ = srv.Close() }()
 
 	self, err := os.Executable()
 	if err != nil {
@@ -127,12 +122,25 @@ func (s *supervisor) launch() int {
 		errln(s.stderr, "srun: error: "+err.Error())
 		return exitLauncher
 	}
+	// remote is true only when a stepper actually runs off the master: a real
+	// tight-integration launcher placing a task on a non-master node. That is
+	// precisely when the control channel must be reachable past loopback. Gate on
+	// the resolved slave launcher, not the config string, so it cannot drift from
+	// the factory's own selection (e.g. an empty launcher value). The local
+	// launcher keeps everything on loopback even for a multi-node layout (D-6, and
+	// the test suite).
+	_, slaveIsQrsh := slave.(launch.QrshLauncher)
+	remote := s.stepIsRemote(slaveIsQrsh)
+
+	srv, err := proto.Listen(s.bindAddr(remote), token)
+	if err != nil {
+		errln(s.stderr, "srun: error: opening control channel: "+err.Error())
+		return exitLauncher
+	}
+	defer func() { _ = srv.Close() }()
 
 	// Preflight tight-integration launch before spawning anything (REQ-CHN-005).
-	// Gate on the resolved slave launcher, not the config string, so it cannot
-	// drift from the factory's own selection (e.g. an empty launcher value).
-	_, slaveIsQrsh := slave.(launch.QrshLauncher)
-	if slaveIsQrsh && len(s.plan.Nodes) > 1 {
+	if remote {
 		pf := launch.Preflight(context.Background(), gedata.ExecRunner{}, s.lay.Job.PEName)
 		for _, w := range pf.Warnings {
 			errln(s.stderr, "srun: warning: "+w)
@@ -159,7 +167,7 @@ func (s *supervisor) launch() int {
 			StepID: s.stepID,
 			Host:   node.Host,
 			NodeID: ni,
-			Dial:   srv.Addr(),
+			Dial:   s.dialAddr(srv.Addr(), remote),
 		}
 		h, err := launcher.Start(context.Background(), node.Host, env, token)
 		if err != nil {
@@ -320,9 +328,53 @@ func (s *supervisor) killHandles(handles []launch.Handle) {
 	}
 }
 
-func (s *supervisor) bindAddr() string {
-	// Local M3 path: bind loopback. M4 resolves master_interface.
+// stepIsRemote reports whether any stepper in this step runs off the master
+// node: a real tight-integration launcher (not the local one) placing a task on
+// a node other than layout index 0. Only then must the control channel be
+// routable. This is a superset of "more than one node" -- a single-node step
+// selected with `-w <worker>` also runs off-box, since its one node carries a
+// non-zero layout index and the launch loop hands it to the slave launcher.
+func (s *supervisor) stepIsRemote(slaveIsQrsh bool) bool {
+	if !slaveIsQrsh {
+		return false
+	}
+	for _, n := range s.plan.Nodes {
+		if n.LayoutIndex != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *supervisor) bindAddr(remote bool) string {
+	// Loopback unless steppers run off-box: then bind all interfaces so remote
+	// steppers can reach the control channel. It is token-authenticated
+	// (REQ-CHN-002), so exposure past loopback is safe.
+	if remote {
+		return "0.0.0.0:0"
+	}
 	return "127.0.0.1:0"
+}
+
+// dialAddr is the address steppers are told to connect back to. Loopback jobs
+// (single-node, or any local-launcher run) keep the listener address. A remote
+// job replaces the wildcard bind host with the master's routable address (the
+// same host the job's MASTER_ADDR advertises) while keeping the listener's
+// ephemeral port, so a stepper launched on a remote node reaches srun instead of
+// its own loopback.
+func (s *supervisor) dialAddr(listen string, remote bool) string {
+	if !remote {
+		return listen
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	host := s.lay.Rendezvous.MasterAddr
+	if host == "" {
+		host = s.lay.Nodes[0].Host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func (s *supervisor) ranksPerHost() map[string]int {

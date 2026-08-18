@@ -61,3 +61,42 @@ vet:
 .PHONY: clean
 clean:
 	rm -rf $(BINDIR)
+
+# --- Local OCS test cluster (reuses the quickinstall repo, unmodified) --------
+# Stand up a real 3-node Open Cluster Scheduler cluster with slurm-shim installed
+# and try it out. Needs Docker + Compose v2.
+#   make cluster-up [OCS_VERSION=9.1.4] [ARGS=--gpu]   cluster + shim (default OCS: latest)
+#   make demo / make demo-gpu                          submit a demo job, print output
+#   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
+CLUSTER := test/cluster
+.PHONY: cluster-up cluster-down cluster-install demo demo-gpu
+cluster-up:
+	$(CLUSTER)/up.sh $(ARGS)
+cluster-down:
+	$(CLUSTER)/down.sh $(ARGS)
+cluster-install:
+	$(CLUSTER)/install-shim.sh $(ARGS)
+demo:
+	$(CLUSTER)/demo.sh cpu
+demo-gpu:
+	$(CLUSTER)/demo.sh gpu
+
+# --- End-to-end + OCS version-compatibility suite -----------------------------
+#   make e2e                          run all e2e checks against a running cluster
+#   make capture-fixtures             refresh fixtures for the running OCS version
+#   make e2e-matrix                   for each OCS_VERSION: down -v; up; e2e; capture
+E2E     := test/e2e
+E2E_OCS ?= 9.0.10 9.1.4
+.PHONY: e2e capture-fixtures e2e-matrix
+e2e:
+	$(E2E)/run.sh
+capture-fixtures:
+	$(E2E)/capture.sh
+e2e-matrix:
+	@for v in $(E2E_OCS); do \
+	  echo "===== OCS $$v ====="; \
+	  OCS_VERSION=$$v $(CLUSTER)/down.sh -v || true; \
+	  OCS_VERSION=$$v $(CLUSTER)/up.sh || exit 1; \
+	  OCS_VERSION=$$v $(E2E)/run.sh || exit 1; \
+	  OCS_VERSION=$$v $(E2E)/capture.sh || exit 1; \
+	done

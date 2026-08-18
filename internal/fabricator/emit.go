@@ -31,6 +31,13 @@ func (r *Result) RenderExports() string {
 	if r.Disabled {
 		return b.String()
 	}
+	if r.ShimBinDir != "" {
+		// Prepend the shim's own bin dir (srun, sbatch, ... symlinks) to PATH.
+		// shellQuote guards the dir; ${PATH:+:"$PATH"} appends the existing PATH
+		// (expanded) only when it is non-empty, so an empty PATH cannot leave a
+		// trailing ':' that would put the current directory on PATH.
+		b.WriteString("export PATH=" + shellQuote(r.ShimBinDir) + `${PATH:+:"$PATH"}` + "\n")
+	}
 	for _, kv := range r.Exports {
 		b.WriteString("export " + kv.Key + "=" + shellQuote(kv.Value) + "\n")
 	}

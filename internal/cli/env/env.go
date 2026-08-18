@@ -38,7 +38,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		Env:      os.Getenv,
 		Config:   cfg,
 		Identity: gedata.RealIdentity{Runner: gedata.ExecRunner{}},
-		NowUnix:  time.Now().Unix(),
+		// Runner drives qstat-based GPU/memory discovery (REQ-GPU-001, A27). In PE
+		// mode this fabricator runs on the master with JOB_ID set, so it can query
+		// the granted RSMAP; without it, GPU discovery falls back to the not-
+		// multi-host-safe SGE_HGR path (SI-19).
+		Runner:  gedata.ExecRunner{},
+		NowUnix: time.Now().Unix(),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "slurm-shim-env: error: %v\n", err)
@@ -46,6 +51,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, w := range res.Warnings {
 		fmt.Fprintf(stderr, "slurm-shim-env: warning: %s\n", w)
+	}
+
+	// Put the shim's own command symlinks (srun, sbatch, ...) on the job's PATH.
+	// GE runs batch/PE scripts in non-login shells, so /etc/profile.d is never
+	// sourced and the shim bin dir would otherwise be missing from PATH.
+	if exe, err := os.Executable(); err == nil {
+		res.ShimBinDir = filepath.Dir(exe)
 	}
 
 	if exportMode {

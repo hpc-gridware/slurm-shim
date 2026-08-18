@@ -1,0 +1,48 @@
+name: e2e
+
+# End-to-end + OCS version-compatibility matrix against a REAL cluster. Standing
+# up OCS in Docker takes minutes, so this is kept OFF the per-PR path: it runs
+# nightly and on manual dispatch only. Each matrix job runs one OCS version
+# (parallel), unlike `make e2e-matrix` which loops versions in one shell locally.
+on:
+  schedule:
+    - cron: '0 3 * * *' # nightly, 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        ocs: ['9.0.10', '9.1.4']
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OCS_VERSION: ${{ matrix.ocs }}
+      READY_TIMEOUT: '600' # OCS installs from public packages on a cold runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # ubuntu-latest ships Docker Engine + Compose v2; the harness clones
+      # quickinstall on demand and pulls OCS from public hpc-gridware.com URLs.
+      - name: Bring up cluster + install shim
+        run: make cluster-up
+      - name: Run e2e suite
+        run: make e2e
+      - name: Capture fixtures
+        run: make capture-fixtures
+      - name: Upload captured fixtures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocs-${{ matrix.ocs }}-fixtures
+          path: test/e2e/fixtures/
+          if-no-files-found: warn
+      - name: Tear down
+        if: always()
+        run: test/cluster/down.sh -v

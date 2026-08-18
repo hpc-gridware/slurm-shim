@@ -10,7 +10,7 @@
 
 ## Why
 
-SLURM won HPC mindshare, and most modern AI tooling assumes it — `torchrun` tutorials, `submitit`, Hugging Face `accelerate`. Meanwhile the Grid Engine lineage still schedules enormous fleets in EDA, life sciences, and engineering, and is under active development as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
+Among open-source schedulers, SLURM has become the default integration target for AI tooling — `torchrun` tutorials, `submitit`, Hugging Face `accelerate`, and `dask-jobqueue` all assume it out of the box. That's a fact about tool defaults, not about scheduling: production clusters run on a range of schedulers, and the Grid Engine lineage in particular still drives enormous fleets in EDA, life sciences, and engineering — under active development today as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
 
 This shim bridges the two worlds: keep your SLURM-native tooling, run it on OCS. It is a single static Go binary (busybox-style symlink dispatch) that shells out to the GE clients (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`) and fabricates the SLURM environment inside GE PE jobs.
 
@@ -54,7 +54,16 @@ srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 
 ## Try it without a cluster
 
-> **TODO:** no in-repo demo container yet. A small containerized OCS cluster (qmaster + 2 execution hosts) lives in the sibling [`quickinstall`](https://github.com/hpc-gridware) repo and was used to capture the fixtures in this repo; a self-contained `demo/` compose file is planned.
+One command stands up a real 3-node Open Cluster Scheduler cluster (in Docker) with slurm-shim installed, then runs a job that shows `srun` fanning ranks across nodes. Only Docker + a Go toolchain are needed:
+
+```bash
+make cluster-up          # clone quickinstall, boot OCS (latest), install the shim
+make demo                # multi-node srun fan-out (per-rank SLURM_PROCID/nodelist)
+make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
+make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
+```
+
+Pick the OCS version with `OCS_VERSION=9.0.10 make cluster-up`. The cluster comes from the sibling [`quickinstall`](https://github.com/hpc-gridware/quickinstall) repo **unmodified** (cloned on demand, not vendored). See [`test/cluster/`](test/cluster/) for details and [`test/e2e/`](test/e2e/) for the `make e2e` end-to-end + version-compatibility suite.
 
 ## What is implemented (unit-tested, not yet live-validated)
 

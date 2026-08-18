@@ -43,6 +43,9 @@ var _ = Describe("slurm-shim-env command", func() {
 		Expect(out.String()).To(ContainSubstring("unset SLURM_JOB_ID"))
 		Expect(out.String()).To(ContainSubstring("export SLURM_JOB_ID='77'"))
 		Expect(out.String()).To(ContainSubstring("export SLURM_NNODES='1'"))
+		// The command wires ShimBinDir from os.Executable() so the job can find
+		// srun/sbatch; a regression there would silently drop this PATH line.
+		Expect(out.String()).To(ContainSubstring("export PATH="))
 	})
 
 	It("writes layout, environment, and step counter in PE mode [REQ-FAB-001]", func() {

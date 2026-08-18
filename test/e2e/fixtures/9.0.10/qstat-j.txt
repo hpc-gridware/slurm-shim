@@ -1,0 +1,38 @@
+==============================================================
+job_number:                     7
+exec_file:                      job_scripts/7
+submission_time:                2026-08-18 10:29:03.655126
+submit_cmd_line:                qsub -terse -pe make 2 -l gpu=1 -q all.q@ocs-worker1 -o /dev/null -j y /home/gridware/e2e-capture-gpu.sh
+effective_submit_cmd_line:      qsub -A sge -binding NONE -o /dev/null -j yes -M gridware@ocs-master -N e2e-capture-gpu.sh -pe make 2 -pty no -r yes -scope global -hard -l gpu=1 -hard -q all.q@ocs-worker1 /home/gridware/e2e-capture-gpu.sh
+owner:                          gridware
+uid:                            1000
+group:                          gridware
+gid:                            1000
+groups:                         NOT-AVAILABLE-IN-OCS
+sge_o_home:                     /home/gridware
+sge_o_path:                     /opt/slurm-shim/bin:/opt/ocs/bin/lx-arm64:/usr/local/bin:/usr/bin:/bin
+sge_o_workdir:                  /
+sge_o_host:                     ocs-master
+account:                        sge
+merge:                          y
+hard_resource_list:             gpu=1
+hard_queue_list:                all.q@ocs-worker1
+mail_list:                      gridware@ocs-master
+notify:                         FALSE
+job_name:                       e2e-capture-gpu.sh
+stdout_path_list:               NONE:NONE:/dev/null
+priority:                       0
+jobshare:                       0
+env_list:                       NONE
+script_file:                    /home/gridware/e2e-capture-gpu.sh
+parallel_environment:           make range: 2
+department:                     defaultdepartment
+binding:                        NONE
+job_state                  1:   r
+usage                      1:   wallclock=00:00:00.000000, cpu=00:00:00.000000, mem=0.00000 GBs, io=0.00000, vmem=N/A, maxvmem=N/A, rss=N/A, maxrss=N/A
+binding                    1:   NONE
+exec_queue_list            1:   all.q@ocs-worker1:2
+exec_host_list             1:   ocs-worker1:2
+start_time                 1:   2026-08-18 10:29:03.655606
+resource_map               1:   gpu=ocs-worker1=(0 1)
+scheduling info:                (Collecting of scheduler job information is turned off - use qalter -w p job_id to verify if the job can be scheduled)

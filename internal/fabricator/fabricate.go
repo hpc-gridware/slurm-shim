@@ -46,6 +46,12 @@ type Result struct {
 	// Disabled is true when SLURM_SHIM_DISABLE was set: no layout or exports are
 	// produced, only the unset preamble (scrub-only mode, SI-38/SI-56).
 	Disabled bool
+	// ShimBinDir, when set, is prepended to the job's PATH by RenderExports so the
+	// job script can call srun/sbatch/etc. GE runs batch and PE scripts in non-
+	// login shells that never sourced the site profile, so the shim's own bin dir
+	// would otherwise be absent from PATH. The env command sets this from the
+	// running binary's location; the pure fabricator leaves it empty.
+	ShimBinDir string
 }
 
 // Fabricate assembles Table A and the layout from the allocation. On

@@ -8,7 +8,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // Runner abstracts external process execution (GE clients: qstat, qsub, qdel,
@@ -25,7 +28,7 @@ type ExecRunner struct{}
 
 // Run executes name with args, capturing stdout and stderr separately.
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, ResolveCommand(name), args...)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
@@ -42,4 +45,35 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 		// Spawn or context failure: the command did not run to completion.
 		return out.Bytes(), errBuf.Bytes(), -1, err
 	}
+}
+
+// ResolveCommand locates a GE client tool (qstat, qrsh, ...) when the caller
+// runs in a non-login shell that never sourced the site profile: GE runs batch
+// job scripts and PE start_proc_args hooks that way, so PATH lacks
+// $SGE_ROOT/bin/$ARC. A bare name already on PATH, or any name containing a path
+// separator, is used unchanged; otherwise it falls back to
+// $SGE_ROOT/bin/$ARC/<name>: GE exports SGE_ROOT and the arch (as ARC, or
+// SGE_ARCH on some installs) into the job environment. System tools such as
+// getent stay on PATH and are unaffected. If nothing resolves, the bare name is
+// returned so exec fails with its usual "not found" message. Shared by the
+// Runner and the qrsh launcher.
+func ResolveCommand(name string) string {
+	if strings.ContainsRune(name, filepath.Separator) {
+		return name
+	}
+	if _, err := exec.LookPath(name); err == nil {
+		return name
+	}
+	root := os.Getenv("SGE_ROOT")
+	arch := os.Getenv("ARC")
+	if arch == "" {
+		arch = os.Getenv("SGE_ARCH")
+	}
+	if root != "" && arch != "" {
+		cand := filepath.Join(root, "bin", arch, name)
+		if info, err := os.Stat(cand); err == nil && !info.IsDir() {
+			return cand
+		}
+	}
+	return name
 }
