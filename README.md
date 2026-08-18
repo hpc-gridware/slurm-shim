@@ -182,8 +182,10 @@ The shim reads a YAML file at `$SLURM_SHIM_CONFIG`, else `/etc/slurm-shim/config
 partitions:                       # SLURM --partition -> GE queue + PE + slots
   gpu:   {queue: gpu.q, pe: gpu.pe, slots: "per-task"}   # per-task = ntasks * cpus_per_task
   batch: {queue: all.q, pe: smp.pe, slots: "16"}          # or a fixed slot count
+default_partition: batch          # sbatch without -p lands here (SLURM's DEFAULT)
 pes:
   gpu.pe: {task_policy: gpu}      # gpu | node | slot -> how SLURM_NTASKS is derived
+  smp.pe: {task_policy: slot}     # one task per slot (MPI-style)
 gpu:
   discovery: qstat-gres           # RSMAP grant -> CUDA_VISIBLE_DEVICES
   isolation: shim                 # shim (per-rank masking) | cgroup (GE devices_allow)
