@@ -14,7 +14,7 @@ Docker Engine 20.10+ with Compose v2, ~4 GB RAM, ~10 GB disk, and a Go toolchain
 ## Use it
 
 ```bash
-make cluster-up                 # clone quickinstall, boot cluster (latest OCS), install shim
+make cluster-up                 # clone quickinstall, boot cluster (OCS 9.1.4), install shim
 make demo                       # multi-node srun fan-out
 make demo-gpu                   # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
 make cluster-down               # stop (keeps the OCS install)
@@ -33,7 +33,7 @@ make cluster-install            # or: ARGS=--gpu to also add the fake RSMAP comp
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `OCS_VERSION` | quickinstall's latest (9.1.4) | which OCS package to install; e.g. `OCS_VERSION=9.0.10 make cluster-up` |
+| `OCS_VERSION` | `9.1.4` | which OCS package to install; e.g. `OCS_VERSION=9.0.10 make cluster-up` |
 | `QUICKINSTALL_REF` | `main` | which quickinstall commit/branch to run (pin for reproducibility) |
 | `QUICKINSTALL_DIR` | *(unset)* | use an existing quickinstall checkout instead of cloning |
 | `GPU_PER_WORKER` | `2` | fake RSMAP devices per worker (with `--gpu`) |

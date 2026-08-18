@@ -24,6 +24,7 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `50_scontrol` | `scontrol show hostnames` expands a compressed nodelist, one per line |
 | `60_gpu` | a fake RSMAP grant -> `SLURM_JOB_GPUS` + per-rank `CUDA_VISIBLE_DEVICES` |
 | `70_reject` | an impossible `srun` is rejected before launch (exit 1, no hang) |
+| `80_sinfo` | `sinfo` shows live node counts/states from GE (not `n/a` placeholders) |
 
 Each check is a self-contained process that exits non-zero on failure; `run.sh`
 fails if any did.

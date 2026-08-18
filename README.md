@@ -57,7 +57,7 @@ srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 One command stands up a real 3-node Open Cluster Scheduler cluster (in Docker) with slurm-shim installed, then runs a job that shows `srun` fanning ranks across nodes. Only Docker + a Go toolchain are needed:
 
 ```bash
-make cluster-up          # clone quickinstall, boot OCS (latest), install the shim
+make cluster-up          # clone quickinstall, boot OCS 9.1.4, install the shim
 make demo                # multi-node srun fan-out (per-rank SLURM_PROCID/nodelist)
 make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
 make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
@@ -92,7 +92,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
 | `scancel` | ✅ | Maps to `qdel`; array `scancel 4711_2` -> `qdel -t`; `-u` passthrough. `--signal` unsupported. |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; minimal `show job` record; `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
-| `sinfo` | ⚠️ | Bare `sinfo` prints a partition table from config; `-V`. Other invocations unsupported. |
+| `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
 | `sacct` | ❌ | Not implemented (`qacct` is used internally for squeue completion detection, but there is no `sacct` command yet). |
 | `salloc` | ❌ | Not implemented. |
 

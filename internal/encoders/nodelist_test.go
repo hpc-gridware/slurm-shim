@@ -32,6 +32,28 @@ var _ = Describe("N1 nodelist compression", func() {
 	})
 })
 
+var _ = Describe("SortHosts (natural order for compression)", func() {
+	It("orders unpadded names numerically, not lexically", func() {
+		hosts := []string{"node10", "node2", "node1", "node11", "node3"}
+		encoders.SortHosts(hosts)
+		Expect(hosts).To(Equal([]string{"node1", "node2", "node3", "node10", "node11"}))
+		// The whole point: natural order compresses into one contiguous range.
+		Expect(encoders.CompressNodelist(hosts)).To(Equal("node[1-3,10-11]"))
+	})
+
+	It("groups by prefix then orders within a prefix", func() {
+		hosts := []string{"ocs-worker2", "ocs-master", "ocs-worker1"}
+		encoders.SortHosts(hosts)
+		Expect(encoders.CompressNodelist(hosts)).To(Equal("ocs-master,ocs-worker[1-2]"))
+	})
+
+	It("falls back to lexical order for non-numeric names", func() {
+		hosts := []string{"beta", "alpha"}
+		encoders.SortHosts(hosts)
+		Expect(hosts).To(Equal([]string{"alpha", "beta"}))
+	})
+})
+
 var _ = Describe("N1' nodelist expansion", func() {
 	DescribeTable("expands SLURM range syntax [REQ-ENC-003]",
 		func(in string, want []string) {

@@ -69,8 +69,9 @@ func TestOsExecConfined(t *testing.T) {
 }
 
 // TestDependencyAllowlist keeps the direct dependency surface minimal and
-// reviewed (REQ-IMP-002): only the testing framework, flag parser, yaml, and the
-// x/sys syscall shim are permitted as direct requires.
+// reviewed (REQ-IMP-002): only the testing framework, flag parser, yaml, the
+// x/sys syscall shim, and go-clusterscheduler (the shared OCS/GE command parser)
+// are permitted as direct requires.
 func TestDependencyAllowlist(t *testing.T) {
 	root := repoRoot(t)
 	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
@@ -78,11 +79,12 @@ func TestDependencyAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{
-		"github.com/onsi/ginkgo/v2": true,
-		"github.com/onsi/gomega":    true,
-		"github.com/spf13/pflag":    true,
-		"golang.org/x/sys":          true,
-		"gopkg.in/yaml.v3":          true,
+		"github.com/hpc-gridware/go-clusterscheduler": true, // OCS/GE command parsing (shared source of truth)
+		"github.com/onsi/ginkgo/v2":                   true,
+		"github.com/onsi/gomega":                      true,
+		"github.com/spf13/pflag":                      true,
+		"golang.org/x/sys":                            true,
+		"gopkg.in/yaml.v3":                            true,
 	}
 	inBlock := false
 	for _, line := range strings.Split(string(mod), "\n") {

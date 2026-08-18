@@ -17,7 +17,8 @@ ensure_gpu_complex
 gridware "qconf -sc"                > "$dir/qconf-sc.txt"          # complexes (RSMAP row)
 gridware "qconf -sp make"           > "$dir/qconf-sp-make.txt"     # the 'make' PE
 gridware "qconf -se ocs-worker1"    > "$dir/qconf-se-worker1.txt"  # exechost complex_values
-gridware "qstat -xml -f"            > "$dir/qstat-xml-f.xml"       # queue/host states
+gridware "qstat -xml -f"            > "$dir/qstat-xml-f.xml"       # queue/host states (XML)
+gridware "qstat -f"                 > "$dir/qstat-f.txt"           # queue instances (sinfo parses this)
 
 # A live GPU job so qstat can show the granted RSMAP (only visible while active).
 gjob="$(mktemp)"; trap 'rm -f "$gjob"' EXIT

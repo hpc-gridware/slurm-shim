@@ -65,7 +65,7 @@ clean:
 # --- Local OCS test cluster (reuses the quickinstall repo, unmodified) --------
 # Stand up a real 3-node Open Cluster Scheduler cluster with slurm-shim installed
 # and try it out. Needs Docker + Compose v2.
-#   make cluster-up [OCS_VERSION=9.1.4] [ARGS=--gpu]   cluster + shim (default OCS: latest)
+#   make cluster-up [OCS_VERSION=9.1.4] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.4)
 #   make demo / make demo-gpu                          submit a demo job, print output
 #   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
 CLUSTER := test/cluster

@@ -2,10 +2,10 @@
 <detailed_job_info  xmlns:xsd="https://github.com/hpc-gridware/clusterscheduler/raw/master/source/dist/util/resources/schemas/qstat/qstat.xsd">
   <djob_info>
     <element>
-      <JB_job_number>17</JB_job_number>
+      <JB_job_number>7</JB_job_number>
       <JB_ar>0</JB_ar>
-      <JB_exec_file>job_scripts/17</JB_exec_file>
-      <JB_submission_time>2026-08-18T10:18:37.619686</JB_submission_time>
+      <JB_exec_file>job_scripts/7</JB_exec_file>
+      <JB_submission_time>2026-08-18T13:28:45.699554</JB_submission_time>
       <JB_submission_command_line>qsub -terse -pe make 2 -l gpu=1 -q all.q@ocs-worker1 -o /dev/null -j y /home/gridware/e2e-capture-gpu.sh</JB_submission_command_line>
       <JB_owner>gridware</JB_owner>
       <JB_uid>1000</JB_uid>
@@ -64,7 +64,7 @@
         </job_sublist>
         <job_sublist>
           <VA_variable>__SGE_PREFIX__O_PATH</VA_variable>
-          <VA_value>/opt/slurm-shim/bin:/opt/ocs/bin/lx-arm64:/usr/local/bin:/usr/bin:/bin</VA_value>
+          <VA_value>/opt/slurm-shim/bin:/opt/slurm-shim/bin:/opt/ocs/bin/lx-arm64:/usr/local/bin:/usr/bin:/bin</VA_value>
         </job_sublist>
         <job_sublist>
           <VA_variable>__SGE_PREFIX__O_MAIL</VA_variable>
@@ -83,11 +83,11 @@
       <JB_ja_tasks>
         <element>
           <JAT_state>128</JAT_state>
-          <JAT_status>512</JAT_status>
+          <JAT_status>128</JAT_status>
           <JAT_hold>0</JAT_hold>
           <JAT_task_number>1</JAT_task_number>
           <JAT_job_restarted>0</JAT_job_restarted>
-          <JAT_start_time>2026-08-18T10:18:37.621396</JAT_start_time>
+          <JAT_start_time>2026-08-18T13:28:45.700858</JAT_start_time>
           <JAT_granted_resources_list>
             <element>
               <GRU_type>2</GRU_type>
@@ -169,7 +169,7 @@
         </element>
       </JB_grp_list>
       <JB_sync_options>1</JB_sync_options>
-      <JB_category_id>17</JB_category_id>
+      <JB_category_id>7</JB_category_id>
     </element>
   </djob_info>
   <messages>

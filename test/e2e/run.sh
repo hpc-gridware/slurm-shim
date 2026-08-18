@@ -16,6 +16,7 @@ checks=(
   50_scontrol
   60_gpu
   70_reject
+  80_sinfo
 )
 
 fails=0

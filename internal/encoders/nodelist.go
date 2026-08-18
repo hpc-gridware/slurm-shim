@@ -4,9 +4,29 @@
 package encoders
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 )
+
+// SortHosts orders short hostnames in natural (numeric-aware) order in place, so
+// callers can feed an arbitrary set to CompressNodelist and still get contiguous
+// ranges: [node10, node2, node1] -> [node1, node2, node10] -> "node[1-2,10]".
+// Names sharing a (prefix, suffix) and both bearing a digit run are ordered by
+// numeric value then digit width; anything else falls back to a lexical compare.
+func SortHosts(hosts []string) {
+	sort.SliceStable(hosts, func(i, j int) bool {
+		pi, di, si, oki := splitName(hosts[i])
+		pj, dj, sj, okj := splitName(hosts[j])
+		if !oki || !okj || pi != pj || si != sj {
+			return hosts[i] < hosts[j]
+		}
+		if vi, vj := mustAtoi(di), mustAtoi(dj); vi != vj {
+			return vi < vj
+		}
+		return len(di) < len(dj)
+	})
+}
 
 // CompressNodelist encodes an ordered list of short hostnames into SLURM range
 // syntax, e.g. ["node001","node002","node003","node007"] -> "node[001-003,007]"
