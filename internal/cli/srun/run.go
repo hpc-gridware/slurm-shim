@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
@@ -97,10 +98,17 @@ type supervisor struct {
 
 	mu            sync.Mutex
 	conns         []*proto.Conn
+	handles       []launch.Handle
 	killTriggered bool
 	firstBadCode  int
 	maxCode       int
 }
+
+// killEscalation bounds how long srun waits for a kill-on-bad-exit fan-out to
+// drain before force-killing the stepper handles, so an unkillable or slow-to-die
+// rank cannot hang srun indefinitely (SLURM's UnkillableStepTimeout analogue).
+// A var, not a const, so tests can shorten it.
+var killEscalation = 10 * time.Second
 
 func (s *supervisor) launch() int {
 	token, err := proto.NewToken()
@@ -211,6 +219,7 @@ func (s *supervisor) launch() int {
 	for _, c := range conns {
 		s.conns = append(s.conns, c)
 	}
+	s.handles = handles // for the kill-escalation watchdog
 	s.mu.Unlock()
 
 	s.demux = mux.NewDemux(s.stdout, s.stderr, s.opt.label)
@@ -312,8 +321,21 @@ func (s *supervisor) recordExit(code int) {
 			s.killTriggered = true
 			errln(s.stderr, fmt.Sprintf("srun: error: task exited with code %d, killing remaining tasks (kill-on-bad-exit)", code))
 			s.broadcast(proto.Frame{Type: proto.FrameSig, Payload: proto.EncodeInt32(int32(syscallSIGTERM))})
+			// Bound the wait: if a rank refuses to die, force-kill the stepper
+			// handles so supervise (and h.Wait) unblock instead of hanging forever.
+			time.AfterFunc(killEscalation, s.forceKill)
 		}
 	}
+}
+
+// forceKill terminates the stepper handles. supervise then observes the closed
+// control channels as EOF and synthesizes the missing ranks' exits, and launch's
+// h.Wait returns because the processes are gone.
+func (s *supervisor) forceKill() {
+	s.mu.Lock()
+	handles := s.handles
+	s.mu.Unlock()
+	s.killHandles(handles)
 }
 
 func (s *supervisor) broadcast(f proto.Frame) {
