@@ -45,3 +45,44 @@ pipeline-parallel = nodes.
 - A `gpu` RSMAP complex granting GPUs on each node.
 - Inter-node TCP (Ray's object store + gcs) -- already available under GE builtin
   qrsh back-connections.
+
+## Validated on the OCS test cluster (2026-08-18)
+
+The integration was confirmed end to end on the 3-node OCS 9.1.4 test cluster
+([`test/cluster`](../../../test/cluster)), CPU-only and GPU-free, with
+[`ray-smoke-test.sh`](ray-smoke-test.sh).
+
+Setup (containers ship no Python): installed Python 3.11 on every node and put
+Ray in a **shared** venv on the shared home (`/home/gridware/rayenv`), so all
+nodes run the same `ray`/`python`:
+
+```bash
+# on the master (the venv lives on the shared filesystem)
+python3.11 -m venv /home/gridware/rayenv
+/home/gridware/rayenv/bin/pip install ray          # ray core; no GPU, no dashboard
+RAY_BIN=/home/gridware/rayenv/bin/ray \
+PYTHON_BIN=/home/gridware/rayenv/bin/python \
+  sbatch ray-smoke-test.sh
+```
+
+Result -- a real 3-node cluster formed and ran distributed tasks:
+
+```
+[ray] head=ocs-worker2 (10.100.0.12:6379)  nodes=3: ocs-worker2 ocs-worker1 ocs-master
+[ray] alive nodes: 1/3  ->  3/3
+[driver] alive ray nodes: 3
+[driver] cluster CPU: 6.0                     # 2 cpus/node x 3
+[driver] task placement across hosts: {'ocs-worker2': 37, 'ocs-worker1': 3}
+[driver] RAY MULTI-NODE OK                    # driver rc=0
+```
+
+The head started on the job's PE-master node, both workers joined the GCS over
+`qrsh -inherit` tight integration (all three node IPs registered), the driver
+connected with `ray.init(address="auto")` and saw 3 alive nodes / 6 CPUs, and
+remote tasks executed across more than one host. Teardown (`ray stop` + dropping
+the worker `srun` steps) left no stray Ray processes.
+
+Notes for a real deployment: `ray` and `python` must resolve on every node (a
+shared venv, a container image, or an environment module); the head IP is taken
+from `getent hosts` first line (it can return more than one); and this is a
+device-visibility / cluster-formation test, not an NCCL/throughput benchmark.

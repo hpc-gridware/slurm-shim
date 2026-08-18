@@ -15,7 +15,7 @@ set -euo pipefail
 # Nodelist, master first (scontrol reads $SLURM_JOB_NODELIST).
 mapfile -t NODES < <(scontrol show hostnames)
 HEAD="${NODES[0]}"
-HEAD_IP="$(getent hosts "$HEAD" | awk '{print $1}')"
+HEAD_IP="$(getent hosts "$HEAD" | awk 'NR==1{print $1}')"   # NR==1: getent may return >1 line
 PORT="${RAY_PORT:-6379}"
 DASH_PORT="${RAY_DASHBOARD_PORT:-8265}"
 GPUS_PER_NODE="${SLURM_GPUS_ON_NODE:-0}"
