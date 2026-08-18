@@ -54,7 +54,10 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		return 1
 	}
 	if opt.partition == "" {
-		fmt.Fprintln(stderr, "sbatch: error: no partition specified")
+		opt.partition = cfg.DefaultPartition // SLURM's DEFAULT-partition behavior
+	}
+	if opt.partition == "" {
+		fmt.Fprintln(stderr, "sbatch: error: no partition specified (and no default_partition configured)")
 		return 1
 	}
 	part, ok := cfg.Partitions[opt.partition]

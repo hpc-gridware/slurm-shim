@@ -2,6 +2,7 @@ package scontrol
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"path/filepath"
 	"testing"
@@ -95,7 +96,158 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		Expect(s).To(ContainSubstring("NumTasks=16"))
 		Expect(s).To(ContainSubstring("UserId=alice(1000)"))
 	})
+
+	It("looks the job up in GE when there is no local layout", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir()) // no fabricated layout here
+		r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response {
+			return fake.Response{Stdout: []byte(qstatRunning)}
+		}}
+		var out bytes.Buffer
+		Expect(run(r, []string{"show", "job", "14"}, &out, io.Discard)).To(Equal(0))
+		s := out.String()
+		Expect(s).To(ContainSubstring("JobId=14"))
+		Expect(s).To(ContainSubstring("JobName=wrap.sh"))
+		Expect(s).To(ContainSubstring("JobState=RUNNING"))
+		Expect(s).To(ContainSubstring("NodeList=ocs-worker1"))
+		Expect(s).To(ContainSubstring("Partition=all.q"))
+		Expect(s).To(ContainSubstring("UserId=gridware"))
+		// -u * is what makes another user's job visible; guard the argv.
+		Expect(r.Calls[0].Name).To(Equal("qstat"))
+		Expect(r.Calls[0].Args).To(Equal([]string{"-xml", "-u", "*"}))
+	})
+
+	It("uses GE (not the local layout) when the requested id differs from the in-job layout", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("TMPDIR", tmp)
+		lay := &layout.Layout{SchemaVersion: layout.SchemaVersion, Job: layout.Job{JobID: 4711, Name: "mine"}, Nodes: []layout.Node{{Host: "node001"}}, Tasks: layout.Tasks{NTasks: 1}}
+		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
+		r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response {
+			return fake.Response{Stdout: []byte(qstatRunning)} // job 14
+		}}
+		var out bytes.Buffer
+		Expect(run(r, []string{"show", "job", "14"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("JobId=14")) // GE record, not the layout's 4711
+		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker1"))
+		Expect(r.Calls).NotTo(BeEmpty()) // GE was queried
+	})
+
+	It("uses the layout (not GE) when the requested id matches the in-job layout", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("TMPDIR", tmp)
+		lay := &layout.Layout{SchemaVersion: layout.SchemaVersion, Job: layout.Job{JobID: 4711, Name: "mine"}, Nodes: []layout.Node{{Host: "node001"}}, Tasks: layout.Tasks{NTasks: 1}}
+		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
+		r := &fake.Runner{}
+		var out bytes.Buffer
+		Expect(run(r, []string{"show", "job", "4711"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("JobId=4711"))
+		Expect(r.Calls).To(BeEmpty()) // layout path: qstat never called
+	})
+
+	It("shows the in-job layout for a bare 'show job' (no id)", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("TMPDIR", tmp)
+		lay := &layout.Layout{SchemaVersion: layout.SchemaVersion, Job: layout.Job{JobID: 77, Name: "mine"}, Nodes: []layout.Node{{Host: "node001"}}, Tasks: layout.Tasks{NTasks: 1}}
+		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
+		r := &fake.Runner{}
+		var out bytes.Buffer
+		Expect(run(r, []string{"show", "job"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("JobId=77"))
+		Expect(r.Calls).To(BeEmpty())
+	})
+
+	It("resolves an array-task id to that specific task, not the first base match", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response {
+			return fake.Response{Stdout: []byte(qstatArray)}
+		}}
+		// Task 5 is RUNNING (first row); task 2 is PENDING. Asking for 4711_2 must
+		// report task 2's state/node, not task 5's.
+		var out bytes.Buffer
+		Expect(run(r, []string{"show", "job", "4711_2"}, &out, io.Discard)).To(Equal(0))
+		s := out.String()
+		Expect(s).To(ContainSubstring("JobId=4711_2"))
+		Expect(s).To(ContainSubstring("JobState=PENDING"))
+		Expect(s).To(ContainSubstring("NodeList=(null)"))
+		Expect(s).NotTo(ContainSubstring("node5"))
+	})
+
+	It("errors cleanly on qstat spawn failure, non-zero exit, and unparseable output", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		cases := []struct {
+			resp fake.Response
+			want string
+		}{
+			{fake.Response{Err: errors.New("boom")}, "running qstat"},
+			{fake.Response{Exit: 1, Stderr: []byte("qmaster unreachable")}, "qmaster unreachable"},
+			{fake.Response{Exit: 1}, "qstat failed"}, // non-zero exit, empty stderr
+			{fake.Response{Stdout: []byte("<not-xml")}, "parsing qstat output"},
+		}
+		for _, c := range cases {
+			r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response { return c.resp }}
+			var errBuf bytes.Buffer
+			Expect(run(r, []string{"show", "job", "1"}, io.Discard, &errBuf)).To(Equal(1))
+			Expect(errBuf.String()).To(ContainSubstring(c.want))
+		}
+	})
+
+	It("errors with 'Invalid job id' when the job is unknown to GE", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response {
+			return fake.Response{Stdout: []byte(qstatRunning)}
+		}}
+		var errBuf bytes.Buffer
+		Expect(run(r, []string{"show", "job", "999"}, io.Discard, &errBuf)).To(Equal(1))
+		Expect(errBuf.String()).To(ContainSubstring("Invalid job id"))
+	})
+
+	It("errors when no job id is given outside a job", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		var errBuf bytes.Buffer
+		Expect(run(&fake.Runner{}, []string{"show", "job"}, io.Discard, &errBuf)).To(Equal(1))
+		Expect(errBuf.String()).To(ContainSubstring("no job id specified"))
+	})
 })
+
+const qstatRunning = `<?xml version='1.0'?>
+<job_info>
+  <queue_info>
+    <job_list state="running">
+      <JB_job_number>14</JB_job_number>
+      <JB_name>wrap.sh</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <queue_name>all.q@ocs-worker1</queue_name>
+      <slots>1</slots>
+    </job_list>
+  </queue_info>
+</job_info>`
+
+// Array job 4711: task 5 running on node5 (a queue_info row), task 2 pending (a
+// job_info row). Two rows share JB_job_number 4711 with distinct <tasks>.
+const qstatArray = `<?xml version='1.0'?>
+<job_info>
+  <queue_info>
+    <job_list state="running">
+      <JB_job_number>4711</JB_job_number>
+      <JB_name>arr</JB_name>
+      <JB_owner>alice</JB_owner>
+      <state>r</state>
+      <queue_name>all.q@node5</queue_name>
+      <slots>1</slots>
+      <tasks>5</tasks>
+    </job_list>
+  </queue_info>
+  <job_info>
+    <job_list state="pending">
+      <JB_job_number>4711</JB_job_number>
+      <JB_name>arr</JB_name>
+      <JB_owner>alice</JB_owner>
+      <state>qw</state>
+      <slots>1</slots>
+      <tasks>2</tasks>
+    </job_list>
+  </job_info>
+</job_info>`
 
 var _ = Describe("scontrol errors", func() {
 	It("rejects an unknown subcommand", func() {

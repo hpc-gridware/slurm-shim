@@ -164,6 +164,46 @@ var _ = Describe("sbatch end-to-end [REQ-SBT-002/003/005]", func() {
 		Expect(captured).To(ContainElements("-q", "all.q", "-pe", "smp.pe", "16"))
 	})
 
+	It("falls back to default_partition when none is given", func() {
+		script := writeScript("#!/bin/bash\nsrun hostname\n")
+		cfg := testCfg()
+		cfg.DefaultPartition = "batch"
+		var captured []string
+		rc := run(fakeQsub("7", &captured), cfg, "/shim", []string{script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(captured).To(ContainElements("-q", "all.q", "-pe", "smp.pe", "16"))
+	})
+
+	It("errors when no partition is given and no default is configured", func() {
+		script := writeScript("#!/bin/bash\nsrun hostname\n")
+		var captured []string
+		var errBuf bytes.Buffer
+		rc := run(fakeQsub("8", &captured), testCfg(), "/shim", []string{script}, io.Discard, &errBuf)
+		Expect(rc).To(Equal(1))
+		Expect(errBuf.String()).To(ContainSubstring("no partition specified"))
+	})
+
+	It("lets an explicit -p win over default_partition", func() {
+		script := writeScript("#!/bin/bash\nsrun hostname\n")
+		cfg := testCfg()
+		cfg.DefaultPartition = "batch"
+		var captured []string
+		rc := run(fakeQsub("9", &captured), cfg, "/shim", []string{"-p", "gpu", script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(captured).To(ContainElements("-q", "gpu.q", "-pe", "gpu.pe")) // default ignored
+	})
+
+	It("errors with 'unknown partition' when default_partition is invalid", func() {
+		script := writeScript("#!/bin/bash\nsrun hostname\n")
+		cfg := testCfg()
+		cfg.DefaultPartition = "ghost"
+		var captured []string
+		var errBuf bytes.Buffer
+		rc := run(fakeQsub("10", &captured), cfg, "/shim", []string{script}, io.Discard, &errBuf)
+		Expect(rc).To(Equal(1))
+		Expect(errBuf.String()).To(ContainSubstring("unknown partition"))
+	})
+
 	It("surfaces a qsub failure and exits non-zero [REQ-SBT-005]", func() {
 		script := writeScript("#!/bin/bash\n#SBATCH -p gpu\n")
 		r := &fake.Runner{Responder: func(string, []string) fake.Response {

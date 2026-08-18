@@ -91,7 +91,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `srun` (standalone) | ⚠️ | `standalone: local` runs the command with a synthetic single-node env; default `standalone: reject` exits 1. |
 | `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
 | `scancel` | ✅ | Maps to `qdel`; array `scancel 4711_2` -> `qdel -t`; `-u` passthrough. `--signal` unsupported. |
-| `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; minimal `show job` record; `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
+| `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
 | `sacct` | ❌ | Not implemented (`qacct` is used internally for squeue completion detection, but there is no `sacct` command yet). |
 | `salloc` | ❌ | Not implemented. |
@@ -102,7 +102,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 
 | Flag | Status | Mapped to |
 |---|---|---|
-| `--partition` / `-p` | ✅ | queue + PE + slots, via `partitions` config |
+| `--partition` / `-p` | ✅ | queue + PE + slots, via `partitions` config; falls back to `default_partition` when omitted |
 | `--nodes` / `-N` | ✅ | feeds the slot count (GE's PE `allocation_rule` places the nodes) |
 | `--ntasks` / `-n` | ✅ | feeds the slot count |
 | `--ntasks-per-node` | ✅ | feeds the slot count |

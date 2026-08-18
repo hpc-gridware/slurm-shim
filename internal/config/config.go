@@ -98,6 +98,11 @@ type Config struct {
 	// next to the user's script (assumed already on shared storage).
 	WrapperSpoolDir string `yaml:"wrapper_spool_dir"`
 
+	// DefaultPartition is used by sbatch when no partition is given, mirroring
+	// SLURM's DEFAULT partition. (srun has no partition concept in the shim -- it
+	// is the in-allocation task launcher.) Empty (default) keeps the "no partition
+	// specified" error so a site must opt in.
+	DefaultPartition string               `yaml:"default_partition"`
 	Partitions       map[string]Partition `yaml:"partitions"`
 	PartitionAliases map[string]string    `yaml:"partition_aliases"`
 	PEs              map[string]PE        `yaml:"pes"`

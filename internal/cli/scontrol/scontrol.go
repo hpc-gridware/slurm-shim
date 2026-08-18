@@ -4,6 +4,7 @@ package scontrol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,7 +29,7 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "show":
-		return showCmd(args[1:], stdout, stderr)
+		return showCmd(runner, args[1:], stdout, stderr)
 	case "requeue":
 		return requeueCmd(runner, args[1:], stderr)
 	default:
@@ -37,7 +38,7 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func showCmd(args []string, stdout, stderr io.Writer) int {
+func showCmd(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "scontrol: error: show needs an entity")
 		return 1
@@ -46,7 +47,7 @@ func showCmd(args []string, stdout, stderr io.Writer) int {
 	case "hostnames", "hostname":
 		return showHostnames(args[1:], stdout, stderr)
 	case "job":
-		return showJob(args[1:], stdout, stderr)
+		return showJob(runner, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "scontrol: error: unsupported show entity %q\n", args[0])
 		return 1
@@ -78,20 +79,77 @@ func showHostnames(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// showJob prints a minimal key=value record sourced from the layout, with the
-// node list rendered from the layout so its order matches the allocation
-// (REQ-SCT-003).
-func showJob(args []string, stdout, stderr io.Writer) int {
-	lay, err := loadLayout()
-	if err != nil {
-		fmt.Fprintf(stderr, "scontrol: error: %v\n", err)
+// showJob prints a minimal key=value record for a job. Inside a running job the
+// fabricated layout is used (rich, allocation-ordered nodelist, REQ-SCT-003);
+// otherwise (or for a different job id from a login shell) the job is looked up
+// in GE via qstat.
+func showJob(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
+	id := ""
+	if len(args) > 0 {
+		id = args[0]
+	}
+
+	// Prefer the fabricated layout when it is present and describes the requested
+	// job (or no id was given: "show my job").
+	lay, layErr := loadLayout()
+	if layErr == nil && (id == "" || matchesLayout(id, lay)) {
+		return renderLayoutJob(lay, stdout)
+	}
+	if id == "" {
+		// With no id we can only show "my" job from the in-job layout. A layout
+		// that exists but failed to read is a real error, not "not inside a job".
+		if layErr != nil && !errors.Is(layErr, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "scontrol: error: %v\n", layErr)
+			return 1
+		}
+		fmt.Fprintln(stderr, "scontrol: error: no job id specified (and not inside a job)")
 		return 1
 	}
+
+	// Look the job up in GE. Array-task ids (4711_2) match the base job number and,
+	// when a task is given, that specific task (same rule as squeue, REQ-SQU-002).
+	base, task, _ := strings.Cut(id, "_")
+	out, errOut, exit, err := runner.Run(context.Background(), "qstat", "-xml", "-u", "*")
+	if err != nil {
+		fmt.Fprintf(stderr, "scontrol: error: running qstat: %v\n", err)
+		return 1
+	}
+	if exit != 0 {
+		msg := strings.TrimSpace(string(errOut))
+		if msg == "" {
+			msg = "qstat failed"
+		}
+		fmt.Fprintf(stderr, "scontrol: error: %s\n", msg)
+		return 1
+	}
+	rows, err := gedata.ParseQstatXML(out)
+	if err != nil {
+		fmt.Fprintf(stderr, "scontrol: error: parsing qstat output: %v\n", err)
+		return 1
+	}
+	for _, r := range rows {
+		if r.JobID != base || (task != "" && r.TaskID != task) {
+			continue
+		}
+		return renderGEJob(id, r, stdout)
+	}
+	fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
+	return 1
+}
+
+// matchesLayout reports whether id (possibly an array-task id) names the job the
+// fabricated layout describes.
+func matchesLayout(id string, lay *layout.Layout) bool {
+	base, _, _ := strings.Cut(id, "_")
+	return base == strconv.FormatInt(lay.Job.JobID, 10)
+}
+
+func renderLayoutJob(lay *layout.Layout, stdout io.Writer) int {
 	hosts := make([]string, len(lay.Nodes))
 	for i, n := range lay.Nodes {
 		hosts[i] = n.Host
 	}
-	fields := [][2]string{
+	printFields(stdout, [][2]string{
 		{"JobId", strconv.FormatInt(lay.Job.JobID, 10)},
 		{"JobName", lay.Job.Name},
 		{"JobState", "RUNNING"},
@@ -101,14 +159,36 @@ func showJob(args []string, stdout, stderr io.Writer) int {
 		{"Partition", lay.Job.Partition},
 		{"UserId", fmt.Sprintf("%s(%d)", lay.Job.User, lay.Job.UID)},
 		{"WorkDir", lay.Job.SubmitDir},
+	})
+	return 0
+}
+
+// renderGEJob renders the minimal record available from `qstat -xml`: the master
+// queue instance gives the partition (queue) and node; a pending job has none.
+func renderGEJob(id string, r gedata.JobRow, stdout io.Writer) int {
+	queue, host, _ := strings.Cut(r.Queue, "@")
+	nodelist := host
+	if nodelist == "" {
+		nodelist = "(null)" // not yet scheduled onto a node
 	}
+	printFields(stdout, [][2]string{
+		{"JobId", id},
+		{"JobName", r.Name},
+		{"JobState", gedata.FullState(gedata.MapState(r.State))},
+		{"NodeList", nodelist},
+		{"NumTasks", strconv.Itoa(r.Slots)},
+		{"Partition", queue},
+		{"UserId", r.User},
+	})
+	return 0
+}
+
+func printFields(stdout io.Writer, fields [][2]string) {
 	parts := make([]string, len(fields))
 	for i, f := range fields {
 		parts[i] = f[0] + "=" + f[1]
 	}
 	fmt.Fprintln(stdout, strings.Join(parts, " "))
-	_ = args
-	return 0
 }
 
 // requeueCmd maps a SLURM job (or array-task) id to a GE reschedule (REQ-SCT-002).

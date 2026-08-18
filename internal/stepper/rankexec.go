@@ -21,7 +21,8 @@ const rankFailExit = 127
 // RankExec is the per-rank trampoline (D-3). The stepper spawns it as
 // `<self> rank-exec --cpuset <m> --chdir <d> -- <cmd>...` with the rank's
 // environment set on the child and a status pipe on fd 3. It locks the OS
-// thread (so affinity and exec share one thread), applies the CPU mask, sets
+// thread (so affinity and exec share one thread), applies the CPU mask (best-
+// effort: a warning, not a failure, if it cannot be set), sets
 // SLURM_TASK_PID to its own PID (execve preserves it, B04), chdirs, and execs
 // the command. Any pre-exec failure is written to the status pipe so the stepper
 // can emit a RANK_FAIL frame.
@@ -50,7 +51,10 @@ func RankExec(args []string) int {
 
 	if cpuset != "" {
 		if err := setAffinity(cpuset); err != nil {
-			return fail("affinity: " + err.Error())
+			// Best-effort binding: a granted cpuset that cannot be applied (e.g. it
+			// references CPUs absent in this environment, or affinity is restricted)
+			// must not kill the rank. Warn and run unpinned, like SLURM does.
+			fmt.Fprintf(os.Stderr, "slurm-shim: warning: could not set CPU affinity to %q: %v\n", cpuset, err)
 		}
 	}
 	if chdir != "" {

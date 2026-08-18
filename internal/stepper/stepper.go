@@ -73,8 +73,9 @@ type stepper struct {
 	self   string
 	stderr io.Writer
 
-	mu    sync.Mutex
-	procs []*rankProc
+	mu      sync.Mutex
+	procs   []*rankProc
+	killSig syscall.Signal // latched terminating signal for ranks still spawning
 }
 
 type rankProc struct {
@@ -192,7 +193,11 @@ func (s *stepper) spawn(r proto.RankSpec, outFile *outputFiles, exits chan<- ran
 	rp := &rankProc{spec: r, cmd: cmd, pgid: cmd.Process.Pid}
 	s.mu.Lock()
 	s.procs = append(s.procs, rp)
+	pending := s.killSig // a kill may have arrived while this rank was spawning
 	s.mu.Unlock()
+	if pending != 0 {
+		_ = syscall.Kill(-rp.pgid, pending)
+	}
 
 	// pumps tracks this rank's output goroutines so its RANK_EXIT is not sent
 	// until all of its output has been framed (otherwise srun could see the exit
@@ -286,6 +291,12 @@ func (s *stepper) readControl() {
 func (s *stepper) forwardSignal(sig syscall.Signal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sig == syscall.SIGTERM || sig == syscall.SIGKILL {
+		// Latch it: the kill can race rank spawning under load, so a rank that
+		// registers after this must be killed too (spawn checks killSig). Both
+		// sides run under s.mu, so no rank can slip through unsignaled.
+		s.killSig = sig
+	}
 	for _, p := range s.procs {
 		_ = syscall.Kill(-p.pgid, sig)
 	}
