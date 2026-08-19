@@ -1,16 +1,22 @@
+
+
 # slurm-shim
 
 **Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run unmodified AI workloads.**
 
 `sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing `torchrun` launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration.
 
-> **Status: pre-release / not yet cluster-validated.** The six client commands and the `SLURM_*` environment contract are implemented and covered by a green unit-test suite, and the launch mechanics have been grounded against real Open Cluster Scheduler 9.0.10 output (RSMAP, `qstat`, `qconf`, `qrsh` signatures). What has **not** happened yet is an end-to-end run on a live multi-GPU cluster. Treat every "supported" below as "implemented + unit-tested", not "battle-tested". If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+> **Status: pre-release
+
+** The six client commands and the `SLURM_*` environment contract are implemented and covered by a green unit-test suite, and the launch mechanics have been grounded against real Open Cluster Scheduler 9.0.10 output (RSMAP, `qstat`, `qconf`, `qrsh` signatures). What has **not** happened yet is an end-to-end run on a live multi-GPU cluster. Treat every "supported" below as "implemented + unit-tested", not "battle-tested". If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+
+https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
 ---
 
 ## Why
 
-Among open-source schedulers, SLURM has become the default integration target for AI tooling — `torchrun` tutorials, `submitit`, Hugging Face `accelerate`, and `dask-jobqueue` all assume it out of the box. That's a fact about tool defaults, not about scheduling: production clusters run on a range of schedulers, and the Grid Engine lineage in particular still drives enormous fleets in EDA, life sciences, and engineering — under active development today as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
+Among open-source schedulers, SLURM has become the default integration target for many tooling —  tutorials, `submitit`, Hugging Face `accelerate`, and `dask-jobqueue` assume it out of the box. That's a fact about tool defaults, not about scheduling: production clusters run on a range of schedulers, and the Grid Engine lineage in particular still drives fleets in EDA, life sciences, and engineering — under active development today as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
 
 This shim bridges the two worlds: keep your SLURM-native tooling, run it on OCS. It is a single static Go binary (busybox-style symlink dispatch) that shells out to the GE clients (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`) and fabricates the SLURM environment inside GE PE jobs.
 
@@ -65,7 +71,7 @@ make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
 
 Pick the OCS version with `OCS_VERSION=9.0.10 make cluster-up`. The cluster comes from the sibling [`quickinstall`](https://github.com/hpc-gridware/quickinstall) repo **unmodified** (cloned on demand, not vendored). See [`test/cluster/`](test/cluster/) for details and [`test/e2e/`](test/e2e/) for the `make e2e` end-to-end + version-compatibility suite.
 
-## What is implemented (unit-tested, not yet live-validated)
+## What is implemented (unit-tested, partially cluster validated)
 
 Grounded in the [compatibility matrix](#compatibility-matrix) below:
 
