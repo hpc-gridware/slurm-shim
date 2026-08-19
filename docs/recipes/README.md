@@ -10,6 +10,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 
 | Recipe | Stack | Pattern |
 |--------|-------|---------|
+| [`lightning/`](lightning/) | PyTorch Lightning (multi-node DDP) | `srun python train.py`; Lightning's `SLURMEnvironment` self-configures from the shim's env |
 | [`deepspeed/`](deepspeed/) | DeepSpeed (and any torch.distributed trainer) | `srun --ntasks-per-node=1 torchrun` per node |
 | [`ray/`](ray/) | Ray (Train / Tune / Serve, vLLM multi-node) | `srun` bootstraps a Ray head + workers |
 | [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling |
