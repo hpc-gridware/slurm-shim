@@ -16,6 +16,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 | [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling |
 | [`submitit/`](submitit/) | submitit (submit Python functions, arrays) | `sbatch`/`sacct`/`srun`; 0-based arrays, result-pickle tracking |
 | [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` |
+| [`jax/`](jax/) | JAX (multi-process, multi-node) | `srun python train.py`; `jax.distributed.initialize()` auto-detects from five `SLURM_*` vars -- no PMI, no glue |
 
 ## The one thing to understand first
 
@@ -53,9 +54,18 @@ how you shape the step:
   (`CUDA_VISIBLE_DEVICES=0,1,...`). A `torchrun --nproc_per_node=$SLURM_GPUS_ON_NODE`
   under it forks workers that index devices by `LOCAL_RANK` -- the classic model.
 
-- **One task per GPU.** `srun --ntasks-per-node=8 --gpus-per-task=1` masks each
-  task to **one** GPU (`CUDA_VISIBLE_DEVICES=<one id>`, seen as `cuda:0`). Your
-  code must then use device 0, **not** `LOCAL_RANK`, to select the GPU.
+- **One task per GPU, whole set visible (JAX, and anything selecting by local
+  rank).** `srun --ntasks-per-node=8` with GPUs requested **per node** starts eight
+  tasks that each still see all eight devices; the framework picks its own by
+  `SLURM_LOCALID`/`LOCAL_RANK`. This is SLURM's default -- no binding unless you
+  ask -- and it is what [`jax/`](jax/) requires.
 
-The recipes here use the first model because it matches how torchrun-based stacks
-(DeepSpeed, Accelerate, Megatron, most trainers) expect the world to look.
+- **One task per GPU, masked.** `srun --ntasks-per-node=8 --gpus-per-task=1` (or
+  `--gpu-bind=per_task`) masks each task to **one** GPU (`CUDA_VISIBLE_DEVICES=<one id>`,
+  seen as `cuda:0`). Your code must then use device 0, **not** `LOCAL_RANK`. Do not
+  use this for JAX: it indexes by `SLURM_LOCALID` and ranks above 0 would fail.
+
+Most recipes here use the first model because it matches how torchrun-based stacks
+(DeepSpeed, Accelerate, Megatron, most trainers) expect the world to look. A site
+that wants the shim to split a node's grant among tasks by default (its behavior
+before SLURM parity) can set `gpu.bind: per-task` in the config.

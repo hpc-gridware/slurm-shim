@@ -4,10 +4,12 @@ package srun
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/pflag"
 
+	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
 )
@@ -24,6 +26,7 @@ type options struct {
 	killFlag    string // "" unset, else "0"/"1" (-K optional value)
 	strictFlags bool
 	version     bool
+	gpuBind     string // --gpu-bind: "" unset, "none", "per_task[:n]"
 	// warnings accumulated during parsing (unknown flags, etc.).
 	warnings []string
 }
@@ -47,6 +50,7 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		cpusPerTask  = fs.IntP("cpus-per-task", "c", 0, "")
 		nodelist     = fs.StringP("nodelist", "w", "", "")
 		gpusPerTask  = fs.Int("gpus-per-task", 0, "")
+		gpuBind      = fs.String("gpu-bind", "", "")
 		export       = fs.String("export", "ALL", "")
 		output       = fs.StringP("output", "o", "", "")
 		errorPat     = fs.StringP("error", "e", "", "")
@@ -93,6 +97,7 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		killFlag:    *kill,
 		strictFlags: strict,
 		version:     *version,
+		gpuBind:     *gpuBind,
 	}
 	if *nodelist != "" {
 		hosts, err := encoders.ExpandNodelist(*nodelist)
@@ -136,6 +141,42 @@ func unknownFlags(args []string, fs *pflag.FlagSet) []string {
 		out = append(out, a)
 	}
 	return out
+}
+
+// applyGPUBind resolves how the step binds devices to tasks and folds the result
+// into the step request. Precedence follows SLURM: an explicit --gpu-bind wins,
+// then SLURM_GPU_BIND (which is how an #SBATCH --gpu-bind directive reaches the
+// step), then the site's gpu.bind config. "none" keeps the node's whole grant
+// visible to every task (SLURM's default); "per_task[:n]" binds each task to its
+// own devices. Unsupported forms (map_gpu, mask_gpu, closest) warn and fall back
+// to the default rather than silently pretending to bind.
+func applyGPUBind(opt *options, cfg *config.Config, envBind string) {
+	spec := strings.TrimSpace(opt.gpuBind)
+	if spec == "" {
+		spec = strings.TrimSpace(envBind)
+	}
+	if spec == "" {
+		if cfg != nil && cfg.GPU.Bind == "per-task" {
+			opt.req.AutoDivideGPUs = true
+		}
+		return
+	}
+
+	// SLURM allows a "verbose," prefix on any form.
+	spec = strings.TrimPrefix(spec, "verbose,")
+	name, value, _ := strings.Cut(spec, ":")
+	switch strings.ToLower(name) {
+	case "none":
+		opt.req.AutoDivideGPUs = false
+	case "per_task", "per-task":
+		opt.req.AutoDivideGPUs = true
+		if n, err := strconv.Atoi(value); err == nil && n > 0 && opt.req.GPUsPerTask <= 0 {
+			opt.req.GPUsPerTask = n
+		}
+	default:
+		opt.warnings = append(opt.warnings,
+			"--gpu-bind="+spec+" is not supported (slurm-shim); using the default binding")
+	}
 }
 
 func firstNonEmpty(a, b string) string {

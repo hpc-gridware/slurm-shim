@@ -44,6 +44,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, version.String(cfg.CompatVersion))
 		return 0
 	}
+	// --gpu-bind / SLURM_GPU_BIND / gpu.bind decide whether tasks are bound to a
+	// device subset; resolve before placement, and before warnings are drained.
+	applyGPUBind(opt, cfg, os.Getenv("SLURM_GPU_BIND"))
 	for _, w := range opt.warnings {
 		fmt.Fprintf(stderr, "srun: warning: %s\n", w)
 	}

@@ -87,8 +87,23 @@ var _ = Describe("Step placement", func() {
 		Expect(err).To(MatchError(ContainSubstring("exceeds")))
 	})
 
-	It("partitions GPUs per rank by default without --gpus-per-task [REQ-GPU-002]", func() {
+	It("keeps the node's whole grant visible to every rank by default [REQ-GPU-002]", func() {
+		// SLURM does not bind tasks to a device subset unless asked, and JAX
+		// (local_device_ids=[SLURM_LOCALID]) and torch (LOCAL_RANK) index into
+		// the visible list, so every rank must see all of it.
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Ranks[1].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Ranks[2].GPUs).To(Equal([]int{0, 1})) // node002, local 0
+		Expect(p.Ranks[3].GPUs).To(Equal([]int{0, 1}))
+		// The one notice marks where this differs from earlier shim releases.
+		Expect(p.Warnings).To(HaveLen(1))
+		Expect(p.Warnings[0]).To(ContainSubstring("SLURM default"))
+	})
+
+	It("partitions per rank under legacy auto-division [REQ-GPU-002]", func() {
+		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2, AutoDivideGPUs: true})
 		Expect(err).NotTo(HaveOccurred())
 		// 2 GPUs, 2 tasks per node -> one device per rank on each node.
 		Expect(p.Ranks[0].GPUs).To(Equal([]int{0}))
@@ -98,14 +113,21 @@ var _ = Describe("Step placement", func() {
 		Expect(p.Warnings).To(BeEmpty())
 	})
 
-	It("shares GPUs and warns once when tasks exceed GPUs [REQ-GPU-002]", func() {
-		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 4})
+	It("shares GPUs and warns once when tasks exceed GPUs under auto-division [REQ-GPU-002]", func() {
+		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 4, AutoDivideGPUs: true})
 		Expect(err).NotTo(HaveOccurred())
 		// 2 GPUs, 4 tasks per node -> every rank sees both devices.
 		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
 		Expect(p.Ranks[3].GPUs).To(Equal([]int{0, 1}))
 		Expect(p.Warnings).To(HaveLen(1))
 		Expect(p.Warnings[0]).To(ContainSubstring("all ranks share"))
+	})
+
+	It("emits no notice when fewer GPUs than ranks (behavior unchanged there)", func() {
+		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 4})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Warnings).To(BeEmpty())
 	})
 
 	It("assigns no GPUs when the allocation granted none", func() {

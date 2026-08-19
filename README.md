@@ -75,6 +75,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - The full per-rank `SLURM_*` environment, including compressed nodelists and per-rank `CUDA_VISIBLE_DEVICES` from GE RSMAP grants.
 
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
+- **JAX** (multi-process, multi-node) via [`docs/recipes/jax/`](docs/recipes/jax/) — `jax.distributed.initialize()` auto-detects the shim's environment with no glue and no PMI; verified live forming a 3-node process group on the OCS test cluster.
 
 Partial / not yet: `dask-jobqueue`, Nextflow/Snakemake executors — see the matrix.
 
@@ -114,6 +115,8 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--chdir` / `-D` | ✅ | `qsub -wd`; without it the job runs in the **submit directory** (`qsub -cwd`), matching SLURM's default (GE's own default would be `$HOME`) |
 | `--wrap` | ✅ | wraps the command string in a submitted script |
 | `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |
+| `--gpus-per-task` | ✅ | scaled to a per-node request (`gpus-per-task x ntasks-per-node`) for the same `-l` path, and binds each task to its own devices (as SLURM's implied `--gpu-bind=per_task`) |
+| `--gpu-bind` | ✅ | `none` (SLURM default: the node's whole grant stays visible to every task) or `per_task[:n]`; also honored as an `#SBATCH` directive via `SLURM_GPU_BIND` |
 | `--mem` / `--mem-per-cpu` | ✅ | `qsub -l <memory_complex>=<n>` (default `h_vmem`; `4GB`->`4G`). Note `h_vmem` is virtual-address-space enforced — set `memory_complex` to `mem_free`/`h_rss` on GPU clusters |
 | `--time` / `-t` | ✅ | `qsub -l h_rt=<sec>` (with `-l s_rt` grace when `--signal` gives a lead time) |
 | `--array` | ✅ | `qsub -t 1-<n>` + `-tc` (from `%p`); SLURM 0-based indices are preserved end-to-end (env, filenames, `sacct`) |
@@ -193,6 +196,8 @@ gpu:
   discovery: qstat-gres           # RSMAP grant -> CUDA_VISIBLE_DEVICES
   isolation: shim                 # shim (per-rank masking) | cgroup (GE devices_allow)
   gres_complex: gpu
+  bind: none                      # none (SLURM default: whole grant visible to every
+                                  # task) | per-task (split the grant among tasks)
 memory_complex: h_vmem            # source for SLURM_MEM_PER_NODE ("" disables)
 export_master_addr: false         # set true to publish MASTER_ADDR/MASTER_PORT
 launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)

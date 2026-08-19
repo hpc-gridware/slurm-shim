@@ -257,6 +257,47 @@ func writeScriptTop2(body string) string {
 	return path
 }
 
+var _ = Describe("sbatch GPU request translation [JAX]", func() {
+	submitGPU := func(directives string) []string {
+		script := writeScriptTop2("#!/bin/bash\n#SBATCH -p gpu\n" + directives + "\nsrun true\n")
+		var captured []string
+		rc := run(fakeQsub("90", &captured), testCfg(), "/shim", []string{script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		return captured
+	}
+
+	It("translates --gpus-per-node to the gres complex", func() {
+		Expect(submitGPU("#SBATCH --gpus-per-node=4")).To(ContainElement(ContainSubstring("gpu=4")))
+	})
+
+	It("scales --gpus-per-task by tasks per node (was silently dropped -> zero GPUs)", func() {
+		captured := submitGPU("#SBATCH --gpus-per-task=1 --ntasks-per-node=8")
+		Expect(captured).To(ContainElement(ContainSubstring("gpu=8")))
+	})
+
+	It("defaults --gpus-per-task to one task per node when --ntasks-per-node is absent", func() {
+		Expect(submitGPU("#SBATCH --gpus-per-task=2")).To(ContainElement(ContainSubstring("gpu=2")))
+	})
+
+	It("publishes SLURM_GPU_BIND=per_task for --gpus-per-task so the step binds", func() {
+		captured := submitGPU("#SBATCH --gpus-per-task=1 --ntasks-per-node=8")
+		Expect(captured).To(ContainElements("-v", "SLURM_GPU_BIND=per_task:1"))
+		Expect(captured).To(ContainElements("-v", "SLURM_GPUS_PER_TASK=1"))
+	})
+
+	It("passes an explicit #SBATCH --gpu-bind through to the step", func() {
+		captured := submitGPU("#SBATCH --gpus-per-node=8 --gpu-bind=none")
+		Expect(captured).To(ContainElements("-v", "SLURM_GPU_BIND=none"))
+	})
+
+	It("requests no GPUs when nothing asked for them", func() {
+		captured := submitGPU("#SBATCH -N 1")
+		for _, a := range captured {
+			Expect(a).NotTo(ContainSubstring("gpu="))
+		}
+	})
+})
+
 var _ = Describe("sbatch output-path translation [submitit Phase 2]", func() {
 	DescribeTable("rewrites SLURM %-verbs to GE pseudo-variables",
 		func(in, want string) { Expect(translateOutputPath(in)).To(Equal(want)) },

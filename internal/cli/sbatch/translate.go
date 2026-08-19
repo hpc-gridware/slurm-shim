@@ -111,6 +111,15 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 		// requeue then map to `qmod -rj`, which delivers SIGUSR2 and reschedules.
 		args = append(args, "-notify", "-r", "y")
 	}
+	// Carry the task/device binding intent to the step: srun reads SLURM_GPU_BIND
+	// (as it would on SLURM, where an #SBATCH --gpu-bind propagates that way), and
+	// --gpus-per-task implies per-task binding.
+	if b := gpuBindSpec(opt); b != "" {
+		args = append(args, "-v", "SLURM_GPU_BIND="+b)
+	}
+	if opt.haveGPUsPerTask {
+		args = append(args, "-v", "SLURM_GPUS_PER_TASK="+strconv.Itoa(opt.gpusPerTask))
+	}
 	if l := buildResourceList(cfg, opt); l != "" {
 		args = append(args, "-l", l)
 	}
@@ -150,6 +159,37 @@ func exportArgs(spec string) []string {
 	return args
 }
 
+// gpuBindSpec is the SLURM_GPU_BIND value to publish for the job: an explicit
+// --gpu-bind wins, otherwise --gpus-per-task implies per_task binding (as it
+// does on SLURM). Empty when neither was given, leaving the site default.
+func gpuBindSpec(opt options) string {
+	if b := strings.TrimSpace(opt.gpuBind); b != "" {
+		return b
+	}
+	if opt.haveGPUsPerTask {
+		return "per_task:" + strconv.Itoa(opt.gpusPerTask)
+	}
+	return ""
+}
+
+// gpuRequest resolves the per-node GPU count to request. --gpus/--gpus-per-node
+// are already per-node; --gpus-per-task is per task, so it scales by the tasks
+// placed on a node. Returns ok=false when no GPU request was made.
+func gpuRequest(opt options) (int, bool) {
+	if opt.haveGPUs {
+		return opt.gpus, true
+	}
+	if opt.haveGPUsPerTask {
+		perNode := opt.ntasksPerNode
+		if !opt.havePerNode {
+			// resolveGeometry's default is one task per node.
+			perNode = 1
+		}
+		return opt.gpusPerTask * perNode, true
+	}
+	return 0, false
+}
+
 // buildResourceList assembles a single comma-joined GE -l value from the mapped
 // resource requests. Wall time -> h_rt (with s_rt as a pre-kill grace when a
 // --signal lead time is given, so the job gets a catchable SIGUSR1 before the
@@ -166,8 +206,8 @@ func buildResourceList(cfg *config.Config, opt options) string {
 	if opt.mem != "" && cfg.MemoryComplex != "" {
 		l = append(l, cfg.MemoryComplex+"="+opt.mem)
 	}
-	if opt.haveGPUs && cfg.GPU.GresComplex != "" {
-		l = append(l, cfg.GPU.GresComplex+"="+strconv.Itoa(opt.gpus))
+	if n, ok := gpuRequest(opt); ok && cfg.GPU.GresComplex != "" {
+		l = append(l, cfg.GPU.GresComplex+"="+strconv.Itoa(n))
 	}
 	return strings.Join(l, ",")
 }

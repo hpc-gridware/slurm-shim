@@ -15,6 +15,10 @@ type StepRequest struct {
 	CPUsPerTask  int      // -c
 	GPUsPerTask  int      // --gpus-per-task
 	Nodelist     []string // -w, expanded host names
+	// AutoDivideGPUs splits the node's grant evenly among local ranks when no
+	// --gpus-per-task was given (the shim's legacy behavior, gpu.bind: per-task).
+	// Off by default: SLURM leaves the whole grant visible to every task.
+	AutoDivideGPUs bool
 }
 
 // StepNode is one host participating in a step, in step-nodelist order.
@@ -68,7 +72,7 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 		cpt = 1
 	}
 
-	ranks, warns, err := distribute(nodes, perNodeCap, ntasks, cpt, req.GPUsPerTask)
+	ranks, warns, err := distribute(nodes, perNodeCap, ntasks, cpt, req.GPUsPerTask, req.AutoDivideGPUs)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +148,7 @@ func capacities(lay *layout.Layout, nodes []StepNode, req StepRequest) []int {
 // distribute block-fills ranks node-by-node to capacity (sec. 8.4). Exceeding
 // total capacity fails before any launch (REQ-RUN-008); a GPU request beyond a
 // node's grant fails too (SI-31).
-func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int) ([]PlacedRank, []string, error) {
+func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int, autoDivideGPUs bool) ([]PlacedRank, []string, error) {
 	total := 0
 	for _, c := range caps {
 		total += c
@@ -169,19 +173,29 @@ func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int) ([]P
 			break
 		}
 
-		// Each node's granted devices are partitioned contiguously among its
-		// local ranks (REQ-GPU-002). An explicit --gpus-per-task that exceeds the
-		// grant is an error; the flag-less default derives the per-rank count.
+		// Device visibility per local rank (REQ-GPU-002). An explicit
+		// --gpus-per-task that exceeds the grant is an error; without one, SLURM
+		// leaves the whole grant visible unless the site opted into auto-division.
 		if gpusPerTask > 0 && gpusPerTask*nlocal > len(nodes[ni].GPUs) {
 			return nil, nil, fmt.Errorf(
 				"srun: error: --gpus-per-task=%d exceeds the %d GPUs granted on %s",
 				gpusPerTask, len(nodes[ni].GPUs), nodes[ni].Host)
 		}
-		gpuPerRank, shared := AssignDevices(nodes[ni].GPUs, nlocal, gpusPerTask)
+		gpuPerRank, shared := AssignDevices(nodes[ni].GPUs, nlocal, gpusPerTask, autoDivideGPUs)
 		if shared && len(warns) == 0 {
 			warns = append(warns, fmt.Sprintf(
 				"srun: warning: %d GPUs but %d tasks on %s; all ranks share the node's GPUs",
 				len(nodes[ni].GPUs), nlocal, nodes[ni].Host))
+		}
+		// Notice only where the SLURM-parity default changed what earlier shim
+		// releases did (multi-rank node whose grant would have been split), so a
+		// site that relied on auto-division sees it rather than silently getting
+		// full visibility.
+		if !autoDivideGPUs && gpusPerTask <= 0 && nlocal > 1 && len(nodes[ni].GPUs) >= nlocal && len(warns) == 0 {
+			warns = append(warns, fmt.Sprintf(
+				"srun: notice: all %d ranks on %s see the node's %d GPUs (SLURM default); "+
+					"use --gpus-per-task or gpu.bind: per-task to give each rank its own",
+				nlocal, nodes[ni].Host, len(nodes[ni].GPUs)))
 		}
 		for local := 0; local < nlocal; local++ {
 			ranks = append(ranks, PlacedRank{

@@ -32,15 +32,22 @@ type options struct {
 
 	// Resource / signal / dependency requests (Phase 4). Mapped to GE -l /
 	// -hold_jid in buildQsubArgs, which resolves the site's complex names.
-	haveTime    bool
-	timeSec     int
-	mem         string // GE-formatted memory value ("4G"), "" if unset
-	haveGPUs    bool
-	gpus        int
-	haveSignal  bool
-	signalDelay int      // seconds before the time limit to deliver the signal
-	holdJIDs    []string // predecessor ids for -hold_jid
-	exportSpec  string   // --export value; "" means the SLURM default ALL
+	haveTime bool
+	timeSec  int
+	mem      string // GE-formatted memory value ("4G"), "" if unset
+	haveGPUs bool
+	gpus     int
+	// --gpus-per-task is a per-task request; the node-level GPU count it implies
+	// is gpusPerTask * ntasks-per-node. It also binds each task to its own
+	// devices (SLURM implies --gpu-bind=per_task), carried to the step via
+	// SLURM_GPUS_PER_TASK / SLURM_GPU_BIND.
+	haveGPUsPerTask bool
+	gpusPerTask     int
+	gpuBind         string
+	haveSignal      bool
+	signalDelay     int      // seconds before the time limit to deliver the signal
+	holdJIDs        []string // predecessor ids for -hold_jid
+	exportSpec      string   // --export value; "" means the SLURM default ALL
 
 	script     string   // script file path (first non-flag token)
 	scriptArgs []string // tokens after the script
@@ -55,6 +62,7 @@ var knownLong = map[string]bool{
 	"chdir": true, "wrap": true, "array": true,
 	"time": true, "mem": true, "mem-per-cpu": true,
 	"gpus": true, "gpus-per-node": true, "gres": true,
+	"gpus-per-task": true, "gpu-bind": true,
 	"signal": true, "dependency": true, "export": true,
 	// Accepted and intentionally ignored (GE has no distinct behavior to map):
 	"open-mode": true, "wckey": true,
@@ -226,6 +234,14 @@ func setLong(opt *options, name, val string) error {
 			return err
 		}
 		opt.gpus, opt.haveGPUs = n, true
+	case "gpus-per-task":
+		n, err := parseGPUCount(val)
+		if err != nil {
+			return err
+		}
+		opt.gpusPerTask, opt.haveGPUsPerTask = n, true
+	case "gpu-bind":
+		opt.gpuBind = val
 	case "gres":
 		if n, ok := gresGPUCount(val); ok {
 			opt.gpus, opt.haveGPUs = n, true

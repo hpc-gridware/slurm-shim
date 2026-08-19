@@ -56,6 +56,11 @@ type GPU struct {
 	Discovery   string `yaml:"discovery"`
 	Isolation   string `yaml:"isolation"`
 	GresComplex string `yaml:"gres_complex"`
+	// Bind selects what a task sees when no --gpus-per-task is given.
+	// "none" (default) matches SLURM: the node's whole grant stays visible to
+	// every task, which frameworks selecting by local rank (JAX, torchrun)
+	// require. "per-task" restores the shim's legacy even split.
+	Bind string `yaml:"bind"`
 }
 
 // Config is the full shim configuration.
@@ -139,6 +144,7 @@ func Default() *Config {
 			Discovery:   "qstat-gres",
 			Isolation:   "shim",
 			GresComplex: "gpu",
+			Bind:        "none",
 		},
 	}
 }

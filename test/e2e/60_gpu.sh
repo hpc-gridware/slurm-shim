@@ -14,7 +14,10 @@ cat >"$job" <<'EOF'
 . /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 echo "GPUSONNODE=$SLURM_GPUS_ON_NODE"
 echo "JOBGPUS=$SLURM_JOB_GPUS"
-srun -n 2 bash -c 'echo "cuda=$CUDA_VISIBLE_DEVICES rank=$SLURM_PROCID"'
+# Default binding: SLURM leaves the node's whole grant visible to every task.
+srun -n 2 bash -c 'echo "default localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES]"'
+# Explicit per-task binding still gives each rank its own device.
+srun -n 2 --gpus-per-task=1 bash -c 'echo "pertask localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES]"'
 EOF
 
 remote=/home/gridware/e2e-60-gpu.sh
@@ -29,6 +32,19 @@ if [ -n "$id" ]; then pass "gpu job submitted (id $id)"; else fail "qsub returne
 res="$(jobout "$id" "$out")"
 assert_contains "$res" "GPUSONNODE=2" "SLURM_GPUS_ON_NODE == 2"
 assert_contains "$res" "JOBGPUS=0,1" "SLURM_JOB_GPUS lists both devices"
-assert_contains "$res" "cuda=0" "a rank sees CUDA device 0"
-assert_contains "$res" "cuda=1" "a rank sees CUDA device 1"
+
+# Delimited exact matches: a substring test cannot tell "0" from "0,1", which is
+# precisely the distinction between the two binding models.
+assert_contains "$res" "default localid=0 cuda=[0,1]" "unbound rank 0 sees the whole grant"
+assert_contains "$res" "default localid=1 cuda=[0,1]" "unbound rank 1 sees the whole grant"
+assert_contains "$res" "pertask localid=0 cuda=[0]" "--gpus-per-task binds rank 0 to one device"
+assert_contains "$res" "pertask localid=1 cuda=[1]" "--gpus-per-task binds rank 1 to one device"
+
+# The invariant JAX (local_device_ids=[SLURM_LOCALID]) and torch (LOCAL_RANK) need:
+# every local rank must be a valid index into its own visible device list.
+if printf '%s\n' "$res" | grep -q 'default localid=1 cuda=\[0,1\]'; then
+  pass "SLURM_LOCALID indexes within each rank's visible devices"
+else
+  fail "a rank cannot index its own devices by SLURM_LOCALID"
+fi
 finish
