@@ -25,10 +25,16 @@ var _ = Describe("scancel [REQ-SCL-001]", func() {
 		Expect(r.Calls[0].Args).To(Equal([]string{"4711"}))
 	})
 
-	It("maps an array task to qdel -t", func() {
+	It("maps a 0-based array element to the 1-based GE task (job id before -t)", func() {
 		r := &fake.Runner{}
 		Expect(run(r, []string{"4711_2"}, io.Discard, io.Discard)).To(Equal(0))
-		Expect(r.Calls[0].Args).To(Equal([]string{"-t", "2", "4711"}))
+		Expect(r.Calls[0].Args).To(Equal([]string{"4711", "-t", "3"}))
+	})
+
+	It("maps array element 0 to GE task 1 (submitit's scancel N_0)", func() {
+		r := &fake.Runner{}
+		Expect(run(r, []string{"4711_0"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(r.Calls[0].Args).To(Equal([]string{"4711", "-t", "1"}))
 	})
 
 	It("passes -u through to qdel -u", func() {
@@ -43,12 +49,26 @@ var _ = Describe("scancel [REQ-SCL-001]", func() {
 		Expect(r.Calls).To(HaveLen(2))
 	})
 
-	It("warns that --signal is unsupported but still cancels", func() {
+	It("maps --signal (submitit checkpoint-preempt) to qmod -rj reschedule", func() {
 		r := &fake.Runner{}
+		Expect(run(r, []string{"--signal=USR2", "4711"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(r.Calls[0].Name).To(Equal("qmod"))
+		Expect(r.Calls[0].Args).To(Equal([]string{"-rj", "4711"}))
+	})
+
+	It("reschedules a single array element (--signal N_k -> qmod -rj N.<k+1>)", func() {
+		r := &fake.Runner{}
+		Expect(run(r, []string{"-s", "USR2", "4711_0"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(r.Calls[0].Args).To(Equal([]string{"-rj", "4711.1"}))
+	})
+
+	It("treats a repeated reschedule of a finished job as non-fatal (submitit sends two)", func() {
+		r := &fake.Runner{Responder: func(name string, _ []string) fake.Response {
+			return fake.Response{Exit: 1, Stderr: []byte("job 4711 does not exist")}
+		}}
 		var errBuf bytes.Buffer
-		Expect(run(r, []string{"--signal=USR1", "4711"}, io.Discard, &errBuf)).To(Equal(0))
-		Expect(errBuf.String()).To(ContainSubstring("--signal is not supported"))
-		Expect(r.Calls[0].Args).To(Equal([]string{"4711"}))
+		Expect(run(r, []string{"--signal=USR2", "4711"}, io.Discard, &errBuf)).To(Equal(0))
+		Expect(errBuf.String()).To(ContainSubstring("does not exist"))
 	})
 
 	It("surfaces a qdel failure exit code", func() {

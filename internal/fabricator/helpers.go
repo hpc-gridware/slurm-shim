@@ -75,6 +75,62 @@ func zeroIf(v int64, has bool) int64 {
 	return 0
 }
 
+// int64OrDefault reads a numeric env var, returning def when it is unset or
+// non-numeric.
+func int64OrDefault(e envReader, key string, def int64) int64 {
+	s := strings.TrimSpace(e.get(key))
+	if s == "" {
+		return def
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return n
+	}
+	return def
+}
+
+// slurmArray holds the SLURM-facing coordinates of a GE array task.
+type slurmArray struct {
+	taskID   int64
+	min      int64
+	max      int64
+	step     int64
+	count    int64
+	hasRange bool
+}
+
+// slurmArrayCoords maps a GE array task to its SLURM coordinates. GE task ids are
+// 1-based and contiguous over the submitted -t range; SLURM/submitit arrays use
+// their own origin/step (0-based for submitit). sbatch --array records the SLURM
+// origin/step as SLURM_ARRAY_BASE/STEP job env vars, which this reads to convert
+// each GE task back to its SLURM index. When those hints are absent (a native GE
+// array), base/step default to the GE range so the mapping is the identity
+// SLURM index == SGE_TASK_ID, preserving prior behavior (REQ-ENV-010).
+func slurmArrayCoords(e envReader, geTask int64) slurmArray {
+	if !isNumeric(strings.TrimSpace(e.get("SGE_TASK_FIRST"))) {
+		return slurmArray{taskID: geTask} // no usable GE range metadata
+	}
+	geFirst := e.int64("SGE_TASK_FIRST")
+	geStep := int64OrDefault(e, "SGE_TASK_STEPSIZE", 1)
+	if geStep <= 0 {
+		geStep = 1
+	}
+	geLast := e.int64("SGE_TASK_LAST")
+
+	base := int64OrDefault(e, "SLURM_ARRAY_BASE", geFirst)
+	step := int64OrDefault(e, "SLURM_ARRAY_STEP", geStep)
+
+	pos := (geTask - geFirst) / geStep // 0, 1, 2, ...
+	count := (geLast-geFirst)/geStep + 1
+	return slurmArray{
+		taskID:   base + pos*step,
+		min:      base,
+		max:      base + (count-1)*step,
+		step:     step,
+		count:    count,
+		hasRange: true,
+	}
+}
+
 func uniform(counts []int) bool {
 	for i := 1; i < len(counts); i++ {
 		if counts[i] != counts[0] {
@@ -119,6 +175,11 @@ func unsetPreamble() []string {
 		"SLURM_ARRAY_JOB_ID", "SLURM_ARRAY_TASK_ID",
 		"SLURM_ARRAY_TASK_MIN", "SLURM_ARRAY_TASK_MAX",
 		"SLURM_ARRAY_TASK_STEP", "SLURM_ARRAY_TASK_COUNT",
+		// Shim-internal array plumbing (planted by sbatch --array via qsub -v):
+		// scrub so a nested job cannot inherit a stale origin/step and shift its
+		// own array index. The fabricator reads these from its own env before this
+		// preamble is emitted, so clearing them here does not affect the current job.
+		"SLURM_ARRAY_BASE", "SLURM_ARRAY_STEP",
 		"SLURM_JOB_NUM_NODES", "SLURM_NNODES",
 		"SLURM_JOB_NODELIST", "SLURM_NODELIST",
 		"SLURM_TASKS_PER_NODE", "SLURM_NTASKS", "SLURM_NPROCS",
@@ -155,16 +216,13 @@ func buildTableA(e envReader, cfg *config.Config, ns nodeSet, geom plan.TaskGeom
 
 	if hasTask {
 		add("SLURM_ARRAY_JOB_ID", jobID)
-		add("SLURM_ARRAY_TASK_ID", strconv.FormatInt(taskID, 10))
-		if first := strings.TrimSpace(e.get("SGE_TASK_FIRST")); isNumeric(first) {
-			last := strings.TrimSpace(e.get("SGE_TASK_LAST"))
-			step := strings.TrimSpace(e.get("SGE_TASK_STEPSIZE"))
-			add("SLURM_ARRAY_TASK_MIN", first)
-			add("SLURM_ARRAY_TASK_MAX", last)
-			add("SLURM_ARRAY_TASK_STEP", step)
-			if c := arrayCount(first, last, step); c != "" {
-				add("SLURM_ARRAY_TASK_COUNT", c)
-			}
+		arr := slurmArrayCoords(e, taskID)
+		add("SLURM_ARRAY_TASK_ID", strconv.FormatInt(arr.taskID, 10))
+		if arr.hasRange {
+			add("SLURM_ARRAY_TASK_MIN", strconv.FormatInt(arr.min, 10))
+			add("SLURM_ARRAY_TASK_MAX", strconv.FormatInt(arr.max, 10))
+			add("SLURM_ARRAY_TASK_STEP", strconv.FormatInt(arr.step, 10))
+			add("SLURM_ARRAY_TASK_COUNT", strconv.FormatInt(arr.count, 10))
 		}
 	}
 
@@ -306,17 +364,6 @@ func isNumeric(s string) bool {
 	}
 	_, err := strconv.ParseInt(s, 10, 64)
 	return err == nil
-}
-
-// arrayCount computes floor((last-first)/step)+1 (A05).
-func arrayCount(first, last, step string) string {
-	f, e1 := strconv.Atoi(first)
-	l, e2 := strconv.Atoi(last)
-	s, e3 := strconv.Atoi(step)
-	if e1 != nil || e2 != nil || e3 != nil || s == 0 {
-		return ""
-	}
-	return strconv.Itoa((l-f)/s + 1)
 }
 
 func osReadFile(path string) ([]byte, error) { return os.ReadFile(path) }

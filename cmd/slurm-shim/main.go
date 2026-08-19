@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	envcmd "github.com/hpc-gridware/slurm-shim/internal/cli/env"
+	"github.com/hpc-gridware/slurm-shim/internal/cli/sacct"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/sbatch"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/scancel"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/scontrol"
@@ -30,6 +31,7 @@ import (
 var commands = map[string]string{
 	"srun":     "srun",
 	"sbatch":   "sbatch",
+	"sacct":    "sacct",
 	"scancel":  "scancel",
 	"scontrol": "scontrol",
 	"squeue":   "squeue",
@@ -96,6 +98,8 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return srun.Run(args, stdout, stderr)
 	case "sbatch":
 		return sbatch.Run(args, stdout, stderr)
+	case "sacct":
+		return sacct.Run(args, stdout, stderr)
 	case "scontrol":
 		return scontrol.Run(args, stdout, stderr)
 	case "scancel":

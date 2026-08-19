@@ -79,7 +79,7 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	}
 	defer cleanup()
 
-	qargs := buildQsubArgs(opt, part, slots)
+	qargs := buildQsubArgs(cfg, opt, part, slots)
 	qargs = append(qargs, scriptPath)
 	qargs = append(qargs, opt.scriptArgs...)
 

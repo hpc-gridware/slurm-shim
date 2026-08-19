@@ -21,7 +21,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
 # The qrsh envelope carries the master's absolute shim path as the remote argv0
 # (REQ-RUN-009), so the binary must live at the SAME path on every node.
-cmds=(srun sbatch squeue scancel scontrol sinfo slurm-shim-env slurm-shim-stepper)
+cmds=(srun sbatch sacct squeue scancel scontrol sinfo slurm-shim-env slurm-shim-stepper)
 for node in "${NODES[@]}"; do
   log "installing shim on $node -> $SHIM_PREFIX"
   docker exec "$node" mkdir -p "$SHIM_PREFIX/bin" "$SHIM_PREFIX/etc" /etc/slurm-shim
@@ -44,6 +44,16 @@ done
 # qconf mutations require a GE manager (root on this cluster).
 log "wiring PE 'make' start_proc_args -> slurm-shim-env"
 manager "qconf -mattr pe start_proc_args '$SHIM_PREFIX/bin/slurm-shim-env' make"
+
+# Single-node PE 'smp' ($pe_slots) for tools like submitit: a cpus-per-task
+# request stays on one host, so `srun python -m submitit.core._submit` runs as one
+# worker. Derived from make (same slurm-shim-env hook), only allocation_rule
+# differs. Idempotent. The \$ is escaped so $pe_slots reaches GE literally.
+log "creating PE 'smp' (pe_slots) for single-node jobs (submitit)"
+manager "qconf -sp make | sed 's/^pe_name .*/pe_name            smp/; s/^allocation_rule .*/allocation_rule    \$pe_slots/' > /tmp/smp.pe
+qconf -Ap /tmp/smp.pe 2>/dev/null || qconf -Mp /tmp/smp.pe
+qconf -mattr pe start_proc_args '$SHIM_PREFIX/bin/slurm-shim-env' smp
+qconf -mattr queue pe_list 'make smp' all.q"
 
 # Test-cluster tuning (validated live): Docker containers share the HOST load
 # average (loadavg is not namespaced), so GE's default load_thresholds falsely

@@ -127,16 +127,24 @@ func (s *supervisor) hostGTIDs(ni int) string {
 }
 
 // outputPath expands an output pattern for a rank, or "" to stream (no pattern).
+// The array coordinates (%A/%a) are the 0-based SLURM values resolved once on the
+// supervisor from the fabricated job env - the same values submitit's job uses to
+// build its result/log paths - so srun-written logs land exactly where submitit
+// reads them. They default to the plain job id / 0 for a non-array job.
 func (s *supervisor) outputPath(pattern string, r plan.PlacedRank, node plan.StepNode) string {
 	if pattern == "" {
 		return ""
 	}
 	return mux.ExpandPattern(pattern, mux.PatternFields{
-		JobID:    s.lay.Job.JobID,
-		StepID:   s.stepID,
-		Rank:     r.Rank,
-		NodeID:   r.StepNodeIndex,
-		NodeName: node.Host,
+		JobID:       s.lay.Job.JobID,
+		ArrayJobID:  s.arrayJobID,
+		ArrayTaskID: s.arrayTaskID,
+		StepID:      s.stepID,
+		Rank:        r.Rank,
+		NodeID:      r.StepNodeIndex,
+		NodeName:    node.Host,
+		JobName:     s.lay.Job.Name,
+		User:        s.user,
 	})
 }
 

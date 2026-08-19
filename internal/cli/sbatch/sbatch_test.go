@@ -129,6 +129,157 @@ var _ = Describe("slots rule + job id [REQ-SBT-002, REQ-SBT-003]", func() {
 	)
 })
 
+var _ = Describe("sbatch resource/signal/dependency mapping [submitit Phase 4]", func() {
+	DescribeTable("parses --time to seconds",
+		func(v string, want int) {
+			s, err := parseSlurmTime(v)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(Equal(want))
+		},
+		Entry("minutes", "60", 3600),
+		Entry("MM:SS", "1:30", 90),
+		Entry("HH:MM:SS", "2:00:00", 7200),
+		Entry("D-HH", "1-00", 86400),
+		Entry("D-HH:MM:SS", "1-01:00:00", 90000),
+		Entry("explicit zero-day D-HH:MM", "0-12:30", 45000), // not MM:SS (would be 750)
+	)
+
+	DescribeTable("converts memory to GE suffixes",
+		func(v, want string) { Expect(convertMem(v)).To(Equal(want)) },
+		Entry("GB", "4GB", "4G"),
+		Entry("MB", "512MB", "512M"),
+		Entry("bare number is MB", "1024", "1024M"),
+		Entry("single-letter kept", "8G", "8G"),
+	)
+
+	DescribeTable("extracts the gpu count from --gres",
+		func(v string, wantN int, wantOK bool) {
+			n, ok := gresGPUCount(v)
+			Expect(ok).To(Equal(wantOK))
+			if wantOK {
+				Expect(n).To(Equal(wantN))
+			}
+		},
+		Entry("gpu:2", "gpu:2", 2, true),
+		Entry("typed gpu", "gpu:a100:4", 4, true),
+		Entry("non-gpu gres", "mps:100", 0, false),
+	)
+
+	It("parses the --signal lead time", func() {
+		Expect(parseSignalDelay("USR2@90")).To(Equal(90))
+		Expect(parseSignalDelay("B:USR2@120")).To(Equal(120))
+		Expect(parseSignalDelay("USR2")).To(Equal(0))
+	})
+
+	It("collects numeric dependency ids for -hold_jid", func() {
+		Expect(dependencyIDs("afterok:12:13,afterany:14")).To(Equal([]string{"12", "13", "14"}))
+	})
+
+	It("emits -l h_rt/s_rt/mem/gpu and -hold_jid end to end", func() {
+		body := "#!/bin/bash\n#SBATCH -p gpu\n#SBATCH --time=60 --signal=USR2@90\n" +
+			"#SBATCH --mem=4GB --gpus-per-node=2 --dependency=afterok:99\nsrun true\n"
+		script := writeScriptTop2(body)
+		var captured []string
+		rc := run(fakeQsub("70", &captured), testCfg(), "/shim", []string{script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		// h_rt=3600, s_rt=3600-90=3510, mem via default h_vmem, gpu via default gpu complex.
+		Expect(captured).To(ContainElements("-l", "h_rt=3600,s_rt=3510,h_vmem=4G,gpu=2"))
+		Expect(captured).To(ContainElements("-hold_jid", "99"))
+		// --signal -> -notify -r y so GE sends SIGUSR2 before a kill/reschedule and
+		// the job is rerunnable (submitit checkpoint-then-requeue).
+		Expect(captured).To(ContainElements("-notify", "-r", "y"))
+	})
+})
+
+// writeScriptTop2 writes a script body to a temp file and returns its path.
+func writeScriptTop2(body string) string {
+	path := filepath.Join(GinkgoT().TempDir(), "job.sh")
+	Expect(os.WriteFile(path, []byte(body), 0o700)).To(Succeed())
+	return path
+}
+
+var _ = Describe("sbatch output-path translation [submitit Phase 2]", func() {
+	DescribeTable("rewrites SLURM %-verbs to GE pseudo-variables",
+		func(in, want string) { Expect(translateOutputPath(in)).To(Equal(want)) },
+		Entry("single job id + task", "logs/%j_%t_log.out", "logs/$JOB_ID_0_log.out"),
+		Entry("array job/task", "logs/%A_%a_%t_log.out", "logs/$JOB_ID_$TASK_ID_0_log.out"),
+		Entry("job name and user", "%x-%u.out", "$JOB_NAME-$USER.out"),
+		Entry("node name", "%N.err", "$HOSTNAME.err"),
+		Entry("literal percent", "100%%.out", "100%.out"),
+		Entry("unknown verb kept", "%z.out", "%z.out"),
+	)
+
+	It("passes translated -o/-e through to qsub", func() {
+		script := writeScriptTop("#!/bin/bash\n#SBATCH -p batch\n#SBATCH -o %j_%t_log.out\n#SBATCH -e %j_%t_log.err\nsrun true\n")
+		var captured []string
+		rc := run(fakeQsub("55", &captured), testCfg(), "/shim", []string{script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(captured).To(ContainElements("-o", "$JOB_ID_0_log.out"))
+		Expect(captured).To(ContainElements("-e", "$JOB_ID_0_log.err"))
+	})
+})
+
+// writeScriptTop writes a script body to a temp file and returns its path.
+func writeScriptTop(body string) string {
+	path := filepath.Join(GinkgoT().TempDir(), "job.sh")
+	Expect(os.WriteFile(path, []byte(body), 0o700)).To(Succeed())
+	return path
+}
+
+var _ = Describe("sbatch --array translation [submitit Phase 3]", func() {
+	DescribeTable("parses --array specs",
+		func(spec string, wantMin, wantMax, wantStep, wantThrottle int) {
+			opt, _, err := parseFlags([]string{"--array=" + spec, "job.sh"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opt.haveArray).To(BeTrue())
+			Expect([]int{opt.arrayMin, opt.arrayMax, opt.arrayStep, opt.arrayThrottle}).
+				To(Equal([]int{wantMin, wantMax, wantStep, wantThrottle}))
+		},
+		Entry("submitit 0-based with throttle", "0-9%4", 0, 9, 1, 4),
+		Entry("no throttle", "0-3", 0, 3, 1, 0),
+		Entry("stepped", "0-10:2", 0, 10, 2, 0),
+		Entry("single element", "5", 5, 5, 1, 0),
+		Entry("non-zero origin", "5-10", 5, 10, 1, 0),
+	)
+
+	DescribeTable("rejects unsupported specs",
+		func(spec string) {
+			_, _, err := parseFlags([]string{"--array=" + spec, "job.sh"})
+			Expect(err).To(HaveOccurred())
+		},
+		Entry("comma list", "0,2,4"),
+		Entry("bad range", "5-1"),
+		Entry("bad throttle", "0-9%x"),
+		Entry("bad step", "0-9:0"),
+	)
+
+	writeScript := func(body string) string {
+		path := filepath.Join(GinkgoT().TempDir(), "job.sh")
+		Expect(os.WriteFile(path, []byte(body), 0o700)).To(Succeed())
+		return path
+	}
+
+	It("submits a dense GE -t range plus -tc and the SLURM base/step hints", func() {
+		script := writeScript("#!/bin/bash\n#SBATCH -p batch\n#SBATCH --array=0-9%4\nsrun true\n")
+		var captured []string
+		rc := run(fakeQsub("4712", &captured), testCfg(), "/shim", []string{script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(captured).To(ContainElements("-t", "1-10", "-tc", "4"))
+		Expect(captured).To(ContainElements("-v", "SLURM_ARRAY_BASE=0"))
+		Expect(captured).To(ContainElements("-v", "SLURM_ARRAY_STEP=1"))
+	})
+
+	It("maps a stepped SLURM array to a dense GE range of the right size", func() {
+		script := writeScript("#!/bin/bash\n#SBATCH -p batch\n#SBATCH --array=0-10:2\nsrun true\n")
+		var captured []string
+		rc := run(fakeQsub("4713", &captured), testCfg(), "/shim", []string{script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(captured).To(ContainElements("-t", "1-6")) // 0,2,4,6,8,10 -> 6 tasks
+		Expect(captured).To(ContainElements("-v", "SLURM_ARRAY_STEP=2"))
+		Expect(captured).NotTo(ContainElement("-tc")) // no throttle given
+	})
+})
+
 // fakeQsub captures the qsub argv and returns a terse id.
 func fakeQsub(id string, capture *[]string) *fake.Runner {
 	return &fake.Runner{Responder: func(name string, args []string) fake.Response {

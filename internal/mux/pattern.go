@@ -8,18 +8,26 @@ import (
 	"strings"
 )
 
-// PatternFields are the values substituted into an output pattern.
+// PatternFields are the values substituted into an output pattern. ArrayJobID
+// and ArrayTaskID carry the SLURM array coordinates (0-based, as submitit reads
+// them); for a non-array job they default to the plain job id and 0.
 type PatternFields struct {
-	JobID    int64
-	StepID   int
-	Rank     int
-	NodeID   int
-	NodeName string
+	JobID       int64
+	ArrayJobID  int64
+	ArrayTaskID int64
+	StepID      int
+	Rank        int
+	NodeID      int
+	NodeName    string
+	JobName     string
+	User        string
 }
 
 // ExpandPattern substitutes SLURM output-pattern verbs (REQ-RUN-003):
 //
-//	%j job id, %J job.step, %t rank, %n node id, %N node name, %s step id, %% literal %.
+//	%j job id, %J job.step, %A array job id, %a array task id (0-based),
+//	%t rank, %n node id, %N node name, %s step id, %x job name, %u user,
+//	%% literal %.
 //
 // An unknown %x is left verbatim (leading % preserved).
 func ExpandPattern(pattern string, f PatternFields) string {
@@ -38,6 +46,10 @@ func ExpandPattern(pattern string, f PatternFields) string {
 			b.WriteString(strconv.FormatInt(f.JobID, 10))
 			b.WriteByte('.')
 			b.WriteString(strconv.Itoa(f.StepID))
+		case 'A':
+			b.WriteString(strconv.FormatInt(f.ArrayJobID, 10))
+		case 'a':
+			b.WriteString(strconv.FormatInt(f.ArrayTaskID, 10))
 		case 't':
 			b.WriteString(strconv.Itoa(f.Rank))
 		case 'n':
@@ -46,6 +58,10 @@ func ExpandPattern(pattern string, f PatternFields) string {
 			b.WriteString(f.NodeName)
 		case 's':
 			b.WriteString(strconv.Itoa(f.StepID))
+		case 'x':
+			b.WriteString(f.JobName)
+		case 'u':
+			b.WriteString(f.User)
 		case '%':
 			b.WriteByte('%')
 		default:

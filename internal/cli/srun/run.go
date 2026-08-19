@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -72,15 +73,31 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	arrayJob := lay.Job.JobID
+	if v, err := strconv.ParseInt(os.Getenv("SLURM_ARRAY_JOB_ID"), 10, 64); err == nil {
+		arrayJob = v
+	}
+	var arrayTask int64
+	if v, err := strconv.ParseInt(os.Getenv("SLURM_ARRAY_TASK_ID"), 10, 64); err == nil {
+		arrayTask = v
+	}
+	user := lay.Job.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+
 	return (&supervisor{
-		cfg:    cfg,
-		opt:    opt,
-		lay:    lay,
-		plan:   p,
-		stepID: stepID,
-		stdout: stdout,
-		stderr: stderr,
-		kill:   resolveKill(opt.killFlag, cfg),
+		cfg:         cfg,
+		opt:         opt,
+		lay:         lay,
+		plan:        p,
+		stepID:      stepID,
+		stdout:      stdout,
+		stderr:      stderr,
+		kill:        resolveKill(opt.killFlag, cfg),
+		arrayJobID:  arrayJob,
+		arrayTaskID: arrayTask,
+		user:        user,
 	}).launch()
 }
 
@@ -93,6 +110,12 @@ type supervisor struct {
 	stdout io.Writer
 	stderr io.Writer
 	kill   bool
+
+	// SLURM-facing coordinates for output-pattern expansion (%A/%a/%u), resolved
+	// once from the fabricated job env + layout rather than re-read per rank.
+	arrayJobID  int64
+	arrayTaskID int64
+	user        string
 
 	demux *mux.Demux
 

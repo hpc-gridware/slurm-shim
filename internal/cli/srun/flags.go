@@ -59,6 +59,11 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		_            = fs.StringP("job-name", "J", "", "")
 		_            = fs.Bool("quiet", false, "")
 		_            = fs.CountP("verbose", "v", "")
+		// submitit's generated srun line always passes --unbuffered; users may add
+		// --cpu-bind via srun_args. Accept both explicitly (no GE behavior to map)
+		// so a space-form --cpu-bind value is never mistaken for the command.
+		_ = fs.Bool("unbuffered", false, "")
+		_ = fs.String("cpu-bind", "", "")
 	)
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"

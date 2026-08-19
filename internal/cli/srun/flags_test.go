@@ -23,6 +23,16 @@ var _ = Describe("srun flag parsing", func() {
 		Expect(opt.command).To(Equal([]string{"sh", "-c", "echo -n hi"}))
 	})
 
+	It("parses submitit's generated srun line with the command intact [submitit Phase 5]", func() {
+		opt, err := parse("--unbuffered", "--output", "o_%A_%a.log", "--error", "e.log",
+			"--cpu-bind", "none", "python", "-m", "submitit.core._submit", "/tmp/folder")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.warnings).To(BeEmpty())
+		Expect(opt.output).To(Equal("o_%A_%a.log"))
+		Expect(opt.errorPat).To(Equal("e.log"))
+		Expect(opt.command).To(Equal([]string{"python", "-m", "submitit.core._submit", "/tmp/folder"}))
+	})
+
 	It("recognizes the core flag surface [REQ-RUN-001]", func() {
 		opt, err := parse("-N", "2", "--ntasks-per-node", "3", "-c", "4", "-l", "hostname")
 		Expect(err).NotTo(HaveOccurred())

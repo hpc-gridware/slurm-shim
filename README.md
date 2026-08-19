@@ -42,8 +42,8 @@ squeue
 #SBATCH --nodes=4                 # feeds the slot count; GE's PE places the nodes
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-# NOTE: #SBATCH --gpus-per-node / --mem / --time / --array are NOT translated yet
-# (see the matrix). Request GPUs via a GPU-configured partition/PE for now.
+# #SBATCH --gpus-per-node / --mem / --time / --array / --dependency ARE translated
+# (see the matrix); GPUs need a GPU-configured partition/PE with an RSMAP complex.
 
 srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 ```
@@ -74,7 +74,9 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - **DeepSpeed** and **Ray** (and multi-node vLLM) via the [`docs/recipes/`](docs/recipes/) launch patterns.
 - The full per-rank `SLURM_*` environment, including compressed nodelists and per-rank `CUDA_VISIBLE_DEVICES` from GE RSMAP grants.
 
-Partial / not yet: `submitit` (submission + requeue work; `--array`/`--dependency` are not mapped), array **submission** via `--array`, `dask-jobqueue`, Nextflow/Snakemake executors — see the matrix.
+- **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
+
+Partial / not yet: `dask-jobqueue`, Nextflow/Snakemake executors — see the matrix.
 
 > **TODO:** add runnable `examples/` and a community `tests/` harness so the matrix below can be verified on a real cluster and pass/fail reports filed as issues. Neither exists yet.
 
@@ -90,15 +92,15 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + `CUDA_VISIBLE_DEVICES`. See [srun notes](#srun-semantics). |
 | `srun` (standalone) | ⚠️ | `standalone: local` runs the command with a synthetic single-node env; default `standalone: reject` exits 1. |
 | `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
-| `scancel` | ✅ | Maps to `qdel`; array `scancel 4711_2` -> `qdel -t`; `-u` passthrough. `--signal` unsupported. |
+| `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
-| `sacct` | ❌ | Not implemented (`qacct` is used internally for squeue completion detection, but there is no `sacct` command yet). |
+| `sacct` | ✅ | Minimal, submitit-oriented: `-o JobID,State,NodeList --parsable2 -j <id>` (repeatable/comma ids). State from `qstat` (live) + `qacct` (finished, via go-clusterscheduler); 0-based array elements; unknown ids omitted. Not a full `sacct`. |
 | `salloc` | ❌ | Not implemented. |
 
 ### `sbatch` flags
 
-`sbatch` currently translates a **partition into a queue + PE + slot count** and passes through name/output/error/workdir. The geometry flags feed the slot computation; resource flags are **not yet mapped** and are warn-and-ignored.
+`sbatch` translates a **partition into a queue + PE + slot count**, passes through name/output/error/workdir, and maps the array and resource flags (`--array`, `--time`, `--mem`, `--gpus*`, `--dependency`, `--signal`) to their GE equivalents. The geometry flags feed the slot computation.
 
 | Flag | Status | Mapped to |
 |---|---|---|
@@ -108,18 +110,19 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--ntasks-per-node` | ✅ | feeds the slot count |
 | `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule) |
 | `--job-name` / `-J` | ✅ | `qsub -N` |
-| `--output` / `--error` | ⚠️ | passed to `qsub -o`/`-e`; SLURM `%j`/`%a` filename patterns are **not** expanded by `sbatch` (GE's own patterns apply) |
+| `--output` / `--error` | ✅ | passed to `qsub -o`/`-e`; SLURM `%j`/`%A`/`%a`/`%x`/`%u`/`%N` filename patterns are translated to GE `$JOB_ID`/`$TASK_ID`/`$JOB_NAME`/`$USER`/`$HOSTNAME`; per-task streams from `srun` also expand `%A`/`%a` (0-based) |
 | `--chdir` / `-D` | ✅ | `qsub -wd` |
 | `--wrap` | ✅ | wraps the command string in a submitted script |
-| `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ❌ | **not translated** — request GPUs via a GPU-configured partition/PE for now |
-| `--mem` / `--mem-per-cpu` | ❌ | not translated to `h_vmem` (the shim *reads* a job's `h_vmem` request for `SLURM_MEM_PER_NODE`, but `sbatch` does not *set* it) |
-| `--time` / `-t` | ❌ | not translated to `h_rt` |
-| `--array` | ❌ | not translated to `qsub -t` (array **env** vars are set for GE array jobs submitted directly; see below) |
-| `--dependency` | ❌ | not translated to `-hold_jid` |
+| `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |
+| `--mem` / `--mem-per-cpu` | ✅ | `qsub -l <memory_complex>=<n>` (default `h_vmem`; `4GB`->`4G`). Note `h_vmem` is virtual-address-space enforced — set `memory_complex` to `mem_free`/`h_rss` on GPU clusters |
+| `--time` / `-t` | ✅ | `qsub -l h_rt=<sec>` (with `-l s_rt` grace when `--signal` gives a lead time) |
+| `--array` | ✅ | `qsub -t 1-<n>` + `-tc` (from `%p`); SLURM 0-based indices are preserved end-to-end (env, filenames, `sacct`) |
+| `--dependency` | ✅ | `after*`/`afterany`/`afterok` -> `-hold_jid` (GE releases on completion; `afterok` success-gating is approximated) |
+| `--signal` | ✅ | `qsub -notify -r y` (GE sends SIGUSR2 before a kill/reschedule -- submitit's preempt signal -- and the job is rerunnable), plus `-l s_rt=h_rt-lead` as an early SIGUSR1 warning. With `scancel --signal`/`scontrol requeue` -> `qmod -rj`, this makes submitit checkpoint-then-requeue work |
 | `--export` | ❌ | not a recognized `sbatch` flag here (it is on `srun`) |
-| `--exclusive` | ❌ | not translated |
+| `--exclusive` | ❌ | not translated (warn-and-ignored) |
 
-Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. This means a script relying on `--mem`/`--time`/`--array` will submit and run **without** those constraints. 🚧 A strict mode that fails loud on dropped resource directives is planned.
+Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
 
 ### `srun` flags
 
@@ -157,12 +160,12 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 - `srun` launches one process per task over **`qrsh -inherit` tight integration**: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
 - **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
-- **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach`, `salloc`, `sacct`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
+- **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach`, `salloc`, and a full `sacct` (a minimal submitit-oriented `sacct` exists). Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
 
 ### Known limitations
 
-- No `sacct` / `salloc` / `sattach`; no job-step overlap or heterogeneous steps.
-- `sbatch` does not yet translate `--time`, `--mem`, `--array`, `--dependency`, `--gpus`/`--gres`, or `--exclusive` (warn-and-ignored). This is the biggest gap for portability of arbitrary SLURM scripts.
+- No `salloc` / `sattach`; no job-step overlap or heterogeneous steps. `sacct` is minimal (submitit-oriented), not a full implementation.
+- `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal`; `--exclusive` is still warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
 - No PMI/PMIx (MPI via the PE's `mpirun`).
 - **Not yet validated end-to-end on a live GPU cluster** — unit-tested and fixture-grounded only.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.

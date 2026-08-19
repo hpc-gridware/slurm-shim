@@ -1,9 +1,10 @@
 # slurm-shim config for the OCS test cluster (quickinstall openSUSE 15.6).
 # Installed at /etc/slurm-shim/config.yaml on every node by install-shim.sh.
 #
-# The cluster ships one queue (all.q) and one PE (make, round-robin, control_slaves
-# TRUE). Both demo partitions map onto them; the gpu partition additionally relies
-# on the fake RSMAP complex install-shim.sh configures.
+# The cluster ships one queue (all.q) and two PEs: make (round-robin, one task per
+# slot) for multi-node work, and smp ($pe_slots, one task per node) for single-node
+# multi-cpu jobs. install-shim.sh creates both. The gpu partition additionally
+# relies on the fake RSMAP complex install-shim.sh configures.
 
 launcher: qrsh-inherit          # real GE tight integration on this cluster
 
@@ -12,9 +13,14 @@ default_partition: batch        # sbatch without -p lands here (like SLURM's DEF
 partitions:
   batch: {queue: all.q, pe: make, slots: "per-task"}
   gpu:   {queue: all.q, pe: make, slots: "per-task"}
+  # Single-node partition for tools like submitit: $pe_slots keeps a cpus-per-task
+  # request on ONE host, and the node task policy yields one task (not one per slot),
+  # which is what submitit's `srun python -m submitit.core._submit` expects.
+  smp:   {queue: all.q, pe: smp,  slots: "per-task"}
 
 pes:
   make: {task_policy: slot}     # one task per granted slot (srun -n defaults to slots)
+  smp:  {task_policy: node}     # one task per node (single submitit worker per node)
 
 gpu:
   discovery: qstat-gres         # RSMAP grant -> per-rank CUDA_VISIBLE_DEVICES

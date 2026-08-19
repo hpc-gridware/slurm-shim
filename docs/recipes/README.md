@@ -14,6 +14,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 | [`deepspeed/`](deepspeed/) | DeepSpeed (and any torch.distributed trainer) | `srun --ntasks-per-node=1 torchrun` per node |
 | [`ray/`](ray/) | Ray (Train / Tune / Serve, vLLM multi-node) | `srun` bootstraps a Ray head + workers |
 | [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling |
+| [`submitit/`](submitit/) | submitit (submit Python functions, arrays) | `sbatch`/`sacct`/`srun`; 0-based arrays, result-pickle tracking |
 
 ## The one thing to understand first
 

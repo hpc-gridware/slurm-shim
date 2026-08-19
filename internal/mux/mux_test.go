@@ -17,7 +17,10 @@ func TestMux(t *testing.T) {
 }
 
 var _ = Describe("Output pattern expansion [REQ-RUN-003]", func() {
-	f := mux.PatternFields{JobID: 4711, StepID: 2, Rank: 3, NodeID: 1, NodeName: "node002"}
+	f := mux.PatternFields{
+		JobID: 4711, ArrayJobID: 4720, ArrayTaskID: 7, StepID: 2, Rank: 3,
+		NodeID: 1, NodeName: "node002", JobName: "myjob", User: "alice",
+	}
 
 	DescribeTable("substitutes SLURM verbs",
 		func(pattern, want string) {
@@ -30,6 +33,8 @@ var _ = Describe("Output pattern expansion [REQ-RUN-003]", func() {
 		Entry("step id", "s%s.log", "s2.log"),
 		Entry("literal percent", "100%%done", "100%done"),
 		Entry("unknown verb kept", "%z.log", "%z.log"),
+		Entry("array job/task 0-based (submitit)", "%A_%a_%t_log.out", "4720_7_3_log.out"),
+		Entry("job name and user", "%x-%u.log", "myjob-alice.log"),
 	)
 })
 

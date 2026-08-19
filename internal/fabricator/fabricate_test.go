@@ -108,6 +108,53 @@ var _ = Describe("Table A fabrication [REQ-TST-004]", func() {
 			Expect(m["SLURM_ARRAY_TASK_COUNT"]).To(Equal("4"))
 		})
 
+		It("maps GE 1-based tasks to a 0-based SLURM index via SLURM_ARRAY_BASE [submitit Phase 3]", func() {
+			// sbatch --array=0-9 submits GE `-t 1-10` + SLURM_ARRAY_BASE=0.
+			env := baseEnv("mpi.pe")
+			env["SGE_TASK_ID"] = "1" // first GE task
+			env["SGE_TASK_FIRST"] = "1"
+			env["SGE_TASK_LAST"] = "10"
+			env["SGE_TASK_STEPSIZE"] = "1"
+			env["SLURM_ARRAY_BASE"] = "0"
+			env["SLURM_ARRAY_STEP"] = "1"
+			r, _ := fab(env, homogeneous, testConfig())
+			m := exportMap(r)
+			Expect(m["SLURM_ARRAY_TASK_ID"]).To(Equal("0"))
+			Expect(m["SLURM_ARRAY_TASK_MIN"]).To(Equal("0"))
+			Expect(m["SLURM_ARRAY_TASK_MAX"]).To(Equal("9"))
+			Expect(m["SLURM_ARRAY_TASK_STEP"]).To(Equal("1"))
+			Expect(m["SLURM_ARRAY_TASK_COUNT"]).To(Equal("10"))
+		})
+
+		It("offsets a mid-array GE task to its 0-based SLURM index", func() {
+			env := baseEnv("mpi.pe")
+			env["SGE_TASK_ID"] = "10" // last GE task
+			env["SGE_TASK_FIRST"] = "1"
+			env["SGE_TASK_LAST"] = "10"
+			env["SGE_TASK_STEPSIZE"] = "1"
+			env["SLURM_ARRAY_BASE"] = "0"
+			env["SLURM_ARRAY_STEP"] = "1"
+			r, _ := fab(env, homogeneous, testConfig())
+			m := exportMap(r)
+			Expect(m["SLURM_ARRAY_TASK_ID"]).To(Equal("9"))
+		})
+
+		It("reconstructs a stepped SLURM array from a dense GE range", func() {
+			// sbatch --array=0-10:2 submits GE `-t 1-6` + BASE=0 STEP=2.
+			env := baseEnv("mpi.pe")
+			env["SGE_TASK_ID"] = "3" // 3rd dense GE task
+			env["SGE_TASK_FIRST"] = "1"
+			env["SGE_TASK_LAST"] = "6"
+			env["SGE_TASK_STEPSIZE"] = "1"
+			env["SLURM_ARRAY_BASE"] = "0"
+			env["SLURM_ARRAY_STEP"] = "2"
+			r, _ := fab(env, homogeneous, testConfig())
+			m := exportMap(r)
+			Expect(m["SLURM_ARRAY_TASK_ID"]).To(Equal("4")) // 0,2,4 -> 3rd is 4
+			Expect(m["SLURM_ARRAY_TASK_MAX"]).To(Equal("10"))
+			Expect(m["SLURM_ARRAY_TASK_COUNT"]).To(Equal("6"))
+		})
+
 		It("emits no array vars for the literal undefined [REQ-ENV-010]", func() {
 			r, _ := fab(baseEnv("mpi.pe"), homogeneous, testConfig())
 			m := exportMap(r)

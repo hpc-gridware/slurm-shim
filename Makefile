@@ -11,7 +11,7 @@ LDFLAGS     := -X $(PKG)/internal/version.Shim=$(VERSION)
 
 # Symlink farm installed alongside the binary (spec section 3.1). Each name
 # dispatches back to the real binary via filepath.Base(os.Args[0]).
-LINKS := srun sbatch scancel scontrol squeue sinfo slurm-shim-env slurm-shim-stepper
+LINKS := srun sbatch sacct scancel scontrol squeue sinfo slurm-shim-env slurm-shim-stepper
 
 # Static, reproducible build. osusergo/netgo force the pure-Go user and DNS
 # resolvers so an accidental cgo-enabled build cannot change behavior; the real
