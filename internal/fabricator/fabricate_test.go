@@ -41,6 +41,16 @@ var _ = Describe("Table A fabrication [REQ-TST-004]", func() {
 			_, present := exportMap(r)["SLURM_CPUS_PER_TASK"]
 			Expect(present).To(BeFalse())
 		})
+
+		It("prefers the invocation dir (SGE_O_WORKDIR) for SLURM_SUBMIT_DIR", func() {
+			// With --chdir the job's execution cwd (SGE_CWD_PATH) differs from the
+			// invocation dir; SLURM_SUBMIT_DIR is the invocation dir.
+			env := baseEnv("mpi.pe")
+			env["SGE_O_WORKDIR"] = "/home/alice/project"
+			env["SGE_CWD_PATH"] = "/scratch/run"
+			r, _ := fab(env, homogeneous, testConfig())
+			Expect(exportMap(r)["SLURM_SUBMIT_DIR"]).To(Equal("/home/alice/project"))
+		})
 	})
 
 	Describe("node policy [REQ-ENV-001]", func() {

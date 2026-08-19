@@ -110,8 +110,8 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--ntasks-per-node` | ✅ | feeds the slot count |
 | `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule) |
 | `--job-name` / `-J` | ✅ | `qsub -N` |
-| `--output` / `--error` | ✅ | passed to `qsub -o`/`-e`; SLURM `%j`/`%A`/`%a`/`%x`/`%u`/`%N` filename patterns are translated to GE `$JOB_ID`/`$TASK_ID`/`$JOB_NAME`/`$USER`/`$HOSTNAME`; per-task streams from `srun` also expand `%A`/`%a` (0-based) |
-| `--chdir` / `-D` | ✅ | `qsub -wd` |
+| `--output` / `--error` | ✅ | passed to `qsub -o`/`-e`; SLURM `%j`/`%A`/`%a`/`%x`/`%u`/`%N` filename patterns are translated to GE `$JOB_ID`/`$TASK_ID`/`$JOB_NAME`/`$USER`/`$HOSTNAME`; per-task streams from `srun` also expand `%A`/`%a` (0-based). SLURM defaults hold: no `--output` -> `slurm-<jobid>.out` in the submit dir (non-array), no `--error` -> stderr merged into stdout (`qsub -j y`) |
+| `--chdir` / `-D` | ✅ | `qsub -wd`; without it the job runs in the **submit directory** (`qsub -cwd`), matching SLURM's default (GE's own default would be `$HOME`) |
 | `--wrap` | ✅ | wraps the command string in a submitted script |
 | `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |
 | `--mem` / `--mem-per-cpu` | ✅ | `qsub -l <memory_complex>=<n>` (default `h_vmem`; `4GB`->`4G`). Note `h_vmem` is virtual-address-space enforced — set `memory_complex` to `mem_free`/`h_rss` on GPU clusters |
@@ -119,7 +119,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--array` | ✅ | `qsub -t 1-<n>` + `-tc` (from `%p`); SLURM 0-based indices are preserved end-to-end (env, filenames, `sacct`) |
 | `--dependency` | ✅ | `after*`/`afterany`/`afterok` -> `-hold_jid` (GE releases on completion; `afterok` success-gating is approximated) |
 | `--signal` | ✅ | `qsub -notify -r y` (GE sends SIGUSR2 before a kill/reschedule -- submitit's preempt signal -- and the job is rerunnable), plus `-l s_rt=h_rt-lead` as an early SIGUSR1 warning. With `scancel --signal`/`scontrol requeue` -> `qmod -rj`, this makes submitit checkpoint-then-requeue work |
-| `--export` | ❌ | not a recognized `sbatch` flag here (it is on `srun`) |
+| `--export` | ✅ | SLURM default `ALL` -> `qsub -V` (full submit env forwarded, so `PATH`/`PYTHON_BIN` reach the job like on SLURM); `NONE` -> nothing; a `VAR=val` list -> `qsub -v` per entry; `ALL,VAR=val` composes. Newline-valued vars are flattened to spaces by GE |
 | `--exclusive` | ❌ | not translated (warn-and-ignored) |
 
 Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.

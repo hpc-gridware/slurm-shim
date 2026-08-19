@@ -129,6 +129,65 @@ var _ = Describe("slots rule + job id [REQ-SBT-002, REQ-SBT-003]", func() {
 	)
 })
 
+var _ = Describe("sbatch SLURM defaults: submit-dir cwd + env forwarding", func() {
+	submit := func(cliArgs ...string) []string {
+		script := writeScriptTop2("#!/bin/bash\n#SBATCH -p batch\nsrun true\n")
+		var captured []string
+		rc := run(fakeQsub("80", &captured), testCfg(), "/shim", append(cliArgs, script), io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		return captured
+	}
+
+	It("defaults to the submit dir (-cwd) and full env forwarding (-V), like SLURM", func() {
+		captured := submit()
+		Expect(captured).To(ContainElement("-cwd"))
+		Expect(captured).To(ContainElement("-V"))
+	})
+
+	It("defaults stdout to slurm-<jobid>.out and joins stderr into it, like SLURM", func() {
+		captured := submit()
+		Expect(captured).To(ContainElements("-o", "slurm-$JOB_ID.out"))
+		Expect(captured).To(ContainElements("-j", "y"))
+		Expect(captured).NotTo(ContainElement("-e"))
+	})
+
+	It("keeps stderr separate when --error is given (no -j y)", func() {
+		captured := submit("--error=err.log")
+		Expect(captured).To(ContainElements("-e", "err.log"))
+		Expect(captured).NotTo(ContainElement("-j"))
+	})
+
+	It("does not force a default -o for arrays (GE per-task naming stands)", func() {
+		captured := submit("--array=0-3")
+		Expect(captured).NotTo(ContainElement("slurm-$JOB_ID.out"))
+		Expect(captured).To(ContainElements("-j", "y"))
+	})
+
+	It("uses -wd (not -cwd) when --chdir is given", func() {
+		captured := submit("--chdir=/scratch/run")
+		Expect(captured).To(ContainElements("-wd", "/scratch/run"))
+		Expect(captured).NotTo(ContainElement("-cwd"))
+	})
+
+	It("suppresses env forwarding with --export=NONE", func() {
+		captured := submit("--export=NONE")
+		Expect(captured).NotTo(ContainElement("-V"))
+	})
+
+	It("maps an explicit --export list to -v (no -V)", func() {
+		captured := submit("--export=FOO=1,BAR=2")
+		Expect(captured).NotTo(ContainElement("-V"))
+		Expect(captured).To(ContainElements("-v", "FOO=1"))
+		Expect(captured).To(ContainElements("-v", "BAR=2"))
+	})
+
+	It("composes ALL with extra assignments (--export=ALL,FOO=1)", func() {
+		captured := submit("--export=ALL,FOO=1")
+		Expect(captured).To(ContainElement("-V"))
+		Expect(captured).To(ContainElements("-v", "FOO=1"))
+	})
+})
+
 var _ = Describe("sbatch resource/signal/dependency mapping [submitit Phase 4]", func() {
 	DescribeTable("parses --time to seconds",
 		func(v string, want int) {

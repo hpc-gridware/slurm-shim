@@ -96,7 +96,10 @@ container_arch() {
 
 # gridware runs a login shell command as the gridware user on the master (OCS env
 # sourced via /etc/profile.d). Login shell is non-interactive so no banner prints.
-gridware() { docker exec -u gridware "$MASTER" bash -lc "$*"; }
+# cd first: docker exec starts in the image workdir (/), and with the shim's
+# SLURM-parity default (jobs run in the submit dir, -cwd) submitting from an
+# unwritable cwd would fail output-file creation -- as it would on real SLURM.
+gridware() { docker exec -u gridware "$MASTER" bash -lc "cd && $*"; }
 
 # manager runs a command as root on the master. On this cluster root is the only
 # GE manager, so qconf mutations (PE hooks, complexes) must go through it.

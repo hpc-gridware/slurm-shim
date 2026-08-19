@@ -40,6 +40,7 @@ type options struct {
 	haveSignal  bool
 	signalDelay int      // seconds before the time limit to deliver the signal
 	holdJIDs    []string // predecessor ids for -hold_jid
+	exportSpec  string   // --export value; "" means the SLURM default ALL
 
 	script     string   // script file path (first non-flag token)
 	scriptArgs []string // tokens after the script
@@ -54,7 +55,7 @@ var knownLong = map[string]bool{
 	"chdir": true, "wrap": true, "array": true,
 	"time": true, "mem": true, "mem-per-cpu": true,
 	"gpus": true, "gpus-per-node": true, "gres": true,
-	"signal": true, "dependency": true,
+	"signal": true, "dependency": true, "export": true,
 	// Accepted and intentionally ignored (GE has no distinct behavior to map):
 	"open-mode": true, "wckey": true,
 }
@@ -233,6 +234,8 @@ func setLong(opt *options, name, val string) error {
 		opt.signalDelay, opt.haveSignal = parseSignalDelay(val), true
 	case "dependency":
 		opt.holdJIDs = append(opt.holdJIDs, dependencyIDs(val)...)
+	case "export":
+		opt.exportSpec = val
 	case "open-mode", "wckey":
 		// Accepted, no GE equivalent: GE appends output by default and has no
 		// workload-characterization key.

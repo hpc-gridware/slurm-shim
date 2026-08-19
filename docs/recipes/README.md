@@ -15,6 +15,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 | [`ray/`](ray/) | Ray (Train / Tune / Serve, vLLM multi-node) | `srun` bootstraps a Ray head + workers |
 | [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling |
 | [`submitit/`](submitit/) | submitit (submit Python functions, arrays) | `sbatch`/`sacct`/`srun`; 0-based arrays, result-pickle tracking |
+| [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` |
 
 ## The one thing to understand first
 

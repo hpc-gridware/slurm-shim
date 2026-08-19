@@ -158,11 +158,17 @@ func partition(e envReader, cfg *config.Config, ns nodeSet) string {
 	return q
 }
 
+// submitDir resolves SLURM_SUBMIT_DIR: the directory sbatch was invoked from
+// (SLURM semantics), which GE records as SGE_O_WORKDIR. SGE_CWD_PATH is the
+// job's EXECUTION cwd (set by -cwd/-wd) -- with the shim's default -cwd the two
+// coincide, but under --chdir they differ and the invocation dir must win, so
+// SGE_O_WORKDIR is preferred (verified live: without the preference swap a job
+// submitted from a subdir reported SLURM_SUBMIT_DIR=$HOME).
 func submitDir(e envReader) string {
-	if d := e.get("SGE_CWD_PATH"); d != "" {
+	if d := e.get("SGE_O_WORKDIR"); d != "" {
 		return d
 	}
-	return e.get("SGE_O_WORKDIR")
+	return e.get("SGE_CWD_PATH")
 }
 
 // unsetPreamble is the fixed set of fabricated SLURM_*/MASTER_* variables the

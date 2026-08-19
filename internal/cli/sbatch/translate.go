@@ -73,13 +73,32 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	}
 	if opt.output != "" {
 		args = append(args, "-o", translateOutputPath(opt.output))
+	} else if !opt.haveArray {
+		// SLURM default: stdout goes to slurm-%j.out in the working directory.
+		// GE's default (<jobname>.o<id>) both names differently and, worse, is
+		// opened relative to the job cwd even when unwritable. Arrays keep GE's
+		// per-task default naming (SLURM's slurm-%A_%a.out has 0-based %a that a
+		// batch-level GE path cannot express; submitit always passes --output).
+		args = append(args, "-o", "slurm-$JOB_ID.out")
 	}
 	if opt.errorPath != "" {
 		args = append(args, "-e", translateOutputPath(opt.errorPath))
+	} else {
+		// SLURM merges stderr into the stdout file unless --error is given; GE
+		// instead defaults stderr to a separate <jobname>.e<id> in the job cwd,
+		// which also fails the whole job (Eqw, "opening input/output file") when
+		// that cwd is unwritable. -j y restores SLURM's join semantics.
+		args = append(args, "-j", "y")
 	}
 	if opt.chdir != "" {
 		args = append(args, "-wd", opt.chdir)
+	} else {
+		// SLURM runs the batch script in the directory sbatch was invoked from;
+		// GE defaults to $HOME, so -cwd restores SLURM's default working dir
+		// (qsub runs in the user's cwd, making -cwd exactly the submit dir).
+		args = append(args, "-cwd")
 	}
+	args = append(args, exportArgs(opt.exportSpec)...)
 	if opt.haveArray {
 		args = append(args, buildArrayArgs(opt)...)
 	}
@@ -97,6 +116,36 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	}
 	if len(opt.holdJIDs) > 0 {
 		args = append(args, "-hold_jid", strings.Join(opt.holdJIDs, ","))
+	}
+	return args
+}
+
+// exportArgs maps SLURM's --export to qsub environment flags. SLURM's default
+// (and explicit ALL) forwards the whole submit environment, which is qsub -V;
+// verified live on OCS 9.1: -V tolerates exported bash functions (Lmod) and
+// flattens newline values to spaces rather than erroring, so no env scrubbing
+// is needed. NONE forwards nothing (GE's own default). An explicit list maps to
+// one -v per assignment; GE adds those on top of its minimal env rather than
+// SLURM's only-these semantics -- close enough, and ALL,VAR=v composes.
+func exportArgs(spec string) []string {
+	spec = strings.TrimSpace(spec)
+	upper := strings.ToUpper(spec)
+	switch upper {
+	case "", "ALL":
+		return []string{"-V"}
+	case "NONE", "NIL":
+		return nil
+	}
+	var args []string
+	rest := spec
+	if strings.HasPrefix(upper, "ALL,") {
+		args = append(args, "-V")
+		rest = spec[len("ALL,"):]
+	}
+	for _, kv := range strings.Split(rest, ",") {
+		if kv = strings.TrimSpace(kv); kv != "" {
+			args = append(args, "-v", kv)
+		}
 	}
 	return args
 }
