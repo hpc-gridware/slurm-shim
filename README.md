@@ -2,7 +2,7 @@
 
 **Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run unmodified AI workloads.**
 
-`sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing `torchrun` launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration.
+`sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration.
 
 > **Status: pre-release** The six client commands and the `SLURM_*` environment contract are implemented and covered by a green unit-test suite, and the launch mechanics have been grounded against real Open Cluster Scheduler 9.0.10 output (RSMAP, `qstat`, `qconf`, `qrsh` signatures). What has **not** happened yet is an end-to-end run on a live multi-GPU cluster. Treat every "supported" below as "implemented + unit-tested", not "battle-tested". If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
