@@ -108,15 +108,60 @@ Three things it needs, none of which are shim bugs:
 
 1. **The `slurm_setup` hook line** (above) -- provides `SLURM_JOB_ID`/`SLURM_NTASKS`.
    Without it the worker aborts with `KeyError: 'SLURM_JOB_ID'`.
-2. **A single-node PE** for the `cpus_per_task=4` request. The default `make` PE is
-   `$round_robin` and would scatter the 4 slots across nodes (breaking `srun`); use
-   a partition backed by a `$pe_slots` PE with the `node` task policy -- the test
-   cluster's [`smp` partition](../../../test/cluster/config.yaml)
+2. **A single-node partition, because `mnist.py` is a single-task job** asking for
+   `cpus_per_task=4`. Under the round-robin `make` PE those 4 slots scatter across
+   nodes, which is not what one task wants; a `$pe_slots` PE keeps them on one host
+   -- the test cluster's [`smp` partition](../../../test/cluster/config.yaml)
    (`slurm_partition="smp"`). This is a deployment choice, not a code change: the
-   shim faithfully requests the slots; the PE decides placement.
+   shim faithfully requests the slots; the PE decides placement. **This applies to
+   single-task jobs only -- it is not a multi-node limitation** (see below).
 3. **sklearn-version compat in the example itself** -- current sklearn removed the
    `LogisticRegression(multi_class=...)` arg and `fetch_openml` returns pandas, so
    the upstream example needs `multi_class` dropped and `X.numpy()` -> `np.asarray(X)`.
+
+### Multi-node
+
+**submitit is not limited to one node on the shim.** `nodes=` / `tasks_per_node=`
+fan out over `srun` exactly as on SLURM, and `submitit.JobEnvironment()` reports the
+right topology to every task:
+
+```python
+ex.update_parameters(
+    slurm_partition="batch",        # round-robin PE: spreads across nodes
+    nodes=3, tasks_per_node=2,
+    slurm_setup=[". /opt/slurm-shim/etc/slurm-shim-source-hook.sh"],
+)
+job = ex.submit(fn)
+results = job.results()             # one entry per task (job.result() is task 0's)
+```
+
+Verified on the 3-node OCS 9.1.4 cluster -- 3 nodes x 2 tasks, block-distributed
+the way SLURM does it:
+
+```
+rank=0/6 node=0/3 local=0 host=ocs-master   hostnames=['ocs-master','ocs-worker1','ocs-worker2']
+rank=1/6 node=0/3 local=1 host=ocs-master
+rank=2/6 node=1/3 local=0 host=ocs-worker1
+rank=3/6 node=1/3 local=1 host=ocs-worker1
+rank=4/6 node=2/3 local=0 host=ocs-worker2
+rank=5/6 node=2/3 local=1 host=ocs-worker2
+[result] tasks=6 ranks=[0,1,2,3,4,5] distinct_hosts=['ocs-master','ocs-worker1','ocs-worker2']
+```
+
+`env.global_rank`, `env.local_rank`, `env.node`, `env.num_nodes` and
+`env.hostnames` are all correct, so the usual distributed-init idiom works:
+
+```python
+env = submitit.JobEnvironment()
+torch.distributed.init_process_group(
+    "nccl", init_method=f"tcp://{env.hostnames[0]}:29500",
+    rank=env.global_rank, world_size=env.num_tasks)
+```
+
+**Pick the partition to match the shape:** a multi-node job wants the round-robin
+PE (`batch`), while a *single-task* job wanting several CPUs wants the `$pe_slots`
+PE (`smp`). The `smp` partition uses the `node` task policy (one task per node), so
+do not use it for multi-task work -- `tasks_per_node` would collapse to 1.
 
 ### Checkpoint / preemption / requeue
 

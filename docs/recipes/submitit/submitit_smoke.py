@@ -32,7 +32,10 @@ def main():
         setup.append(". %s" % hook)
 
     ex.update_parameters(
-        slurm_partition=os.environ.get("PARTITION", "smp"),  # $pe_slots single-node PE
+        # These are single-task jobs, so a $pe_slots partition keeps each one on one
+        # host. Multi-node work (nodes=/tasks_per_node=) wants a round-robin PE
+        # partition such as "batch" instead -- see the recipe README.
+        slurm_partition=os.environ.get("PARTITION", "smp"),
         timeout_min=5,
         nodes=1,
         tasks_per_node=1,
