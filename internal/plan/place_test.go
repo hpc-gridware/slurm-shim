@@ -123,6 +123,15 @@ var _ = Describe("Step placement", func() {
 		Expect(p.Warnings[0]).To(ContainSubstring("all ranks share"))
 	})
 
+	It("suppresses the notice when the binding was requested explicitly", func() {
+		// The notice advises how to bind; a user who passed --gpu-bind=none has
+		// already declined that advice.
+		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2, GPUBindExplicit: true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Warnings).To(BeEmpty())
+	})
+
 	It("emits no notice when fewer GPUs than ranks (behavior unchanged there)", func() {
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 4})
 		Expect(err).NotTo(HaveOccurred())

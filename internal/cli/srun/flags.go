@@ -165,6 +165,7 @@ func applyGPUBind(opt *options, cfg *config.Config, envBind string) {
 	// SLURM allows a "verbose," prefix on any form.
 	spec = strings.TrimPrefix(spec, "verbose,")
 	name, value, _ := strings.Cut(spec, ":")
+	opt.req.GPUBindExplicit = true
 	switch strings.ToLower(name) {
 	case "none":
 		opt.req.AutoDivideGPUs = false
@@ -174,6 +175,7 @@ func applyGPUBind(opt *options, cfg *config.Config, envBind string) {
 			opt.req.GPUsPerTask = n
 		}
 	default:
+		opt.req.GPUBindExplicit = false // unsupported form: fall back to the default
 		opt.warnings = append(opt.warnings,
 			"--gpu-bind="+spec+" is not supported (slurm-shim); using the default binding")
 	}

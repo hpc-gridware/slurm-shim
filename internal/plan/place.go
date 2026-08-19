@@ -19,6 +19,10 @@ type StepRequest struct {
 	// --gpus-per-task was given (the shim's legacy behavior, gpu.bind: per-task).
 	// Off by default: SLURM leaves the whole grant visible to every task.
 	AutoDivideGPUs bool
+	// GPUBindExplicit records that the binding was requested outright (--gpu-bind
+	// or SLURM_GPU_BIND), which suppresses the migration notice: the user already
+	// stated what they want and does not need advice about it.
+	GPUBindExplicit bool
 }
 
 // StepNode is one host participating in a step, in step-nodelist order.
@@ -72,7 +76,7 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 		cpt = 1
 	}
 
-	ranks, warns, err := distribute(nodes, perNodeCap, ntasks, cpt, req.GPUsPerTask, req.AutoDivideGPUs)
+	ranks, warns, err := distribute(nodes, perNodeCap, ntasks, cpt, req.GPUsPerTask, req.AutoDivideGPUs, req.GPUBindExplicit)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +152,7 @@ func capacities(lay *layout.Layout, nodes []StepNode, req StepRequest) []int {
 // distribute block-fills ranks node-by-node to capacity (sec. 8.4). Exceeding
 // total capacity fails before any launch (REQ-RUN-008); a GPU request beyond a
 // node's grant fails too (SI-31).
-func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int, autoDivideGPUs bool) ([]PlacedRank, []string, error) {
+func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int, autoDivideGPUs, bindExplicit bool) ([]PlacedRank, []string, error) {
 	total := 0
 	for _, c := range caps {
 		total += c
@@ -191,7 +195,7 @@ func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int, auto
 		// releases did (multi-rank node whose grant would have been split), so a
 		// site that relied on auto-division sees it rather than silently getting
 		// full visibility.
-		if !autoDivideGPUs && gpusPerTask <= 0 && nlocal > 1 && len(nodes[ni].GPUs) >= nlocal && len(warns) == 0 {
+		if !autoDivideGPUs && !bindExplicit && gpusPerTask <= 0 && nlocal > 1 && len(nodes[ni].GPUs) >= nlocal && len(warns) == 0 {
 			warns = append(warns, fmt.Sprintf(
 				"srun: notice: all %d ranks on %s see the node's %d GPUs (SLURM default); "+
 					"use --gpus-per-task or gpu.bind: per-task to give each rank its own",

@@ -59,8 +59,11 @@ this harness:
 - **CPU**: `srun` fans 6 ranks across all 3 nodes over `qrsh -inherit` tight
   integration, each with the right `SLURM_PROCID` / `SLURM_LOCALID` /
   `SLURM_NODEID` and host.
-- **GPU**: with the fake RSMAP complex, a 2-slot job on one worker lands one
-  device per rank (`CUDA_VISIBLE_DEVICES=[0]` and `[1]`).
+- **GPU**: with the fake RSMAP complex, a 2-slot job on one worker shows both
+  binding models -- by default every rank sees the whole grant
+  (`CUDA_VISIBLE_DEVICES=[0,1]`, SLURM's no-binding default, which JAX and other
+  local-rank-indexing frameworks need), while `--gpus-per-task=1` gives each rank
+  its own device (`[0]` and `[1]`).
 
 ## Known caveat (long-lived clusters)
 

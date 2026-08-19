@@ -275,8 +275,14 @@ var _ = Describe("sbatch GPU request translation [JAX]", func() {
 		Expect(captured).To(ContainElement(ContainSubstring("gpu=8")))
 	})
 
-	It("defaults --gpus-per-task to one task per node when --ntasks-per-node is absent", func() {
+	It("defaults --gpus-per-task to one task per node when no geometry is given", func() {
 		Expect(submitGPU("#SBATCH --gpus-per-task=2")).To(ContainElement(ContainSubstring("gpu=2")))
+	})
+
+	It("derives tasks-per-node from --ntasks/--nodes when --ntasks-per-node is absent", func() {
+		// 8 tasks over 2 nodes = 4 per node, so 4 GPUs per node -- not 1.
+		captured := submitGPU("#SBATCH --nodes=2 --ntasks=8 --gpus-per-task=1")
+		Expect(captured).To(ContainElement(ContainSubstring("gpu=4")))
 	})
 
 	It("publishes SLURM_GPU_BIND=per_task for --gpus-per-task so the step binds", func() {

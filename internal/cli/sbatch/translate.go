@@ -180,14 +180,28 @@ func gpuRequest(opt options) (int, bool) {
 		return opt.gpus, true
 	}
 	if opt.haveGPUsPerTask {
-		perNode := opt.ntasksPerNode
-		if !opt.havePerNode {
-			// resolveGeometry's default is one task per node.
-			perNode = 1
-		}
-		return opt.gpusPerTask * perNode, true
+		return opt.gpusPerTask * opt.tasksPerNode(), true
 	}
 	return 0, false
+}
+
+// tasksPerNode is how many tasks land on one node, used to scale a per-task GPU
+// request. --ntasks-per-node states it outright; otherwise it is derived from the
+// resolved task count spread over the requested nodes (rounding up, since a
+// remainder still needs devices on some node). Defaults to one task per node.
+func (o options) tasksPerNode() int {
+	if o.havePerNode && o.ntasksPerNode > 0 {
+		return o.ntasksPerNode
+	}
+	ntasks, _ := o.resolveGeometry()
+	nodes := o.nodes
+	if nodes < 1 {
+		nodes = 1
+	}
+	if perNode := (ntasks + nodes - 1) / nodes; perNode > 0 {
+		return perNode
+	}
+	return 1
 }
 
 // buildResourceList assembles a single comma-joined GE -l value from the mapped
