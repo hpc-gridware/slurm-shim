@@ -4,7 +4,9 @@
 
 `sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration.
 
-> **Status: pre-release** The six client commands and the `SLURM_*` environment contract are implemented and covered by a green unit-test suite, and the launch mechanics have been grounded against real Open Cluster Scheduler 9.0.10 output (RSMAP, `qstat`, `qconf`, `qrsh` signatures). What has **not** happened yet is an end-to-end run on a live multi-GPU cluster. Treat every "supported" below as "implemented + unit-tested", not "battle-tested". If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+**Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through Grid Engine tight integration — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — JAX, submitit, and the rest of the AI stack.
+
+> **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.4). GPU paths are validated through a fake RSMAP complex, **not** on real hardware. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
 https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
@@ -24,8 +26,10 @@ This shim bridges the two worlds: keep your SLURM-native tooling, run it on OCS.
 git clone https://github.com/hpc-gridware/slurm-shim
 cd slurm-shim
 make build                       # -> bin/slurm-shim (static, CGO-off)
-# The one binary answers to every command via argv[0]; create the symlinks:
-for cmd in sbatch srun squeue scancel scontrol sinfo; do ln -sf slurm-shim bin/$cmd; done
+# The one binary answers to every command via argv[0]. This lays down all the
+# symlinks, including sacct and the internal slurm-shim-env / -stepper helpers
+# the PE hook and srun need:
+make install-links
 export PATH="$PWD/bin:$PATH"
 
 # Point it at a config that maps your partitions to GE queues + PEs:
@@ -67,7 +71,7 @@ make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
 
 Pick the OCS version with `OCS_VERSION=9.0.10 make cluster-up`. The cluster comes from the sibling [`quickinstall`](https://github.com/hpc-gridware/quickinstall) repo **unmodified** (cloned on demand, not vendored). See [`test/cluster/`](test/cluster/) for details and [`test/e2e/`](test/e2e/) for the `make e2e` end-to-end + version-compatibility suite.
 
-## What is implemented (unit-tested, partially cluster validated)
+## What is implemented (unit-tested, validated on a live OCS cluster)
 
 Grounded in the [compatibility matrix](#compatibility-matrix) below:
 
@@ -79,7 +83,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
 - **JAX** (multi-process, multi-node) via [`docs/recipes/jax/`](docs/recipes/jax/) — `jax.distributed.initialize()` auto-detects the shim's environment with no glue and no PMI; verified live forming a 3-node process group on the OCS test cluster.
 
-Partial / not yet: `dask-jobqueue`, Nextflow/Snakemake executors — see the matrix.
+Partial / not yet: `dask-jobqueue` — see the matrix. (Nextflow and Snakemake ship native Grid Engine executors; use those.)
 
 > **TODO:** add runnable `examples/` and a community `tests/` harness so the matrix below can be verified on a real cluster and pass/fail reports filed as issues. Neither exists yet.
 
@@ -171,13 +175,13 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 - No `salloc` / `sattach`; no job-step overlap or heterogeneous steps. `sacct` is minimal (submitit-oriented), not a full implementation.
 - `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal`; `--exclusive` is still warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
-- No PMI/PMIx (MPI via the PE's `mpirun`).
-- **Not yet validated end-to-end on a live GPU cluster** — unit-tested and fixture-grounded only.
+- No PMI/PMIx (MPI via the PE's `mpirun`, which is the supported path anyway).
+- **GPU paths are not validated on real hardware** — the live e2e suite uses a fake RSMAP complex, so device *assignment* is asserted but CUDA/NCCL never runs.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
 
 ## Requirements
 
-- **Open Cluster Scheduler** — launch mechanics grounded against OCS **9.0.10** (fixtures in the repo). The binary itself has not been deployed on a live cluster yet.
+- **Open Cluster Scheduler** — end-to-end suite runs green against live OCS **9.0.10** and **9.1.4**.
 - Also targets **Gridware Cluster Scheduler** (same lineage); other SGE-compatible variants: untested.
 - A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). 🚧 A `docs/pe-setup.md` guide is planned; the PE hook scripts are in [`docs/install/`](docs/install/).
 - Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).
