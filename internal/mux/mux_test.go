@@ -35,6 +35,12 @@ var _ = Describe("Output pattern expansion [REQ-RUN-003]", func() {
 		Entry("unknown verb kept", "%z.log", "%z.log"),
 		Entry("array job/task 0-based (submitit)", "%A_%a_%t_log.out", "4720_7_3_log.out"),
 		Entry("job name and user", "%x-%u.log", "myjob-alice.log"),
+		// SLURM allows a zero-pad width; we cannot pad, but the verb must still
+		// expand or every rank writes to one literal filename.
+		Entry("zero-pad width dropped, verb expands", "run_%3a.log", "run_7.log"),
+		Entry("zero-pad on job id", "j%2j.out", "j4711.out"),
+		Entry("escaped percent before a digit", "100%%3a.log", "100%3a.log"),
+		Entry("trailing width with no verb", "out.%3", "out.%"),
 	)
 })
 

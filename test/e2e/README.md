@@ -25,9 +25,38 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `60_gpu` | a fake RSMAP grant -> `SLURM_JOB_GPUS` + per-rank `CUDA_VISIBLE_DEVICES` |
 | `70_reject` | an impossible `srun` is rejected before launch (exit 1, no hang) |
 | `80_sinfo` | `sinfo` shows live node counts/states from GE (not `n/a` placeholders) |
+| `90_array` | `--array`: 0-based SLURM indices over 1-based GE tasks in the job env, `srun`, `sacct` and `scancel`; a `%a` batch path GE cannot express is substituted, not dropped (the Hydra/submitit shape) |
 
 Each check is a self-contained process that exits non-zero on failure; `run.sh`
 fails if any did.
+
+## Adding a check
+
+**Rule: if we verified something works and wrote it down, it gets a check here.**
+A recipe's "Validated on the OCS test cluster" section is a claim; without a check
+it silently rots, and nothing catches the regression. Every claim in a recipe
+should be reducible to an assertion in this suite.
+
+**Keep checks cheap.** These run nightly on a GitHub-hosted runner (2 cores, ~14 GB
+disk, 45-minute cap for the whole suite) that also has to boot a 3-node OCS
+cluster, so a check must not:
+
+- download large artifacts -- no PyTorch, JAX or CUDA wheels (multi-GB, and they
+  blow the disk before they blow the timeout);
+- depend on a Python environment the runner does not already have;
+- sleep for minutes or submit long-running jobs.
+
+Prefer **pure shell that asserts the shim's SLURM-facing behavior**. Almost every
+framework claim reduces to one: "does the job get the right `SLURM_*` values, in
+the right files, with the right ids?" is testable with `echo` and does not need
+the framework installed. `90_array` is the model -- it pins the whole
+Hydra/submitit array contract with no dependencies at all.
+
+Framework-level runs (an actual JAX or Lightning job) stay **manual**, recorded in
+the recipe with captured output; do not add them here.
+
+Register a new check in the `checks=(...)` array in `run.sh` and add a row to the
+table above.
 
 ## Fixtures (`fixtures/<ocs-version>/`)
 

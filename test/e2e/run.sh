@@ -17,6 +17,7 @@ checks=(
   60_gpu
   70_reject
   80_sinfo
+  90_array
 )
 
 fails=0

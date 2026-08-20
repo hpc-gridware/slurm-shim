@@ -16,6 +16,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 | [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling |
 | [`submitit/`](submitit/) | submitit (submit Python functions, arrays) | `sbatch`/`sacct`/`srun`; 0-based arrays, result-pickle tracking |
 | [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` |
+| [`hydra/`](hydra/) | Hydra (`--multirun` sweeps) | `hydra/launcher: submitit_slurm` -> one cluster job per sweep config; no code changes |
 | [`jax/`](jax/) | JAX (multi-process, multi-node) | `srun python train.py`; `jax.distributed.initialize()` auto-detects from five `SLURM_*` vars -- no PMI, no glue |
 
 ## The one thing to understand first

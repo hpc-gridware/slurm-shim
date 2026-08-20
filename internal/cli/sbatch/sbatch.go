@@ -79,7 +79,10 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	}
 	defer cleanup()
 
-	qargs := buildQsubArgs(cfg, opt, part, slots)
+	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots)
+	for _, w := range qwarns {
+		fmt.Fprintln(stderr, "sbatch: warning: "+w)
+	}
 	qargs = append(qargs, scriptPath)
 	qargs = append(qargs, opt.scriptArgs...)
 

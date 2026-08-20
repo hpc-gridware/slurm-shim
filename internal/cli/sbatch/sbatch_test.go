@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -155,6 +156,100 @@ var _ = Describe("sbatch SLURM defaults: submit-dir cwd + env forwarding", func(
 		captured := submit("--error=err.log")
 		Expect(captured).To(ContainElements("-e", "err.log"))
 		Expect(captured).NotTo(ContainElement("-j"))
+	})
+
+	It("rewrites a %a batch path into the user's directory for a 0-based array", func() {
+		// GE's $TASK_ID is 1..N over the submitted range, so for a 0-based array
+		// it is off by one: the path would hit another task's file, or a directory
+		// that does not exist (Eqw). Keep the literal directory the user chose and
+		// use a GE-expressible leaf -- never relocate output to the submit dir.
+		captured := submit("--array=0-2", "--output=logs/%A_%a/%A_%a_0.out")
+		Expect(captured).To(ContainElements("-o", "logs/slurm-$JOB_ID.$TASK_ID.out"))
+	})
+
+	It("rewrites --error and keeps the streams separate (no -j y)", func() {
+		// Regression: an earlier form of this guard dropped -o, -e AND -j y, so GE
+		// opened both cwd-relative defaults and Eqw-failed from an unwritable cwd.
+		// The user asked for separate streams, so -j y must NOT appear.
+		captured := submit("--array=0-2", "--output=logs/%a.out", "--error=logs/%a.err")
+		Expect(captured).To(ContainElements("-o", "logs/slurm-$JOB_ID.$TASK_ID.out"))
+		Expect(captured).To(ContainElements("-e", "logs/slurm-$JOB_ID.$TASK_ID.err"))
+		Expect(captured).NotTo(ContainElement("-j"))
+	})
+
+	It("still merges into stdout when only --output was rewritten", func() {
+		captured := submit("--array=0-2", "--output=logs/%a.out")
+		Expect(captured).To(ContainElements("-o", "logs/slurm-$JOB_ID.$TASK_ID.out"))
+		Expect(captured).To(ContainElements("-j", "y"))
+		Expect(captured).NotTo(ContainElement("-e"))
+	})
+
+	It("warns once when a path is rewritten, and stays quiet when it is not", func() {
+		// The substitution is user-visible: output does not land where asked, so
+		// sbatch must say so -- exactly once, even when both -o and -e are rewritten.
+		script := writeScriptTop2("#!/bin/bash\n#SBATCH -p batch\nsrun true\n")
+		warnOn := func(args ...string) string {
+			var errBuf bytes.Buffer
+			var captured []string
+			rc := run(fakeQsub("81", &captured), testCfg(), "/shim",
+				append(args, script), io.Discard, &errBuf)
+			Expect(rc).To(Equal(0))
+			return errBuf.String()
+		}
+
+		out := warnOn("--array=0-2", "--output=logs/%a.out", "--error=logs/%a.err")
+		Expect(out).To(ContainSubstring("Grid Engine cannot express %a"))
+		Expect(strings.Count(out, "cannot express %a")).To(Equal(1), "warned more than once")
+
+		// A 1-based unit-step array needs no substitution, so no warning.
+		Expect(warnOn("--array=1-3", "--output=logs/%a.out")).NotTo(ContainSubstring("cannot express"))
+	})
+
+	It("keeps both streams coherent when only one path references %a", func() {
+		captured := submit("--array=0-2", "--output=logs/%A.out", "--error=logs/%a.err")
+		Expect(captured).To(ContainElements("-o", "logs/$JOB_ID.out"))
+		Expect(captured).To(ContainElements("-e", "logs/slurm-$JOB_ID.$TASK_ID.err"))
+	})
+
+	It("never collapses -o and -e onto one file when rewriting", func() {
+		// Same directory and extension must not merge two streams the user
+		// deliberately separated (that would be an unrequested -j y).
+		captured := submit("--array=0-2", "--output=logs/x_%a.log", "--error=logs/x_%a_err.log")
+		Expect(captured).To(ContainElements("-o", "logs/slurm-$JOB_ID.$TASK_ID.out"))
+		Expect(captured).To(ContainElements("-e", "logs/slurm-$JOB_ID.$TASK_ID.err"))
+	})
+
+	It("expands a zero-pad verb on an aligned array instead of leaving it literal", func() {
+		// GE cannot pad, but %3a must still vary per task or every task shares
+		// one literal filename.
+		captured := submit("--array=1-9", "--output=logs/run_%3a.log")
+		Expect(captured).To(ContainElements("-o", "logs/run_$TASK_ID.log"))
+	})
+
+	It("keeps a literal %% in the directory prefix when rewriting", func() {
+		captured := submit("--array=0-2", "--output=100%%dir/%a.out")
+		Expect(captured).To(ContainElements("-o", "100%dir/slurm-$JOB_ID.$TASK_ID.out"))
+	})
+
+	It("rewrites a stepped 1-based array too (GE tasks are dense, SLURM indices are not)", func() {
+		// --array=1-9:2 is SLURM indices 1,3,5,7,9 but GE submits a dense -t 1-5.
+		captured := submit("--array=1-9:2", "--output=logs/%a.out")
+		Expect(captured).To(ContainElements("-o", "logs/slurm-$JOB_ID.$TASK_ID.out"))
+	})
+
+	It("treats the zero-pad form %3a as an array reference", func() {
+		captured := submit("--array=0-99", "--output=logs/run_%3a.log")
+		Expect(captured).To(ContainElements("-o", "logs/slurm-$JOB_ID.$TASK_ID.out"))
+	})
+
+	It("keeps a %a batch path for a 1-based array, where $TASK_ID lines up", func() {
+		captured := submit("--array=1-3", "--output=logs/%A_%a.out")
+		Expect(captured).To(ContainElements("-o", "logs/$JOB_ID_$TASK_ID.out"))
+	})
+
+	It("keeps a batch path that does not reference %a", func() {
+		captured := submit("--array=0-2", "--output=logs/%A.out")
+		Expect(captured).To(ContainElements("-o", "logs/$JOB_ID.out"))
 	})
 
 	It("does not force a default -o for arrays (GE per-task naming stands)", func() {

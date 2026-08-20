@@ -1,0 +1,21 @@
+defaults:
+  - _self_
+  # Send every --multirun job to the cluster through submitit.
+  - override hydra/launcher: submitit_slurm
+
+# Your application config -- sweep over any of these on the command line.
+lr: 0.1
+epochs: 3
+
+hydra:
+  launcher:
+    # These map 1:1 onto #SBATCH directives, which slurm-shim translates to qsub.
+    partition: smp
+    timeout_min: 5
+    nodes: 1
+    tasks_per_node: 1
+    cpus_per_task: 1
+    # The one shim-specific line: Hydra writes its own batch script, so it must
+    # source the hook to get SLURM_JOB_ID / SLURM_NTASKS and srun on PATH.
+    setup:
+      - . /opt/slurm-shim/etc/slurm-shim-source-hook.sh

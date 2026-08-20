@@ -63,26 +63,32 @@ func parseJobID(terse string) string {
 	return strings.SplitN(s, ".", 2)[0]
 }
 
-// buildQsubArgs assembles the qsub argv (without the trailing script + args).
-// -terse yields just the job id on stdout (REQ-SBT-003). cfg supplies the site's
-// GE complex names for the resource (-l) mapping.
-func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots int) []string {
+// buildQsubArgs assembles the qsub argv (without the trailing script + args) and
+// any warnings the caller must surface on stderr (currently a batch-level -o/-e
+// path GE cannot express). -terse yields just the job id on stdout
+// (REQ-SBT-003). cfg supplies the site's GE complex names for the resource (-l)
+// mapping.
+func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots int) ([]string, []string) {
+	var warns []string
 	args := []string{"-terse", "-q", part.Queue, "-pe", part.PE, strconv.Itoa(slots)}
 	if opt.jobName != "" {
 		args = append(args, "-N", opt.jobName)
 	}
 	if opt.output != "" {
-		args = append(args, "-o", translateOutputPath(opt.output))
+		p, w := batchPath(opt, opt.output, "out")
+		args = append(args, "-o", p)
+		warns = appendWarn(warns, w)
 	} else if !opt.haveArray {
 		// SLURM default: stdout goes to slurm-%j.out in the working directory.
 		// GE's default (<jobname>.o<id>) both names differently and, worse, is
 		// opened relative to the job cwd even when unwritable. Arrays keep GE's
-		// per-task default naming (SLURM's slurm-%A_%a.out has 0-based %a that a
-		// batch-level GE path cannot express; submitit always passes --output).
+		// per-task default naming.
 		args = append(args, "-o", "slurm-$JOB_ID.out")
 	}
 	if opt.errorPath != "" {
-		args = append(args, "-e", translateOutputPath(opt.errorPath))
+		p, w := batchPath(opt, opt.errorPath, "err")
+		args = append(args, "-e", p)
+		warns = appendWarn(warns, w)
 	} else {
 		// SLURM merges stderr into the stdout file unless --error is given; GE
 		// instead defaults stderr to a separate <jobname>.e<id> in the job cwd,
@@ -126,7 +132,7 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	if len(opt.holdJIDs) > 0 {
 		args = append(args, "-hold_jid", strings.Join(opt.holdJIDs, ","))
 	}
-	return args
+	return args, warns
 }
 
 // exportArgs maps SLURM's --export to qsub environment flags. SLURM's default
@@ -244,14 +250,101 @@ func buildArrayArgs(opt options) []string {
 	return args
 }
 
+// batchPath renders a batch-level -o/-e path for qsub, substituting a
+// GE-expressible one when the requested pattern cannot be represented.
+//
+// SLURM's %a is the job's own array index, but GE only offers $TASK_ID, which
+// numbers the tasks of the range we actually submit (a dense 1..N). Those agree
+// only for a 1-based, unit-step array; for anything else -- notably the 0-based
+// arrays submitit and Hydra emit, and any stepped array -- $TASK_ID is off, so
+// the rendered path would name another task's file, or a directory that does not
+// exist (Hydra uses .../%A_%a/...), which GE fails with Eqw rather than creating.
+//
+// Rather than drop the argument (which sends output to GE's cwd-relative default
+// under a name derived from a shim-internal script, and can itself Eqw when the
+// submit dir is unwritable), keep the longest literal directory prefix the user
+// asked for -- that directory has to exist for SLURM too -- and put a
+// GE-expressible per-task file in it.
+// appendWarn adds w to warns when it is non-empty and not already present, so a
+// job whose -o and -e are both rewritten reports the substitution once.
+func appendWarn(warns []string, w string) []string {
+	if w == "" {
+		return warns
+	}
+	for _, have := range warns {
+		if have == w {
+			return warns
+		}
+	}
+	return append(warns, w)
+}
+
+// stream is "out" or "err" so the two descriptors can never land on one file.
+// The second result is a warning for the caller to surface, empty when the
+// requested path was used as-is.
+func batchPath(opt options, path, stream string) (string, string) {
+	if !opt.haveArray || (opt.arrayMin == 1 && opt.arrayStep == 1) || !referencesArrayTask(path) {
+		return translateOutputPath(path), ""
+	}
+	dir := literalDir(path)
+	return dir + "slurm-$JOB_ID.$TASK_ID." + stream,
+		"Grid Engine cannot express %a for this array; batch-level output goes to " +
+			dir + "slurm-$JOB_ID.$TASK_ID.{out,err} (per-task files written by srun are unaffected)"
+}
+
+// literalDir returns the leading directory part of a pattern that contains no
+// %-verb, with a trailing separator (empty when the first component already
+// varies). Everything below it may differ per task, so it is the deepest
+// directory GE can be told to write into. A %% escape is literal, so it neither
+// ends the prefix nor survives into it.
+func literalDir(p string) string {
+	var b strings.Builder
+	cut := 0
+	for i := 0; i < len(p); i++ {
+		switch p[i] {
+		case '/':
+			b.WriteByte('/')
+			cut = b.Len()
+		case '%':
+			if i+1 < len(p) && p[i+1] == '%' {
+				b.WriteByte('%')
+				i++
+				continue
+			}
+			return b.String()[:cut]
+		default:
+			b.WriteByte(p[i])
+		}
+	}
+	return b.String()[:cut]
+}
+
+// referencesArrayTask reports whether a SLURM output pattern uses %a, honoring
+// the %% escape and SLURM's optional zero-pad width (%3a).
+func referencesArrayTask(p string) bool {
+	for i := 0; i < len(p); i++ {
+		if p[i] != '%' || i+1 >= len(p) {
+			continue
+		}
+		i++
+		for i < len(p) && p[i] >= '0' && p[i] <= '9' {
+			i++
+		}
+		if i < len(p) && p[i] == 'a' {
+			return true
+		}
+	}
+	return false
+}
+
 // translateOutputPath rewrites SLURM output-pattern verbs in an sbatch -o/-e path
 // into the GE pseudo-variables qsub expands at run time (qsub -o/-e understand
 // $JOB_ID/$TASK_ID/$JOB_NAME/$USER/$HOSTNAME, not SLURM's %-tokens; a verbatim
 // "%j" would become a literal filename). %t/%n (task rank / node id) have no
-// batch-level meaning and become 0. For an array, %a maps to GE's 1-based
-// $TASK_ID; the real per-task output is written by srun at the SLURM 0-based path,
-// so any array batch-level file is a harmless secondary stream. An unknown %x is
-// left verbatim.
+// batch-level meaning and become 0. %a maps to GE's $TASK_ID, which is only
+// equivalent for a 1-based unit-step array -- batchPath is the authority on when
+// this may be called with an array path at all. An unknown verb keeps its % and
+// letter; a zero-pad width (%3a) is dropped, since GE cannot pad.
 func translateOutputPath(p string) string {
 	var b strings.Builder
 	b.Grow(len(p))
@@ -261,6 +354,16 @@ func translateOutputPath(p string) string {
 			continue
 		}
 		i++
+		// SLURM allows a zero-pad width (%3a, %5j). GE cannot pad, so the width is
+		// dropped, but the verb must still expand -- writing it back verbatim would
+		// give every task one literal filename.
+		for i < len(p) && p[i] >= '0' && p[i] <= '9' {
+			i++
+		}
+		if i >= len(p) {
+			b.WriteByte('%')
+			break
+		}
 		switch p[i] {
 		case 'j', 'A':
 			b.WriteString("$JOB_ID")

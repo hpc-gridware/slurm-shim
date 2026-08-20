@@ -81,6 +81,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - The full per-rank `SLURM_*` environment, including compressed nodelists and per-rank `CUDA_VISIBLE_DEVICES` from GE RSMAP grants.
 
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
+- **Hydra** (`--multirun` parameter sweeps) via [`docs/recipes/hydra/`](docs/recipes/hydra/) — `hydra/launcher: submitit_slurm` turns each sweep config into a cluster job; verified live fanning a sweep across 3 nodes.
 - **JAX** (multi-process, multi-node) via [`docs/recipes/jax/`](docs/recipes/jax/) — `jax.distributed.initialize()` auto-detects the shim's environment with no glue and no PMI; verified live forming a 3-node process group on the OCS test cluster.
 
 ### Use the native Grid Engine path instead
@@ -127,7 +128,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--ntasks-per-node` | ✅ | feeds the slot count |
 | `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule) |
 | `--job-name` / `-J` | ✅ | `qsub -N` |
-| `--output` / `--error` | ✅ | passed to `qsub -o`/`-e`; SLURM `%j`/`%A`/`%a`/`%x`/`%u`/`%N` filename patterns are translated to GE `$JOB_ID`/`$TASK_ID`/`$JOB_NAME`/`$USER`/`$HOSTNAME`; per-task streams from `srun` also expand `%A`/`%a` (0-based). SLURM defaults hold: no `--output` -> `slurm-<jobid>.out` in the submit dir (non-array), no `--error` -> stderr merged into stdout (`qsub -j y`) |
+| `--output` / `--error` | ✅ | `qsub -o`/`-e`; SLURM `%j`/`%A`/`%a`/`%x`/`%u`/`%N` patterns are translated to GE `$JOB_ID`/`$TASK_ID`/`$JOB_NAME`/`$USER`/`$HOSTNAME` (a zero-pad width like `%3a` expands but is not padded). **Exception:** GE's `$TASK_ID` is a dense 1..N over the submitted range, so for a 0-based or stepped array a `%a` batch-level path is replaced by `<literal-dir>/slurm-$JOB_ID.$TASK_ID.{out,err}` with a warning; the per-task files `srun` writes keep the SLURM indices. SLURM defaults hold: no `--output` -> `slurm-<jobid>.out` (non-array), no `--error` -> merged into stdout (`qsub -j y`) |
 | `--chdir` / `-D` | ✅ | `qsub -wd`; without it the job runs in the **submit directory** (`qsub -cwd`), matching SLURM's default (GE's own default would be `$HOME`) |
 | `--wrap` | ✅ | wraps the command string in a submitted script |
 | `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |

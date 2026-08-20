@@ -29,7 +29,8 @@ type PatternFields struct {
 //	%t rank, %n node id, %N node name, %s step id, %x job name, %u user,
 //	%% literal %.
 //
-// An unknown %x is left verbatim (leading % preserved).
+// An unknown verb keeps its leading % and letter; a zero-pad width (%3a) is
+// dropped, since the expansion cannot pad.
 func ExpandPattern(pattern string, f PatternFields) string {
 	var b strings.Builder
 	b.Grow(len(pattern))
@@ -39,6 +40,15 @@ func ExpandPattern(pattern string, f PatternFields) string {
 			continue
 		}
 		i++
+		// SLURM allows a zero-pad width (%3a); we cannot pad, but the verb must
+		// still expand or every rank writes to one literal filename.
+		for i < len(pattern) && pattern[i] >= '0' && pattern[i] <= '9' {
+			i++
+		}
+		if i >= len(pattern) {
+			b.WriteByte('%')
+			break
+		}
 		switch pattern[i] {
 		case 'j':
 			b.WriteString(strconv.FormatInt(f.JobID, 10))
