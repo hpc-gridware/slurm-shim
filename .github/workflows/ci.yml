@@ -31,12 +31,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin BOTH sides. golangci-lint typechecks through its own x/tools, which
+      # only reads export data from Go releases it predates: a runner Go newer
+      # than the linter fails on every stdlib import ("export data version N is
+      # greater than maximum supported"), while a linter older than the module's
+      # go directive fails the other way. `stable` moves on its own, so pairing
+      # it with a pinned linter breaks on each Go release. This pair is the one
+      # verified green; bump them together.
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
-      # Build golangci-lint from source with the repo's Go toolchain so its build
-      # Go version is always >= the module's go directive (the prebuilt action
-      # binaries lag behind, breaking on go 1.25 modules). v2.11.2 matches local.
+          go-version: '1.26'
       - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.2
       - run: golangci-lint run ./...
 
