@@ -26,6 +26,7 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `70_reject` | an impossible `srun` is rejected before launch (exit 1, no hang) |
 | `80_sinfo` | `sinfo` shows live node counts/states from GE (not `n/a` placeholders) |
 | `90_array` | `--array`: 0-based SLURM indices over 1-based GE tasks in the job env, `srun`, `sacct` and `scancel`; a `%a` batch path GE cannot express is substituted, not dropped (the Hydra/submitit shape) |
+| `91_sacct` | `sacct` reporting: the default column set, every `--format` field, `ExitCode` as `code:signal`, `-P` vs `--parsable2`, `-X`, `-u`/`-s`/`-S`/`-E` selection (window applied to live rows too), aliases, and the exact `JobID|State|NodeList` shape submitit polls |
 
 Each check is a self-contained process that exits non-zero on failure; `run.sh`
 fails if any did.

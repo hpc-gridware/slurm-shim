@@ -3,6 +3,7 @@ package gedata
 import (
 	"encoding/xml"
 	"strings"
+	"time"
 )
 
 // JobRow is one job (or array task) parsed from qstat output.
@@ -14,6 +15,10 @@ type JobRow struct {
 	Queue  string // queue instance, e.g. "gpu.q@node001"
 	Slots  int
 	TaskID string // array task id, "" when not an array
+	// Start is set for a running job, Submit for a pending one; qstat reports
+	// only the one that applies, so the other stays zero.
+	Start  time.Time
+	Submit time.Time
 }
 
 // MapState maps a GE state code to a SLURM compact state (REQ-SQU-001, SI-05).
@@ -73,6 +78,30 @@ type xmlJobList struct {
 	Queue  string `xml:"queue_name"`
 	Slots  int    `xml:"slots"`
 	Tasks  string `xml:"tasks"`
+	Start  string `xml:"JAT_start_time"`
+	Submit string `xml:"JAT_submission_time"`
+}
+
+// qstatTimeLayout is how qstat renders a timestamp in XML, e.g.
+// "2026-08-20T20:05:55.995486". It carries no zone because it is the cluster's
+// own local time; the shim runs on that cluster, so parsing it as local time is
+// both the correct instant (for elapsed arithmetic) and a faithful round trip
+// when it is printed back out.
+const qstatTimeLayout = "2006-01-02T15:04:05.999999"
+
+// qstatTime parses a qstat XML timestamp, returning the zero time for an absent
+// or unrecognized value rather than an error: a missing time is normal (qstat
+// reports a start time only for running jobs) and never worth failing a listing.
+func qstatTime(v string) time.Time {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}
+	}
+	t, err := time.ParseInLocation(qstatTimeLayout, v, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // ParseQstatXML parses `qstat -xml` output into job rows.
@@ -91,6 +120,8 @@ func ParseQstatXML(data []byte) ([]JobRow, error) {
 			Queue:  j.Queue,
 			Slots:  j.Slots,
 			TaskID: strings.TrimSpace(j.Tasks),
+			Start:  qstatTime(j.Start),
+			Submit: qstatTime(j.Submit),
 		})
 	}
 	for _, j := range doc.QueueJobs {

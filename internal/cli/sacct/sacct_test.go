@@ -148,7 +148,7 @@ var _ = Describe("sacct", func() {
 		acct := map[string]string{"4712": acctRecord("4712", "1", "0", "0") +
 			acctRecord("4712", "2", "0", "0") + acctRecord("4712", "3", "0", "1")}
 		// -j 4712_2 (SLURM 0-based) -> GE task 3 -> exit_status 1 -> FAILED.
-		_, lines := runSacct(runner(emptyQstat, acct), "--parsable2", "-j", "4712_2")
+		_, lines := runSacct(runner(emptyQstat, acct), append(base, "4712_2")...)
 		Expect(lines).To(Equal([]string{"JobID|State|NodeList", "4712_2|FAILED|"}))
 	})
 
@@ -167,7 +167,7 @@ var _ = Describe("sacct", func() {
 			"4711": acctRecord("4711", "undefined", "0", "0"),
 			"4713": acctRecord("4713", "undefined", "0", "0"),
 		}
-		_, lines := runSacct(runner(emptyQstat, acct), "--parsable2", "-j", "4711,4713")
+		_, lines := runSacct(runner(emptyQstat, acct), append(base, "4711,4713")...)
 		Expect(lines).To(ContainElement("4711|COMPLETED|"))
 		Expect(lines).To(ContainElement("4713|COMPLETED|"))
 	})
@@ -185,7 +185,7 @@ var _ = Describe("sacct", func() {
 
 	It("suppresses the header with --noheader", func() {
 		acct := map[string]string{"4711": acctRecord("4711", "undefined", "0", "0")}
-		_, lines := runSacct(runner(emptyQstat, acct), "-n", "-j", "4711")
+		_, lines := runSacct(runner(emptyQstat, acct), append(append([]string{"-n"}, base...), "4711")...)
 		Expect(lines).To(Equal([]string{"4711|COMPLETED|"}))
 	})
 

@@ -18,6 +18,7 @@ checks=(
   70_reject
   80_sinfo
   90_array
+  91_sacct
 )
 
 fails=0

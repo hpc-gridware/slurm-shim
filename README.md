@@ -113,7 +113,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
-| `sacct` | ✅ | Minimal, submitit-oriented: `-o JobID,State,NodeList --parsable2 -j <id>` (repeatable/comma ids). State from `qstat` (live) + `qacct` (finished, via go-clusterscheduler); 0-based array elements; unknown ids omitted. Not a full `sacct`. |
+| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-s/--state`, `-S`/`-E`; `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NodeList, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); SLURM's default columns when `-o` is absent; `-P`/`--parsable2`/`-n`/`-X`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler); 0-based array elements; unknown ids omitted. No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. See [sacct notes](#sacct-fidelity). |
 | `salloc` | ❌ | Not implemented. |
 
 ### `sbatch` flags
@@ -180,11 +180,29 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 - `srun` launches one process per task over **`qrsh -inherit` tight integration**: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
 - **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
-- **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach`, `salloc`, and a full `sacct` (a minimal submitit-oriented `sacct` exists). Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
+- **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach` and `salloc`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
+
+### `sacct` fidelity
+
+`sacct` reports what GE records, so two differences from a real SLURM database are
+worth knowing:
+
+- **No job steps.** There is no `<id>.batch` / `<id>.extern` / `<id>.0` row — one
+  job is one row. `-X` is accepted and is a no-op for that reason.
+- **A non-zero exit is reported as `COMPLETED`.** On OCS 9.1.4 a job that ran
+  under a parallel environment (the shim's `sbatch` always requests one) loses
+  its script's exit status in the accounting record. Crashes, `scancel` and
+  wallclock timeouts come through GE's separate `failed` field and *are* reported
+  correctly (`CANCELLED` / `TIMEOUT` / `NODE_FAIL`), so `sacct` remains a reliable
+  completion signal — but do not use `ExitCode` to detect a job that failed by
+  exiting non-zero. Details and a reproducer:
+  [`docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md`](docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
+  This does not affect submitit or Hydra, which carry failures in their own
+  result files.
 
 ### Known limitations
 
-- No `salloc` / `sattach`; no job-step overlap or heterogeneous steps. `sacct` is minimal (submitit-oriented), not a full implementation.
+- No `salloc` / `sattach`; no job-step overlap or heterogeneous steps.
 - `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal`; `--exclusive` is still warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
 - No PMI/PMIx (MPI via the PE's `mpirun`, which is the supported path anyway).
 - **GPU paths are not validated on real hardware** — the live e2e suite uses a fake RSMAP complex, so device *assignment* is asserted but CUDA/NCCL never runs.
