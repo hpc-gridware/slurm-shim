@@ -172,6 +172,17 @@ var _ = Describe("sacct", func() {
 		Expect(lines).To(ContainElement("4713|COMPLETED|"))
 	})
 
+	It("does not let an attached -o/--format value swallow the following flag", func() {
+		// -oFOO and --format=FOO carry their value, so unlike the separate form
+		// they must not consume the next argument -- otherwise the -j after them
+		// would be eaten and no job would be reported.
+		acct := map[string]string{"4711": acctRecord("4711", "undefined", "0", "0")}
+		for _, fmtFlag := range []string{"-oJobID,State,NodeList", "--format=JobID,State,NodeList"} {
+			_, lines := runSacct(runner(emptyQstat, acct), fmtFlag, "--parsable2", "-j", "4711")
+			Expect(lines).To(ContainElement("4711|COMPLETED|"), "with %s", fmtFlag)
+		}
+	})
+
 	It("suppresses the header with --noheader", func() {
 		acct := map[string]string{"4711": acctRecord("4711", "undefined", "0", "0")}
 		_, lines := runSacct(runner(emptyQstat, acct), "-n", "-j", "4711")

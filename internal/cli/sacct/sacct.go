@@ -88,12 +88,12 @@ func parse(args []string) (ids []string, noHeader bool) {
 		case a == "-n" || a == "--noheader":
 			noHeader = true
 		case a == "-o" || a == "--format":
-			i++ // consume and ignore: output columns are fixed
-		case strings.HasPrefix(a, "-o") && len(a) > 2, strings.HasPrefix(a, "--format="):
-			// value attached; nothing to consume
+			i++ // separate value: consume it, the output columns are fixed
 		}
-		// All other flags are ignored: the format is fixed and submitit only ever
-		// sends -o, --parsable2 and -j.
+		// Everything else is ignored, which is also the right handling for the
+		// attached-value forms (-oFOO, --format=FOO): the value travels with the
+		// flag, so there is nothing to consume. The format is fixed and submitit
+		// only ever sends -o, --parsable2 and -j.
 	}
 	return ids, noHeader
 }
