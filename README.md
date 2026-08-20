@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
 ## Why
 
-Among open-source schedulers, SLURM has become the default integration target for many tooling —  tutorials, `submitit`, Hugging Face `accelerate`, and `dask-jobqueue` assume it out of the box. That's a fact about tool defaults, not about scheduling: production clusters run on a range of schedulers, and the Grid Engine lineage in particular still drives fleets in EDA, life sciences, and engineering — under active development today as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
+Among open-source schedulers, SLURM has become the default integration target for many tooling — tutorials, `submitit`, `jax.distributed`, and Hugging Face `accelerate` assume it out of the box. That's a fact about tool defaults, not about scheduling: production clusters run on a range of schedulers, and the Grid Engine lineage in particular still drives fleets in EDA, life sciences, and engineering — under active development today as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
 
 This shim bridges the two worlds: keep your SLURM-native tooling, run it on OCS. It is a single static Go binary (busybox-style symlink dispatch) that shells out to the GE clients (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`) and fabricates the SLURM environment inside GE PE jobs.
 
@@ -83,7 +83,17 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
 - **JAX** (multi-process, multi-node) via [`docs/recipes/jax/`](docs/recipes/jax/) — `jax.distributed.initialize()` auto-detects the shim's environment with no glue and no PMI; verified live forming a 3-node process group on the OCS test cluster.
 
-Partial / not yet: `dask-jobqueue` — see the matrix. (Nextflow and Snakemake ship native Grid Engine executors; use those.)
+### Use the native Grid Engine path instead
+
+These already speak Grid Engine — they need no shim, and the native route is the better one:
+
+| Tool | Native Grid Engine support |
+|---|---|
+| **Dask** | [`dask_jobqueue.SGECluster`](https://jobqueue.dask.org/en/latest/generated/dask_jobqueue.SGECluster.html) — works with any Grid Engine derivative |
+| **Nextflow** | the [`sge` executor](https://docs.seqera.io/nextflow/executor) — `process.executor = 'sge'` |
+| **Snakemake** | the [`cluster-generic` executor plugin](https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/cluster-generic.html) (`--executor cluster-generic --cluster "qsub -terse"`), or the [SGE profile](https://github.com/Snakemake-Profiles/sge) |
+| **JupyterHub** | [`batchspawner`](https://github.com/jupyterhub/batchspawner)'s [`GridengineSpawner`](https://github.com/jupyterhub/batchspawner/blob/main/SPAWNERS.md) |
+| **MPI** (OpenMPI, Intel MPI, MVAPICH) | Grid Engine tight integration via the PE's `mpirun` |
 
 > **TODO:** add runnable `examples/` and a community `tests/` harness so the matrix below can be verified on a real cluster and pass/fail reports filed as issues. Neither exists yet.
 
