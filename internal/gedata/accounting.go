@@ -85,6 +85,12 @@ func JobAccounting(ctx context.Context, runner Runner, q AcctQuery) ([]Accountin
 		// are steps, not jobs: sacct never emits step rows, and keeping them
 		// would both duplicate the job and let a slave task's host and exit
 		// status stand in for the job's own.
+		//
+		// The master record (pe_taskid NONE) always follows, but not always at
+		// the same instant: qacct can briefly answer with the task records
+		// alone. Reporting nothing for that window is the right answer -- it
+		// reads as "unknown, keep polling" and resolves on the next poll --
+		// whereas a slave task's record would be a wrong answer that sticks.
 		if pt := strings.TrimSpace(d.PETaskID); pt != "" && pt != "NONE" {
 			continue
 		}

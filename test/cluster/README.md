@@ -17,6 +17,7 @@ Docker Engine 20.10+ with Compose v2, ~4 GB RAM, ~10 GB disk, and a Go toolchain
 make cluster-up                 # clone quickinstall, boot cluster (OCS 9.1.4), install shim
 make demo                       # multi-node srun fan-out
 make demo-gpu                   # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
+make demo-flax                  # multi-node data-parallel Flax training (installs a shared venv)
 make cluster-down               # stop (keeps the OCS install)
 make cluster-down ARGS=-v       # stop and wipe the OCS install (needed to change OCS_VERSION)
 
@@ -37,6 +38,8 @@ make cluster-install            # or: ARGS=--gpu to also add the fake RSMAP comp
 | `QUICKINSTALL_REF` | `main` | which quickinstall commit/branch to run (pin for reproducibility) |
 | `QUICKINSTALL_DIR` | *(unset)* | use an existing quickinstall checkout instead of cloning |
 | `GPU_PER_WORKER` | `2` | fake RSMAP devices per worker (with `--gpu`) |
+| `FLAX_VENV` | `/home/gridware/flaxenv` | shared venv `make demo-flax` creates |
+| `FLAX_PIP_SPEC` | `jax flax optax` | what goes in that venv; pin versions here to work around a breaking release |
 
 To switch OCS version: `make cluster-down ARGS=-v` then `OCS_VERSION=... make cluster-up`.
 
@@ -64,6 +67,26 @@ this harness:
   (`CUDA_VISIBLE_DEVICES=[0,1]`, SLURM's no-binding default, which JAX and other
   local-rank-indexing frameworks need), while `--gpus-per-task=1` gives each rank
   its own device (`[0]` and `[1]`).
+- **Flax** (2026-08-25, OCS 9.1.4): `make demo-flax` runs one process per node,
+  two CPU devices each, forming a single 6-device `jax.sharding` mesh across all
+  three containers; the batch checksum and identical per-process weights confirm
+  the gradient all-reduce crossed the hosts. 22 seconds end to end once the venv
+  exists.
+
+## The flax demo
+
+`make demo-flax` needs a Python the containers do not ship. It installs Python
+3.11 on each node (`zypper`) and creates one venv with jax/flax/optax on the
+**shared** home (`/home/gridware/flaxenv`), so every node runs the same
+interpreter and the same workload — `srun` does not ship files. Both steps are
+idempotent; the first run needs network from the containers and downloads
+~200 MB (a ~740 MB venv, and note pip resolves jax 0.10.2 here because the
+containers get Python 3.11). The job itself is
+[`docs/recipes/flax/flax_dp_train.py`](../../docs/recipes/flax/): 3 nodes x 1
+task x 2 CPU devices forming one 6-device mesh, then three checks that only pass
+if the gradient was reduced across the nodes. The demo caps `STEPS` at 25 --
+every step is a real cross-container gloo all-reduce, which is far slower than
+NCCL on real GPUs, and `demo.sh` only waits a few minutes for a job.
 
 ## Known caveat (long-lived clusters)
 

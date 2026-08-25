@@ -66,10 +66,10 @@ clean:
 # Stand up a real 3-node Open Cluster Scheduler cluster with slurm-shim installed
 # and try it out. Needs Docker + Compose v2.
 #   make cluster-up [OCS_VERSION=9.1.4] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.4)
-#   make demo / make demo-gpu                          submit a demo job, print output
+#   make demo / demo-gpu / demo-flax                   submit a demo job, print output
 #   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
 CLUSTER := test/cluster
-.PHONY: cluster-up cluster-down cluster-install demo demo-gpu
+.PHONY: cluster-up cluster-down cluster-install demo demo-gpu demo-flax
 cluster-up:
 	$(CLUSTER)/up.sh $(ARGS)
 cluster-down:
@@ -80,6 +80,8 @@ demo:
 	$(CLUSTER)/demo.sh cpu
 demo-gpu:
 	$(CLUSTER)/demo.sh gpu
+demo-flax:
+	$(CLUSTER)/demo.sh flax
 
 # --- End-to-end + OCS version-compatibility suite -----------------------------
 #   make e2e                          run all e2e checks against a running cluster

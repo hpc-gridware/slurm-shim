@@ -18,6 +18,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 | [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` |
 | [`hydra/`](hydra/) | Hydra (`--multirun` sweeps) | `hydra/launcher: submitit_slurm` -> one cluster job per sweep config; no code changes |
 | [`jax/`](jax/) | JAX (multi-process, multi-node) | `srun python train.py`; `jax.distributed.initialize()` auto-detects from five `SLURM_*` vars -- no PMI, no glue |
+| [`flax/`](flax/) | Flax (data-parallel training, multi-node) | same auto-detect, then one global `jax.sharding` mesh over every process's devices; gradients all-reduce across nodes |
 
 ## The one thing to understand first
 

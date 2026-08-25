@@ -40,9 +40,10 @@ ok_id="$(gridware "cd /home/gridware && sbatch --job-name=e2eok --wrap='sleep 2'
 [ -n "$ok_id" ] || fail "sbatch returned no job id"
 
 # ------------------------------------------------------------- a failing job
-# Dies by signal, which is the failure GE actually records for a PE job: OCS
-# 9.1.4 drops a parallel job's clean-exit status, so `exit 3` would come back as
-# a success. See docs/solutions/integration-issues/
+# Dies by signal, which is the failure GE actually records here: on OCS 9.1.4 a
+# PE with control_slaves TRUE (required for tight integration) drops the script's
+# clean-exit status, so `exit 3` would come back as a success. See
+# docs/solutions/integration-issues/
 # pe-jobs-lose-exit-status-in-accounting.md -- the exit-code mapping itself is
 # covered by the unit tests in internal/gedata.
 bad_id="$(gridware "cd /home/gridware && sbatch --job-name=e2ebad --wrap='kill -TERM \$\$'" \

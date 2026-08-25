@@ -83,6 +83,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
 - **Hydra** (`--multirun` parameter sweeps) via [`docs/recipes/hydra/`](docs/recipes/hydra/) — `hydra/launcher: submitit_slurm` turns each sweep config into a cluster job; verified live fanning a sweep across 3 nodes.
 - **JAX** (multi-process, multi-node) via [`docs/recipes/jax/`](docs/recipes/jax/) — `jax.distributed.initialize()` auto-detects the shim's environment with no glue and no PMI; verified live forming a 3-node process group on the OCS test cluster.
+- **Flax** (data-parallel training, multi-node) via [`docs/recipes/flax/`](docs/recipes/flax/) — the same auto-detect, then a real optimizer over one global `jax.sharding` mesh spanning every process's devices, so a wrong environment fails loudly instead of training alone; verified live forming a 6-device mesh across the 3-node OCS test cluster with gradients reduced across hosts every step.
 
 ### Use the native Grid Engine path instead
 
@@ -113,7 +114,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
-| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-s/--state`, `-S`/`-E`; `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NodeList, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); SLURM's default columns when `-o` is absent; `-P`/`--parsable2`/`-n`/`-X`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler); 0-based array elements; unknown ids omitted. No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. See [sacct notes](#sacct-fidelity). |
+| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-s/--state`, `-S`/`-E`; `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NodeList, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); SLURM's default columns when `-o` is absent; `-P`/`--parsable2`/`-n`/`-X`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
 | `salloc` | ❌ | Not implemented. |
 
 ### `sbatch` flags
@@ -184,14 +185,25 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 ### `sacct` fidelity
 
-`sacct` reports what GE records, so two differences from a real SLURM database are
-worth knowing:
+`sacct` reports what GE records, not a SLURM accounting database. Four
+differences are worth knowing:
 
+- **A selector is required.** Real `sacct` with no arguments reports today's jobs
+  for the invoking user; this one prints only the header. Pass `-j`, `-u`, or
+  `-S`/`-E`.
 - **No job steps.** There is no `<id>.batch` / `<id>.extern` / `<id>.0` row — one
   job is one row. `-X` is accepted and is a no-op for that reason.
+- **Array elements are reported by 0-based position.** GE task *k* is reported as
+  `<id>_<k-1>`, which is exact for the 0-based arrays submitit and Hydra submit
+  but shifts a native `qsub -t 1-3` array to `_0.._2`. Elements of an array that
+  has not started yet are not listed at all — `sacct` on a freshly queued array
+  returns nothing until its tasks begin.
 - **A non-zero exit is reported as `COMPLETED`.** On OCS 9.1.4 a job that ran
-  under a parallel environment (the shim's `sbatch` always requests one) loses
-  its script's exit status in the accounting record. Crashes, `scancel` and
+  under a PE with `control_slaves TRUE` loses its script's exit status in the
+  accounting record — and that setting is what `qrsh -inherit` tight integration
+  is built on, so the shim's PEs require it. It is stock GE behavior, not shim
+  wiring: a plain `qsub` of a plain script reproduces it with no shim code
+  involved. Crashes, `scancel` and
   wallclock timeouts come through GE's separate `failed` field and *are* reported
   correctly (`CANCELLED` / `TIMEOUT` / `NODE_FAIL`), so `sacct` remains a reliable
   completion signal — but do not use `ExitCode` to detect a job that failed by

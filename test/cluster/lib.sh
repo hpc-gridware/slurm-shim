@@ -27,6 +27,11 @@ NODES=(ocs-master ocs-worker1 ocs-worker2)
 MASTER=ocs-master
 GPU_COMPLEX="${GPU_COMPLEX:-gpu}"
 GPU_PER_WORKER="${GPU_PER_WORKER:-2}"     # fake RSMAP device count per worker
+FLAX_VENV="${FLAX_VENV:-/home/gridware/flaxenv}"   # shared venv for the flax demo
+# Unpinned on purpose (the recipe tracks current jax/flax), but overridable the
+# same way OCS_VERSION is, so a breaking release can be worked around without
+# editing this file: FLAX_PIP_SPEC='jax==0.11.1 flax==0.12.9 optax' make demo-flax
+FLAX_PIP_SPEC="${FLAX_PIP_SPEC:-jax flax optax}"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -122,4 +127,29 @@ ensure_gpu_complex() {
     [ "$w" = "$MASTER" ] && continue
     manager "qconf -mattr exechost complex_values '${GPU_COMPLEX}=${GPU_PER_WORKER}(${ids})' $w"
   done
+}
+
+# ensure_flax_env makes jax/flax/optax importable on every node for the flax demo.
+# The containers ship no usable Python, so this installs Python 3.11 on each node
+# and creates ONE venv on the shared home, which every node then sees at the same
+# path (the same shape the ray recipe documents). Idempotent; the first run
+# downloads ~200 MB and needs network from the containers.
+ensure_flax_env() {
+  local n
+  for n in "${NODES[@]}"; do
+    if docker exec "$n" bash -lc 'command -v python3.11 >/dev/null 2>&1'; then continue; fi
+    log "installing Python 3.11 on $n"
+    docker exec "$n" bash -lc 'zypper -n --gpg-auto-import-keys install python311 python311-pip >/dev/null' \
+      || die "could not install python311 on $n"
+  done
+  if ! docker exec "$MASTER" test -x "$FLAX_VENV/bin/python"; then
+    log "creating shared venv $FLAX_VENV (jax, flax, optax; downloads ~200 MB)"
+    gridware "python3.11 -m venv '$FLAX_VENV'" || die "could not create $FLAX_VENV"
+    gridware "'$FLAX_VENV/bin/pip' install --quiet --upgrade pip" >/dev/null 2>&1 || true
+    gridware "'$FLAX_VENV/bin/pip' install --quiet $FLAX_PIP_SPEC" || die "pip install $FLAX_PIP_SPEC failed"
+  fi
+  # The venv's python is a symlink to the system 3.11, so a node that skipped the
+  # install above would fail here rather than inside the job.
+  gridware "'$FLAX_VENV/bin/python' -c 'import jax, flax, optax; print(\"jax\", jax.__version__, \"flax\", flax.__version__, \"optax\", optax.__version__)'" \
+    || die "$FLAX_VENV is not importable"
 }

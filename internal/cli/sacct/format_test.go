@@ -28,6 +28,14 @@ func acctFull(number string) string {
 		"maxrss 2097152\n"
 }
 
+// peRec is one accounting record for job 500 as written under
+// accounting_summary FALSE: pe is "NONE" for the job's own (master) record and
+// "<n>.<host>" for each qrsh -inherit task.
+func peRec(pe, host string) string {
+	return qacctSep + "\njobnumber 500\ntaskid undefined\npe_taskid " + pe +
+		"\nhostname " + host + "\nslots 3\nfailed 0\nexit_status 0\n"
+}
+
 // oneJob is a runner whose only finished record is acctFull(number).
 func oneJob(number string) *fake.Runner {
 	return runner(emptyQstat, map[string]string{number: acctFull(number)})
@@ -435,15 +443,22 @@ var _ = Describe("sacct hardening", func() {
 
 	It("collapses PE task records into the one job that owns them", func() {
 		// accounting_summary FALSE (the spec's REQ-APX-004 recommendation) adds
-		// one record per qrsh -inherit task; those are steps, not jobs.
-		rec := func(pe, host string) string {
-			return qacctSep + "\njobnumber 500\ntaskid undefined\npe_taskid " + pe +
-				"\nhostname " + host + "\nslots 3\nfailed 0\nexit_status 0\n"
-		}
-		acct := map[string]string{"500": rec("NONE", "node01") +
-			rec("1.node02", "node02") + rec("2.node03", "node03")}
+		// one record per qrsh -inherit task; those are steps, not jobs. Real
+		// 9.1.4 order: the tasks land first, the master (pe_taskid NONE) last.
+		acct := map[string]string{"500": peRec("1.node02", "node02") +
+			peRec("2.node03", "node03") + peRec("NONE", "node01")}
 		_, lines := runSacct(runner(emptyQstat, acct), "-o", "JobID,NodeList", "--parsable2", "-j", "500")
 		Expect(lines).To(Equal([]string{"JobID|NodeList", "500|node01"}))
+	})
+
+	It("reports nothing while only the PE task records have landed", func() {
+		// qacct can briefly answer with the task records alone, before the
+		// master record is flushed. No row reads as "unknown, keep polling" and
+		// resolves on the next poll; a slave task's record would be a wrong
+		// answer that sticks -- including its host and its own exit status.
+		acct := map[string]string{"500": peRec("1.node02", "node02") + peRec("2.node03", "node03")}
+		_, lines := runSacct(runner(emptyQstat, acct), "-o", "JobID,NodeList", "--parsable2", "-j", "500")
+		Expect(lines).To(Equal([]string{"JobID|NodeList"}))
 	})
 
 	DescribeTable("reports nothing for an id naming no job this shim can report",
