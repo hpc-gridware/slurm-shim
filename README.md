@@ -6,7 +6,7 @@
 
 **Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through Grid Engine tight integration — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — JAX, submitit, and the rest of the AI stack.
 
-> **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.4). GPU paths are validated through a fake RSMAP complex, **not** on real hardware. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+> **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.5). GPU paths are validated through a fake RSMAP complex, **not** on real hardware. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
 https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
@@ -63,7 +63,7 @@ srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 One command stands up a real 3-node Open Cluster Scheduler cluster (in Docker) with slurm-shim installed, then runs a job that shows `srun` fanning ranks across nodes. Only Docker + a Go toolchain are needed:
 
 ```bash
-make cluster-up          # clone quickinstall, boot OCS 9.1.4, install the shim
+make cluster-up          # clone quickinstall, boot OCS 9.1.5, install the shim
 make demo                # multi-node srun fan-out (per-rank SLURM_PROCID/nodelist)
 make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
 make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
@@ -198,19 +198,23 @@ differences are worth knowing:
   but shifts a native `qsub -t 1-3` array to `_0.._2`. Elements of an array that
   has not started yet are not listed at all — `sacct` on a freshly queued array
   returns nothing until its tasks begin.
-- **A non-zero exit is reported as `COMPLETED`.** On OCS 9.1.4 a job that ran
-  under a PE with `control_slaves TRUE` loses its script's exit status in the
-  accounting record — and that setting is what `qrsh -inherit` tight integration
-  is built on, so the shim's PEs require it. It is stock GE behavior, not shim
-  wiring: a plain `qsub` of a plain script reproduces it with no shim code
-  involved. Crashes, `scancel` and
-  wallclock timeouts come through GE's separate `failed` field and *are* reported
-  correctly (`CANCELLED` / `TIMEOUT` / `NODE_FAIL`), so `sacct` remains a reliable
-  completion signal — but do not use `ExitCode` to detect a job that failed by
+- **On OCS 9.1.4 and earlier, a non-zero exit was reported as `COMPLETED`.** Those
+  releases lost a job's exit status in the accounting record whenever it ran under
+  a PE with `control_slaves TRUE` — the setting `qrsh -inherit` tight integration
+  is built on, so every shim PE has it. It was stock GE behavior, not shim wiring:
+  a plain `qsub` of a plain script reproduced it with no shim code involved.
+  **Fixed in OCS 9.1.5**, where `sbatch --wrap='exit 3'` now reports
+  `FAILED` / `3:0`; the shim's mapping was already correct and needed no change.
+  Even on the affected releases, crashes, `scancel` and wallclock timeouts came
+  through GE's separate `failed` field and *were* reported correctly
+  (`CANCELLED` / `TIMEOUT` / `NODE_FAIL`), so `sacct` stayed a reliable completion
+  signal there — only `ExitCode` could not be used to spot a job that failed by
   exiting non-zero. Details and a reproducer:
   [`docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md`](docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
-  This does not affect submitit or Hydra, which carry failures in their own
-  result files.
+  submitit and Hydra (the only integrations that read `sacct` state) never *hung*
+  or lost a failure on the affected releases, because they carry failures in their
+  own result pickles — but their `sacct` row was wrong, so sweep-level "which runs
+  failed?" scanning only became usable in 9.1.5.
 
 ### Known limitations
 
@@ -222,7 +226,7 @@ differences are worth knowing:
 
 ## Requirements
 
-- **Open Cluster Scheduler** — end-to-end suite runs green against live OCS **9.0.10** and **9.1.4**.
+- **Open Cluster Scheduler** — end-to-end suite runs green against live OCS **9.0.10** and **9.1.5**. **9.1.5 or newer is recommended**: earlier releases lose a job's exit status under a tightly integrated PE (see the `sacct` note above).
 - Also targets **Gridware Cluster Scheduler** (same lineage); other SGE-compatible variants: untested.
 - A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). 🚧 A `docs/pe-setup.md` guide is planned; the PE hook scripts are in [`docs/install/`](docs/install/).
 - Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).

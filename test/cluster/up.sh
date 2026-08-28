@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bring up the OCS cluster (from quickinstall, unmodified) and install slurm-shim.
 #   up.sh [--gpu]
-# Honors OCS_VERSION (default: 9.1.4) and QUICKINSTALL_REF.
+# Honors OCS_VERSION (default: 9.1.5) and QUICKINSTALL_REF.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

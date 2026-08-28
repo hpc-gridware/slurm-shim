@@ -1,0 +1,21 @@
+hostname              ocs-worker1
+load_scaling          NONE
+complex_values        slots=14,gpu=2(0 1)
+load_values           arch=lx-arm64,num_proc=14,mem_total=7836.730469M, \
+                      swap_total=1023.996094M,virtual_total=8860.726562M, \
+                      load_avg=0.540000,load_short=0.160000, \
+                      load_medium=0.540000,load_long=0.980000, \
+                      mem_free=5955.175781M,swap_free=1023.996094M, \
+                      virtual_free=6979.171875M,mem_used=1881.554688M, \
+                      swap_used=0.000000M,virtual_used=1881.554688M, \
+                      cpu=0.800000,m_topology=SCCCCCCCCCCCCCC,m_socket=1, \
+                      m_core=14,m_thread=14,np_load_avg=0.038571, \
+                      np_load_short=0.011429,np_load_medium=0.038571, \
+                      np_load_long=0.070000
+processors            14
+user_lists            NONE
+xuser_lists           NONE
+projects              NONE
+xprojects             NONE
+usage_scaling         NONE
+report_variables      NONE

@@ -51,11 +51,12 @@ python train.py --multirun lr=0.1,0.01 hydra.launcher.partition=batch
 python train.py --multirun lr=0.1,0.01 epochs=1,5      # 2-D sweep -> 4 jobs
 ```
 
-## Validated on the OCS test cluster (2026-08-20)
+## Validated on the OCS test cluster (2026-08-20, re-run 2026-08-28)
 
-3-node OCS 9.1.4 cluster ([`test/cluster`](../../../test/cluster)), Hydra 1.3.5 +
-submitit 1.5.4. `--multirun lr=0.1,0.01,0.001` became a 3-task array, each task on
-a **different node**:
+3-node cluster ([`test/cluster`](../../../test/cluster)), Hydra 1.3.5 + submitit
+1.5.4, first on OCS 9.1.4 and re-run unchanged on **OCS 9.1.5** (same three losses,
+same one-task-per-node spread). `--multirun lr=0.1,0.01,0.001` became a 3-task
+array, each task on a **different node**:
 
 ```
 [2026-08-20 18:35:36,248][HYDRA] Submitit 'slurm' sweep output dir : multirun/2026-08-20/18-35-36

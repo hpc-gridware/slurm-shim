@@ -9,7 +9,9 @@ import (
 	// go-clusterscheduler is the shared source of truth for OCS/GE command
 	// formats; gedata is the shim's single boundary to it. qacct v9.1 re-exports
 	// the v9.0 parser and the JobDetail type; the accounting fields sacct needs
-	// are the stable classic ones, identical on OCS 9.0.10 and 9.1.4.
+	// are the stable classic ones, identical on OCS 9.0.10 through 9.1.5. What
+	// 9.1.5 changed is the VALUE of exit_status under a control_slaves TRUE PE
+	// (it is now recorded rather than lost), not the format.
 	qacct "github.com/hpc-gridware/go-clusterscheduler/pkg/qacct/v9.1"
 )
 

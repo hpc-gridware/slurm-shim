@@ -26,7 +26,7 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `70_reject` | an impossible `srun` is rejected before launch (exit 1, no hang) |
 | `80_sinfo` | `sinfo` shows live node counts/states from GE (not `n/a` placeholders) |
 | `90_array` | `--array`: 0-based SLURM indices over 1-based GE tasks in the job env, `srun`, `sacct` and `scancel`; a `%a` batch path GE cannot express is substituted, not dropped (the Hydra/submitit shape) |
-| `91_sacct` | `sacct` reporting: the default column set, every `--format` field, `ExitCode` as `code:signal`, `-P` vs `--parsable2`, `-X`, `-u`/`-s`/`-S`/`-E` selection (window applied to live rows too), aliases, and the exact `JobID|State|NodeList` shape submitit polls |
+| `91_sacct` | `sacct` reporting: the default column set, every `--format` field, `ExitCode` as `code:signal`, `-P` vs `--parsable2`, `-X`, `-u`/`-s`/`-S`/`-E` selection (window applied to live rows too), aliases, the exact `JobID|State|NodeList` shape submitit polls, and (on OCS >= 9.1.5) that a job exiting non-zero reports `FAILED` / `3:0` |
 
 Each check is a self-contained process that exits non-zero on failure; `run.sh`
 fails if any did.
@@ -65,4 +65,19 @@ table above.
 granted RSMAP (`qstat -xml -j`), queue/host states (`qstat -xml -f`), complexes
 and the `make` PE (`qconf -sc/-sp/-se`). Diff them across versions; when a format
 shifts, fix the parser in `internal/gedata/` and commit the new version's fixture
-as a regression baseline.
+as a regression baseline. Most of the diff between two captures is noise
+(hostnames, load averages, job ids, timestamps) -- read past it.
+
+### What changed 9.1.4 -> 9.1.5
+
+Captured 2026-08-28 against OCS 9.1.5 (250826-0734):
+
+- **New builtin complex `devices` (`devs`, RESTRING, requestable, not
+  consumable)** in `qconf -sc`. No effect on the shim: GPU discovery matches the
+  RSMAP complex by its configured name (`gpu.gres_complex`, default `gpu`), so a
+  new complex cannot be mistaken for it, and `60_gpu` is green on 9.1.5.
+- **`exit_status` is now recorded under a `control_slaves TRUE` PE.** A value
+  change, not a format change -- the parser needed nothing. See
+  [`../../docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md`](../../docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
+- Everything else the shim parses (`qstat -f`, `qstat -xml -f`, `qstat -xml -j`
+  granted RSMAP, `qconf -sp make`) is byte-identical in shape.

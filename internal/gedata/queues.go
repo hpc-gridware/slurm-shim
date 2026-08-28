@@ -10,7 +10,7 @@ import (
 	// QueueInstance type below, never the library's). v9.1 is safe for both
 	// supported releases: v9.1.FullQueueInfo is a type alias for the v9.0 struct
 	// and the qstat -f columns it reads (queue@host, used/total, states) are the
-	// stable classic ones, identical on OCS 9.0.10 and 9.1.4.
+	// stable classic ones, identical on OCS 9.0.10 through 9.1.5.
 	qstat "github.com/hpc-gridware/go-clusterscheduler/pkg/qstat/v9.1"
 )
 

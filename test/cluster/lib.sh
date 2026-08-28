@@ -13,12 +13,12 @@ REPO_ROOT="$(cd "$CLUSTER_DIR/../.." && pwd)"
 # QUICKINSTALL_REF pins the cluster TOOLING (compose/installer); OCS_VERSION (a
 # passthrough their compose already honors) pins the OCS PACKAGE. They are
 # orthogonal: bump the ref for latest tooling, set OCS_VERSION for a given OCS.
-# OCS_VERSION defaults to 9.1.4 so the harness is deterministic (not "whatever
+# OCS_VERSION defaults to 9.1.5 so the harness is deterministic (not "whatever
 # quickinstall's latest happens to be"); override e.g. OCS_VERSION=9.0.10.
 QUICKINSTALL_REPO="${QUICKINSTALL_REPO:-https://github.com/hpc-gridware/quickinstall.git}"
 QUICKINSTALL_REF="${QUICKINSTALL_REF:-main}"
 QUICKINSTALL_DIR="${QUICKINSTALL_DIR:-}"   # use an existing checkout instead of cloning
-OCS_VERSION="${OCS_VERSION:-9.1.4}"        # default OCS package version
+OCS_VERSION="${OCS_VERSION:-9.1.5}"        # default OCS package version
 READY_TIMEOUT="${READY_TIMEOUT:-360}"
 
 SHIM_PREFIX=/opt/slurm-shim               # identical absolute path on every node
@@ -65,7 +65,7 @@ qi_ensure() {
 }
 
 # compose runs `docker compose` in the quickinstall dir with OCS_VERSION passed
-# through (defaults to 9.1.4; see knobs).
+# through (defaults to 9.1.5; see knobs).
 compose() {
   ( cd "$(qi_dir)" && OCS_VERSION="$OCS_VERSION" docker compose "$@" )
 }
@@ -88,6 +88,15 @@ wait_ready() {
     [ $SECONDS -lt $deadline ] || die "cluster not ready within ${READY_TIMEOUT}s (have $n/3 queue instances)"
     sleep 5
   done
+}
+
+# ocs_version prints the version the cluster is actually RUNNING, e.g. "9.1.5".
+# Not the same thing as $OCS_VERSION, which is only what was asked for: a cluster
+# left up from an earlier run answers with what it has installed. Checks that
+# depend on a version-specific fix must ask the cluster, not the knob.
+ocs_version() {
+  docker exec "$MASTER" bash -lc 'qstat -help 2>&1 | head -1' 2>/dev/null \
+    | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) { print $i; exit } }'
 }
 
 # container_arch maps the master's uname -m to a GOARCH.

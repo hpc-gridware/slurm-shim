@@ -120,10 +120,12 @@ the nastiest failure -- auto-detection not firing and every rank training alone.
 | GPU OOM at startup | JAX preallocates ~75% of each device | lower `XLA_PYTHON_CLIENT_MEM_FRACTION` |
 | Array tasks join each other's group | all array tasks share one `SLURM_JOB_ID`, so all derive the same port | the script gives each task its own `JAX_COORDINATOR_PORT` |
 
-## Verified live (OCS 9.1.4, 3-node test cluster, 2026-08-25)
+## Verified live (OCS 9.1.4 and 9.1.5, 3-node test cluster)
 
 `make demo-flax` in [`test/cluster`](../../../test/cluster), jax 0.10.2 /
-flax 0.12.8 / optax 0.2.8 on Python 3.11, 22 seconds end to end:
+flax 0.12.8 / optax 0.2.8 on Python 3.11, 22 seconds end to end. First run on
+OCS 9.1.4 (2026-08-25), re-run unchanged on OCS 9.1.5 (2026-08-28) with the same
+losses to the last digit:
 
 ```
 [alloc] SLURM_NNODES=3 SLURM_NTASKS=3

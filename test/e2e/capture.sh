@@ -5,7 +5,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
 
-ver="$(gridware 'qconf -help 2>&1 | head -1' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+ver="$(ocs_version)"          # what the cluster runs, not what $OCS_VERSION asked for
 [ -n "$ver" ] || ver="unknown"
 dir="$E2E_DIR/fixtures/$ver"
 mkdir -p "$dir"

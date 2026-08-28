@@ -14,7 +14,7 @@ Docker Engine 20.10+ with Compose v2, ~4 GB RAM, ~10 GB disk, and a Go toolchain
 ## Use it
 
 ```bash
-make cluster-up                 # clone quickinstall, boot cluster (OCS 9.1.4), install shim
+make cluster-up                 # clone quickinstall, boot cluster (OCS 9.1.5), install shim
 make demo                       # multi-node srun fan-out
 make demo-gpu                   # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
 make demo-flax                  # multi-node data-parallel Flax training (installs a shared venv)
@@ -34,7 +34,7 @@ make cluster-install            # or: ARGS=--gpu to also add the fake RSMAP comp
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `OCS_VERSION` | `9.1.4` | which OCS package to install; e.g. `OCS_VERSION=9.0.10 make cluster-up` |
+| `OCS_VERSION` | `9.1.5` | which OCS package to install; e.g. `OCS_VERSION=9.0.10 make cluster-up` |
 | `QUICKINSTALL_REF` | `main` | which quickinstall commit/branch to run (pin for reproducibility) |
 | `QUICKINSTALL_DIR` | *(unset)* | use an existing quickinstall checkout instead of cloning |
 | `GPU_PER_WORKER` | `2` | fake RSMAP devices per worker (with `--gpu`) |
@@ -54,10 +54,13 @@ fabricate the `SLURM_*` environment. It also disables GE's load alarm on `all.q`
 (Docker containers share the host loadavg, which otherwise falsely marks queues
 overloaded) and clears any stale `QERROR`.
 
-## Validated end-to-end (OCS 9.1.4, fresh cluster)
+## Validated end-to-end (OCS 9.1.5, fresh cluster)
 
-`make demo` and `make demo-gpu` were verified on a clean cluster brought up by
-this harness:
+Re-verified on 2026-08-28 against **OCS 9.1.5 (250826-0734)** on a clean cluster
+brought up by this harness: `make e2e` green (106 assertions across 10 checks),
+plus all three demos. The same suite is green on **OCS 9.0.10** (104 -- the two
+exit-status assertions skip there). Nothing in the shim needed changing for
+9.1.5; the one behavior difference is the exit-status fix noted below.
 
 - **CPU**: `srun` fans 6 ranks across all 3 nodes over `qrsh -inherit` tight
   integration, each with the right `SLURM_PROCID` / `SLURM_LOCALID` /
@@ -67,11 +70,17 @@ this harness:
   (`CUDA_VISIBLE_DEVICES=[0,1]`, SLURM's no-binding default, which JAX and other
   local-rank-indexing frameworks need), while `--gpus-per-task=1` gives each rank
   its own device (`[0]` and `[1]`).
-- **Flax** (2026-08-25, OCS 9.1.4): `make demo-flax` runs one process per node,
-  two CPU devices each, forming a single 6-device `jax.sharding` mesh across all
-  three containers; the batch checksum and identical per-process weights confirm
-  the gradient all-reduce crossed the hosts. 22 seconds end to end once the venv
-  exists.
+- **Flax**: `make demo-flax` runs one process per node, two CPU devices each,
+  forming a single 6-device `jax.sharding` mesh across all three containers; the
+  batch checksum and identical per-process weights confirm the gradient
+  all-reduce crossed the hosts. Same jax 0.10.2 / flax 0.12.8 / optax 0.2.8 and
+  the same losses (`4.480681 -> 0.101037`) as the 9.1.4 run, so that output
+  doubles as a cross-version regression baseline.
+- **Exit status**: `sbatch --wrap='exit 3'` now reports `FAILED` / `3:0`. Through
+  9.1.4 a PE with `control_slaves TRUE` lost the status and this came back
+  `COMPLETED` / `0:0` -- see
+  [`docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md`](../../docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
+  The e2e check asserts it only on 9.1.5 and newer, and skips on older clusters.
 
 ## The flax demo
 

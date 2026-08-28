@@ -40,15 +40,22 @@ ok_id="$(gridware "cd /home/gridware && sbatch --job-name=e2eok --wrap='sleep 2'
 [ -n "$ok_id" ] || fail "sbatch returned no job id"
 
 # ------------------------------------------------------------- a failing job
-# Dies by signal, which is the failure GE actually records here: on OCS 9.1.4 a
-# PE with control_slaves TRUE (required for tight integration) drops the script's
-# clean-exit status, so `exit 3` would come back as a success. See
-# docs/solutions/integration-issues/
-# pe-jobs-lose-exit-status-in-accounting.md -- the exit-code mapping itself is
-# covered by the unit tests in internal/gedata.
+# Dies by signal, which GE records in its `failed` field on every supported
+# version.
 bad_id="$(gridware "cd /home/gridware && sbatch --job-name=e2ebad --wrap='kill -TERM \$\$'" \
   | awk '/Submitted batch job/{print $NF}')"
 [ -n "$bad_id" ] || fail "sbatch returned no job id for the failing job"
+
+# ------------------------------------------------- a job that exits non-zero
+# The other failure shape, and the one that used to be invisible: through OCS
+# 9.1.4 a PE with control_slaves TRUE (required for tight integration, so every
+# shim PE has it) dropped the script's clean-exit status and this came back
+# COMPLETED/0:0. Fixed in 9.1.5, so the assertion below is version-gated -- the
+# shim's mapping never changed. See docs/solutions/integration-issues/
+# pe-jobs-lose-exit-status-in-accounting.md.
+e3_id="$(gridware "cd /home/gridware && sbatch --job-name=e2eexit3 --wrap='exit 3'" \
+  | awk '/Submitted batch job/{print $NF}')"
+[ -n "$e3_id" ] || fail "sbatch returned no job id for the exit-3 job"
 
 # ------------------------------------------------------- a long job, still live
 live_id="$(gridware "cd /home/gridware && sbatch --job-name=e2elive --wrap='sleep 45'" \
@@ -74,10 +81,10 @@ case "$(field "$live" Elapsed)" in
   *) fail "live Elapsed should be a few seconds, got '$(field "$live" Elapsed)'" ;;
 esac
 
-waitgone "$ok_id" || fail "job $ok_id never left the queue"
-waitgone "$bad_id" || fail "job $bad_id never left the queue"
-waitacct "$ok_id" || fail "job $ok_id never reached the accounting file"
-waitacct "$bad_id" || fail "job $bad_id never reached the accounting file"
+for id in "$ok_id" "$bad_id" "$e3_id"; do
+  waitgone "$id" || fail "job $id never left the queue"
+  waitacct "$id" || fail "job $id never reached the accounting file"
+done
 
 # ------------------------------------------------------------- default format
 # Without -o, sacct must print SLURM's own default columns. A bare "sacct -j N"
@@ -130,6 +137,17 @@ assert_contains "$(field "$got" Start)" "$today" "Start is in the cluster's own 
 bad="$(gridware "sacct -j '$bad_id' -o State,ExitCode --parsable2")"
 assert_eq "$(field "$bad" State)" "CANCELLED" "a killed job is not COMPLETED"
 assert_eq "$(field "$bad" ExitCode)" "0:9" "ExitCode reports the kill as a signal"
+
+# A job that exits non-zero of its own accord. Gated on the OCS the cluster is
+# actually running, not on $OCS_VERSION, which is only what was requested.
+ocs="$(ocs_version)"
+if version_ge "${ocs:-0}" 9.1.5; then
+  e3="$(gridware "sacct -j '$e3_id' -o State,ExitCode --parsable2")"
+  assert_eq "$(field "$e3" State)" "FAILED" "a job that exits non-zero is FAILED"
+  assert_eq "$(field "$e3" ExitCode)" "3:0" "ExitCode carries the script's own exit status"
+else
+  skip "exit status under control_slaves TRUE is lost on OCS ${ocs:-unknown} (fixed in 9.1.5)"
+fi
 
 # ------------------------------------------------------------ parsable modes
 p2="$(gridware "sacct -n -j '$ok_id' -o JobID,State --parsable2")"

@@ -7,15 +7,16 @@
 // actually use -- selecting jobs by id, user or time window, and choosing columns
 // with --format.
 //
-// Exit-code note: on OCS 9.1.4 a job that ran under a PE with control_slaves
-// TRUE - the setting qrsh -inherit tight integration is built on, so every shim
-// PE has it - loses its script's exit status in the accounting record, and a job
-// that exits non-zero of its own accord is reported COMPLETED/0:0. Crashes,
-// cancellations and timeouts come through GE's separate "failed" field and are
-// reported correctly. It is stock GE behavior, reproducible with plain qsub and
-// no shim code. See
-// docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md;
-// the mapping here is already right and needs no change when OCS is fixed.
+// Exit-code note: through OCS 9.1.4 a job that ran under a PE with
+// control_slaves TRUE - the setting qrsh -inherit tight integration is built on,
+// so every shim PE has it - lost its script's exit status in the accounting
+// record, and a job that exited non-zero of its own accord was reported
+// COMPLETED/0:0. It was stock GE behavior, reproducible with plain qsub and no
+// shim code, and it is fixed in OCS 9.1.5: the mapping below was already right
+// and reports FAILED/3:0 there without any change. Crashes, cancellations and
+// timeouts always came through GE's separate "failed" field and were reported
+// correctly on both. See
+// docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md.
 //
 // Array indexing note: array task ids are reported by 0-based position, i.e. GE
 // task k is reported as <base>_<k-1> (and scancel uses the same convention). This

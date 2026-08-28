@@ -26,6 +26,14 @@ result pickle on the shared filesystem, not from exit codes. `sacct` is the
 backstop for a job that dies *without* writing a pickle: it must report a terminal
 state so `result()` raises instead of hanging.
 
+That indirection is why submitit worked even on OCS 9.1.4 and earlier, where a
+tightly integrated job's exit status was lost and `sacct` called a failed job
+`COMPLETED` -- submitit read the exception out of the pickle regardless. It is
+also the one recipe on that path: **on OCS 9.1.5 the `sacct` row itself is now
+truthful too**, so scanning a sweep's states for failures works without opening
+every pickle. See
+[the write-up](../../solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
+
 ## Run it
 
 ```bash
@@ -48,10 +56,11 @@ ex.update_parameters(slurm_setup=[". /opt/slurm-shim/etc/slurm-shim-source-hook.
 (Override the hook path with `SHIM_HOOK`, or set it cluster-wide so no per-job
 line is needed.)
 
-## Validated on the OCS test cluster (2026-08-19)
+## Validated on the OCS test cluster (2026-08-19, re-run 2026-08-28)
 
-Confirmed end to end on the 3-node OCS 9.1.4 test cluster
-([`test/cluster`](../../../test/cluster)) with submitit 1.5.4:
+Confirmed end to end on the 3-node test cluster
+([`test/cluster`](../../../test/cluster)) with submitit 1.5.4, first on OCS 9.1.4
+and re-run unchanged on **OCS 9.1.5** -- same script, same output:
 
 ```
 single job id: 35
@@ -84,6 +93,26 @@ JobID|State|NodeList
 $ sacct -o JobID,State,NodeList --parsable2 -j 999999   # unknown -> header only
 JobID|State|NodeList
 ```
+
+**The `boom()` job is the one row 9.1.5 changed.** The smoke test's verdict is
+identical on both releases (`FailedJobError`, read from the pickle), but on 9.1.5
+the state submitit sees is the truth rather than a false success. Measured on
+9.1.5:
+
+```
+$ sacct -o JobID,State,ExitCode,NodeList --parsable2 -j 20
+JobID|State|ExitCode|NodeList
+20|FAILED|1:0|ocs-master
+$ qacct -j 20 | grep -E 'failed|exit_status'
+failed                             0
+exit_status                        1
+```
+
+On 9.1.4 that row was necessarily `COMPLETED` / `0:0`: `smp` is a
+`control_slaves TRUE` PE like every shim PE, and those releases recorded
+`exit_status 0` for all of them (this was not captured at the time -- it follows
+from the measured matrix in the write-up, not from a 9.1.4 transcript of this
+job).
 
 A live job reports `RUNNING` with its node (`40|RUNNING|ocs-master`); after a
 `scancel` it reports a terminal `CANCELLED` (`40|CANCELLED|`), so `result()` never

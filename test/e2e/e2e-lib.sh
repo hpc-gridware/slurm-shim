@@ -30,6 +30,24 @@ assert_eq() {
   if [ "$1" = "$2" ]; then pass "$3"; else fail "$3 -- want '$2' got '$1'"; fi
 }
 
+# version_ge <a> <b> succeeds when dotted-numeric version a >= b. Used to gate a
+# check on an OCS fix that landed in a known release, so the same suite stays
+# green across the version matrix instead of asserting the newest behavior
+# everywhere. Hand-rolled because macOS sort has no -V.
+version_ge() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, ".")
+    n = (na > nb) ? na : nb
+    for (i = 1; i <= n; i++) {
+      p = (i <= na) ? x[i] + 0 : 0
+      q = (i <= nb) ? y[i] + 0 : 0
+      if (p > q) exit 0
+      if (p < q) exit 1
+    }
+    exit 0
+  }'
+}
+
 # finish exits with 1 if any assertion in this check failed.
 finish() {
   if [ "$E2E_FAIL" -gt 0 ]; then
