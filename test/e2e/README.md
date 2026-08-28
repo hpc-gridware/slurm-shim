@@ -20,6 +20,7 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `10_env` | the PE hook fabricates `SLURM_NNODES/NTASKS/JOB_NODELIST/JOB_ID/MASTER_ADDR` |
 | `20_srun` | `srun -n` fans ranks across nodes, per-rank identity, `-l` labels |
 | `30_sbatch` | `#SBATCH` -> `qsub -terse` -> `Submitted batch job <id>`, job runs |
+| `31_sbatch_resources` | the resource flags reach GE and take effect: `--time` -> `h_rt` (and GE enforces it), `--mem` -> the memory complex, `#SBATCH --gres=gpu:N` -> RSMAP grant -> `SLURM_JOB_GPUS` -> step `CUDA_VISIBLE_DEVICES`, `--dependency` -> `-hold_jid`, `--array %p` -> `-tc`, `--signal` -> `-notify -r y`; malformed values rejected at submit time |
 | `40_squeue_scancel` | `squeue` lists a live job; `scancel` removes it |
 | `50_scontrol` | `scontrol show hostnames` expands a compressed nodelist, one per line |
 | `60_gpu` | a fake RSMAP grant -> `SLURM_JOB_GPUS` + per-rank `CUDA_VISIBLE_DEVICES` |
@@ -58,6 +59,21 @@ the recipe with captured output; do not add them here.
 
 Register a new check in the `checks=(...)` array in `run.sh` and add a row to the
 table above.
+
+**Never submit a job whose resource request cannot be satisfied.** It does not sit
+harmlessly in `qw`: GE tries it on every host, fails, and marks `all.q` **QERROR
+on all three nodes**, which blocks every check that runs after it -- the failure
+then looks like a bug in someone else's check. The test cluster's exec hosts
+define only `slots` and `gpu` in `complex_values`, so any `h_vmem` request is
+unsatisfiable. `31_sbatch_resources.sh` works around this by parking such a job
+behind a `--dependency` hold: held in `hqw` it is never dispatched, and
+`qstat -j` still exposes `hard_resource_list`, which is all a request-shape
+assertion needs. If a check does poison the queue, `qmod -c all.q` clears it.
+
+**Assert request shape, not enforcement, for anything site-configurable.** The
+memory complex is a config knob (`memory_complex`, which the README recommends
+setting to `mem_free`/`h_rss` on GPU clusters), so asserting an OOM kill would
+fail on a correctly configured site.
 
 ## Fixtures (`fixtures/<ocs-version>/`)
 

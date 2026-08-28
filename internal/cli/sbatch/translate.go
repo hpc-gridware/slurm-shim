@@ -132,6 +132,9 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	if len(opt.holdJIDs) > 0 {
 		args = append(args, "-hold_jid", strings.Join(opt.holdJIDs, ","))
 	}
+	// Outside the guard on purpose: the case with NO ids emits no -hold_jid at
+	// all, which is the failure most worth reporting.
+	warns = appendWarn(warns, dependencyWarning(opt.depSpec, opt.holdJIDs))
 	return args, warns
 }
 

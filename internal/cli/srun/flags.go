@@ -169,6 +169,12 @@ func applyGPUBind(opt *options, cfg *config.Config, envBind string) {
 	switch strings.ToLower(name) {
 	case "none":
 		opt.req.AutoDivideGPUs = false
+		// An explicit "none" is a request NOT to bind, and it has to win over
+		// --gpus-per-task: plan.AssignDevices partitions per rank whenever
+		// GPUsPerTask > 0, regardless of AutoDivideGPUs, so leaving it set bound
+		// each rank anyway -- contradicting SLURM and this repo's own README
+		// ("none: the node's whole grant stays visible to every task").
+		opt.req.GPUsPerTask = 0
 	case "per_task", "per-task":
 		opt.req.AutoDivideGPUs = true
 		if n, err := strconv.Atoi(value); err == nil && n > 0 && opt.req.GPUsPerTask <= 0 {
@@ -179,6 +185,33 @@ func applyGPUBind(opt *options, cfg *config.Config, envBind string) {
 		opt.warnings = append(opt.warnings,
 			"--gpu-bind="+spec+" is not supported (slurm-shim); using the default binding")
 	}
+}
+
+// warnCgroupCannotBind reports a binding request the shim is about to drop:
+// under gpu.isolation: cgroup, GE's devices_allow masks per JOB and
+// gpuAssignment publishes no per-rank CUDA_VISIBLE_DEVICES (REQ-GPU-003), so
+// every task sees the whole grant. Call after applyGPUBind and before the
+// warnings are drained.
+//
+// Only an EXPLICIT request counts. The site default gpu.bind: per-task also sets
+// AutoDivideGPUs, and firing on that would warn about GPUs on every step at such
+// a site, including CPU-only ones -- this runs before placement, so it cannot
+// see whether the step holds any device. An explicit --gpu-bind=none clears both
+// fields above, so it is silent here too.
+func warnCgroupCannotBind(opt *options, cfg *config.Config) {
+	if cfg == nil || cfg.GPU.Isolation != "cgroup" {
+		return
+	}
+	// --gpus-per-task counts on its own; --gpu-bind counts only when it asked to
+	// bind (an explicit "none" clears both fields, so it lands here as false).
+	requested := opt.req.GPUsPerTask > 0 || (opt.req.GPUBindExplicit && opt.req.AutoDivideGPUs)
+	if !requested {
+		return
+	}
+	opt.warnings = append(opt.warnings,
+		"per-task GPU binding was requested but gpu.isolation is \"cgroup\": Grid "+
+			"Engine masks devices per job, so every task sees the job's whole grant. "+
+			"Set gpu.isolation: shim to bind each rank to its own device")
 }
 
 func firstNonEmpty(a, b string) string {

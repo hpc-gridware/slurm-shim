@@ -12,6 +12,7 @@ checks=(
   10_env
   20_srun
   30_sbatch
+  31_sbatch_resources
   40_squeue_scancel
   50_scontrol
   60_gpu

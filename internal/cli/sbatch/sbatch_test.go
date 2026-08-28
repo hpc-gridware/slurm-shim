@@ -334,10 +334,14 @@ var _ = Describe("sbatch resource/signal/dependency mapping [submitit Phase 4]",
 			"#SBATCH --mem=4GB --gpus-per-node=2 --dependency=afterok:99\nsrun true\n"
 		script := writeScriptTop2(body)
 		var captured []string
-		rc := run(fakeQsub("70", &captured), testCfg(), "/shim", []string{script}, io.Discard, io.Discard)
+		var errBuf bytes.Buffer
+		rc := run(fakeQsub("70", &captured), testCfg(), "/shim", []string{script}, io.Discard, &errBuf)
 		Expect(rc).To(Equal(0))
 		// h_rt=3600, s_rt=3600-90=3510, mem via default h_vmem, gpu via default gpu complex.
 		Expect(captured).To(ContainElements("-l", "h_rt=3600,s_rt=3510,h_vmem=4G,gpu=2"))
+		// This spec is afterok, so the approximation must reach stderr here rather
+		// than needing a second submission to assert it.
+		Expect(errBuf.String()).To(ContainSubstring("afterok/aftercorr is approximated"))
 		Expect(captured).To(ContainElements("-hold_jid", "99"))
 		// --signal -> -notify -r y so GE sends SIGUSR2 before a kill/reschedule and
 		// the job is rerunnable (submitit checkpoint-then-requeue).
@@ -594,5 +598,91 @@ var _ = Describe("sbatch end-to-end [REQ-SBT-002/003/005]", func() {
 		got, err := os.ReadFile(stored)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(got)).To(Equal(body))
+	})
+})
+
+var _ = Describe("unmappable and approximated flags warn instead of going quiet [REQ-SBT-001]", func() {
+	It("names the Grid Engine equivalent for --exclusive rather than 'unknown directive'", func() {
+		_, warns, err := parseFlags([]string{"--exclusive", "job.sh"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(HaveLen(1))
+		Expect(warns[0]).To(ContainSubstring("allocation_rule $pe_slots"))
+		Expect(warns[0]).NotTo(ContainSubstring("unknown directive"))
+	})
+
+	DescribeTable("--exclusive never consumes a token, in any spelling",
+		// The arity trap: listing it in knownLong would mean "takes a value" and
+		// swallow whatever follows.
+		func(tokens []string, wantScript, wantWrap string) {
+			opt, warns, err := parseFlags(tokens)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(warns).To(HaveLen(1))
+			Expect(opt.script).To(Equal(wantScript))
+			Expect(opt.wrap).To(Equal(wantWrap))
+		},
+		Entry("before the script", []string{"--exclusive", "job.sh"}, "job.sh", ""),
+		Entry("with a value", []string{"--exclusive=user", "job.sh"}, "job.sh", ""),
+		Entry("before --wrap", []string{"--exclusive", "--wrap=echo hi"}, "", "echo hi"),
+		Entry("among other flags", []string{"--exclusive", "-N", "2", "job.sh"}, "job.sh", ""),
+	)
+
+	DescribeTable("reports what a --dependency loses in translation",
+		func(spec string, want string) {
+			got := dependencyWarning(spec, dependencyIDs(spec))
+			if want == "" {
+				Expect(got).To(BeEmpty())
+				return
+			}
+			Expect(got).To(ContainSubstring(want))
+		},
+		Entry("afterany is the one exact form", "afterany:99", ""),
+		Entry("after is start-gated in SLURM, completion-gated here", "after:99", "start-gated"),
+		Entry("afterok cannot be success-gated", "afterok:99", "approximated"),
+		Entry("aftercorr loses per-element pairing too", "aftercorr:99", "approximated"),
+		Entry("afternotok is inverted outright", "afternotok:99", "cannot be expressed"),
+		Entry("case is ignored", "AfterOK:99", "approximated"),
+		Entry("the worst clause wins", "afterany:1,afternotok:2", "cannot be expressed"),
+		// Nothing to hold on: the job is not gated at all, which is worse than an
+		// approximated gate and must not be the quiet case.
+		Entry("singleton has no id", "singleton", "NOT held"),
+		Entry("time-offset form", "after:99+10", "NOT held"),
+		Entry("array-element id", "afterok:12345_3", "NOT held"),
+		Entry("empty expansion", "afterok:", "NOT held"),
+	)
+
+	It("keeps both ids across SLURM's OR separator", func() {
+		// '?' was missing from the split set, so the id fused to it was dropped
+		// and the job silently held on the wrong predecessor set.
+		Expect(dependencyIDs("afterok:11?afterany:12")).To(Equal([]string{"11", "12"}))
+	})
+
+	It("lets a command-line --dependency replace the directive, not add to it", func() {
+		opt, _, err := parseFlags([]string{"--dependency=afterok:100", "--dependency=afterany:200", "job.sh"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.holdJIDs).To(Equal([]string{"200"}), "last wins, as everywhere else")
+		Expect(dependencyWarning(opt.depSpec, opt.holdJIDs)).To(BeEmpty(),
+			"the superseded afterok must not still be warned about")
+	})
+
+	It("emits no -hold_jid and says so when nothing can be held", func() {
+		body := "#!/bin/bash\n#SBATCH -p batch\n#SBATCH --dependency=singleton\nsrun true\n"
+		script := writeScriptTop2(body)
+		var captured []string
+		var errBuf bytes.Buffer
+		rc := run(fakeQsub("73", &captured), testCfg(), "/shim", []string{script}, io.Discard, &errBuf)
+		Expect(rc).To(Equal(0))
+		Expect(captured).NotTo(ContainElement("-hold_jid"))
+		Expect(errBuf.String()).To(ContainSubstring("NOT held"))
+	})
+
+	It("stays quiet for a dependency form GE expresses exactly", func() {
+		body := "#!/bin/bash\n#SBATCH -p batch\n#SBATCH --dependency=afterany:99\nsrun true\n"
+		script := writeScriptTop2(body)
+		var captured []string
+		var errBuf bytes.Buffer
+		rc := run(fakeQsub("72", &captured), testCfg(), "/shim", []string{script}, io.Discard, &errBuf)
+		Expect(rc).To(Equal(0))
+		Expect(captured).To(ContainElements("-hold_jid", "99"))
+		Expect(errBuf.String()).NotTo(ContainSubstring("dependency"))
 	})
 })

@@ -134,14 +134,14 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--wrap` | ✅ | wraps the command string in a submitted script |
 | `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |
 | `--gpus-per-task` | ✅ | scaled to a per-node request (`gpus-per-task x ntasks-per-node`) for the same `-l` path, and binds each task to its own devices (as SLURM's implied `--gpu-bind=per_task`) |
-| `--gpu-bind` | ✅ | `none` (SLURM default: the node's whole grant stays visible to every task) or `per_task[:n]`; also honored as an `#SBATCH` directive via `SLURM_GPU_BIND` |
+| `--gpu-bind` | ✅ | `none` (SLURM default: the node's whole grant stays visible to every task) or `per_task[:n]`; also honored as an `#SBATCH` directive via `SLURM_GPU_BIND`. An explicit `none` overrides `--gpus-per-task` binding, as on SLURM |
 | `--mem` / `--mem-per-cpu` | ✅ | `qsub -l <memory_complex>=<n>` (default `h_vmem`; `4GB`->`4G`). Note `h_vmem` is virtual-address-space enforced — set `memory_complex` to `mem_free`/`h_rss` on GPU clusters |
 | `--time` / `-t` | ✅ | `qsub -l h_rt=<sec>` (with `-l s_rt` grace when `--signal` gives a lead time) |
 | `--array` | ✅ | `qsub -t 1-<n>` + `-tc` (from `%p`); SLURM 0-based indices are preserved end-to-end (env, filenames, `sacct`) |
-| `--dependency` | ✅ | `after*`/`afterany`/`afterok` -> `-hold_jid` (GE releases on completion; `afterok` success-gating is approximated) |
+| `--dependency` | ⚠️ | GE has one primitive, `-hold_jid`, which releases when every predecessor **finishes**. Only `afterany` means exactly that. `after` is *start*-gated in SLURM, so it becomes a wait-for-exit here (it will never release on a long-lived predecessor); `afterok`/`aftercorr` are approximated (they run anyway on failure, and `aftercorr` loses its per-element pairing); `afternotok` is inverted outright; `singleton` and the `+time` offset form yield no id, so **nothing is held**. Every one of those warns at submit time |
 | `--signal` | ✅ | `qsub -notify -r y` (GE sends SIGUSR2 before a kill/reschedule -- submitit's preempt signal -- and the job is rerunnable), plus `-l s_rt=h_rt-lead` as an early SIGUSR1 warning. With `scancel --signal`/`scontrol requeue` -> `qmod -rj`, this makes submitit checkpoint-then-requeue work |
 | `--export` | ✅ | SLURM default `ALL` -> `qsub -V` (full submit env forwarded, so `PATH`/`PYTHON_BIN` reach the job like on SLURM); `NONE` -> nothing; a `VAR=val` list -> `qsub -v` per entry; `ALL,VAR=val` composes. Newline-valued vars are flattened to spaces by GE |
-| `--exclusive` | ❌ | not translated (warn-and-ignored) |
+| `--exclusive` | ❌ | not translated, and it is not a translation: GE expresses whole-node allocation through the **PE**, not the job. Use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or an exclusive complex. Warn-and-ignored, with that advice in the warning |
 
 Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
 
@@ -151,7 +151,7 @@ Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) a
 |---|---|
 | `-N/--nodes`, `-n/--ntasks`, `--ntasks-per-node`, `-c/--cpus-per-task` | ✅ |
 | `-w/--nodelist` (subset of the allocation) | ✅ |
-| `--gpus-per-task` | ✅ (per-rank contiguous GPU partition; over-subscription errors) |
+| `--gpus-per-task` | ✅ (per-rank contiguous GPU partition; over-subscription errors). Under `gpu.isolation: cgroup` GE masks per job, so per-task binding cannot be applied — `srun` warns instead of dropping it silently |
 | `--export=ALL\|NONE\|<list>` | ✅ |
 | `-o/--output`, `-e/--error` (`%j %J %t %n %N %s %%` patterns) | ✅ |
 | `-l/--label`, `-K/--kill-on-bad-exit`, `-J/--job-name`, `-D/--chdir`, `--quiet`, `-v`, `-V` | ✅ |
@@ -185,7 +185,7 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 ### `sacct` fidelity
 
-`sacct` reports what GE records, not a SLURM accounting database. Four
+`sacct` reports what GE records, not a SLURM accounting database. Five
 differences are worth knowing:
 
 - **A selector is required.** Real `sacct` with no arguments reports today's jobs
@@ -198,35 +198,26 @@ differences are worth knowing:
   but shifts a native `qsub -t 1-3` array to `_0.._2`. Elements of an array that
   has not started yet are not listed at all — `sacct` on a freshly queued array
   returns nothing until its tasks begin.
-- **On OCS 9.1.4 and earlier, a non-zero exit was reported as `COMPLETED`.** Those
-  releases lost a job's exit status in the accounting record whenever it ran under
-  a PE with `control_slaves TRUE` — the setting `qrsh -inherit` tight integration
-  is built on, so every shim PE has it. It was stock GE behavior, not shim wiring:
-  a plain `qsub` of a plain script reproduced it with no shim code involved.
-  **Fixed in OCS 9.1.5**, where `sbatch --wrap='exit 3'` now reports
-  `FAILED` / `3:0`; the shim's mapping was already correct and needed no change.
-  Even on the affected releases, crashes, `scancel` and wallclock timeouts came
-  through GE's separate `failed` field and *were* reported correctly
-  (`CANCELLED` / `TIMEOUT` / `NODE_FAIL`), so `sacct` stayed a reliable completion
-  signal there — only `ExitCode` could not be used to spot a job that failed by
-  exiting non-zero. Details and a reproducer:
-  [`docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md`](docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
-  submitit and Hydra (the only integrations that read `sacct` state) never *hung*
-  or lost a failure on the affected releases, because they carry failures in their
-  own result pickles — but their `sacct` row was wrong, so sweep-level "which runs
-  failed?" scanning only became usable in 9.1.5.
+- **`ExitCode` needs OCS 9.1.5.** On earlier releases a job that exited non-zero
+  was reported `COMPLETED` / `0:0`
+  ([why](docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md)).
+- **A `--time` expiry reports `CANCELLED`, not `TIMEOUT`.** GE's execd kills the
+  job itself and records the same `failed` code as a `qdel`, which the accounting
+  record cannot distinguish. The job *is* killed at the limit, and the state is
+  terminal — only the label differs from SLURM.
 
 ### Known limitations
 
 - No `salloc` / `sattach`; no job-step overlap or heterogeneous steps.
-- `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal`; `--exclusive` is still warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
+- `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal` (all verified against a live cluster by `test/e2e/31_sbatch_resources.sh`); `--exclusive` is warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
+- **Requests that are accepted but cannot be fully honored now warn rather than failing quietly.** `sbatch` warns at submit time for `--exclusive` (a PE property, not a job one) and for every `--dependency` form GE cannot express (see the table above). `srun` warns *on the compute node* — not at submit — when per-task GPU binding was requested under `gpu.isolation: cgroup`, since GE masks devices per job there; use `gpu.isolation: shim` to bind per rank.
 - No PMI/PMIx (MPI via the PE's `mpirun`, which is the supported path anyway).
 - **GPU paths are not validated on real hardware** — the live e2e suite uses a fake RSMAP complex, so device *assignment* is asserted but CUDA/NCCL never runs.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
 
 ## Requirements
 
-- **Open Cluster Scheduler** — end-to-end suite runs green against live OCS **9.0.10** and **9.1.5**. **9.1.5 or newer is recommended**: earlier releases lose a job's exit status under a tightly integrated PE (see the `sacct` note above).
+- **Open Cluster Scheduler** — end-to-end suite runs green against live OCS **9.0.10** and **9.1.5**; **9.1.5 or newer recommended**.
 - Also targets **Gridware Cluster Scheduler** (same lineage); other SGE-compatible variants: untested.
 - A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). 🚧 A `docs/pe-setup.md` guide is planned; the PE hook scripts are in [`docs/install/`](docs/install/).
 - Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).

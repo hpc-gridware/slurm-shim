@@ -47,15 +47,17 @@ type options struct {
 	haveSignal      bool
 	signalDelay     int      // seconds before the time limit to deliver the signal
 	holdJIDs        []string // predecessor ids for -hold_jid
+	depSpec         string   // raw --dependency value, for dependencyWarning
 	exportSpec      string   // --export value; "" means the SLURM default ALL
 
 	script     string   // script file path (first non-flag token)
 	scriptArgs []string // tokens after the script
 }
 
-// longVal maps a long flag to the option setter; the bool is whether it takes a
-// value. Only the flags the translator needs are known; everything else is
-// warn-and-ignore (REQ-SBT-001).
+// knownLong is the set of long flags the translator handles. Every one of them
+// takes a value -- parseFlags consumes the next token when the "=" form was not
+// used -- so the bool is only there to make it a set; it is never read. Anything
+// absent is warn-and-ignored (REQ-SBT-001).
 var knownLong = map[string]bool{
 	"nodes": true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
 	"partition": true, "job-name": true, "output": true, "error": true,
@@ -66,6 +68,18 @@ var knownLong = map[string]bool{
 	"signal": true, "dependency": true, "export": true,
 	// Accepted and intentionally ignored (GE has no distinct behavior to map):
 	"open-mode": true, "wckey": true,
+}
+
+// unmappableLong are flags the shim recognizes but deliberately does not
+// translate, mapped to the reason. They are still ignored; this only upgrades
+// the generic "unknown directive" warning to one that names the Grid Engine
+// equivalent. Keep them out of knownLong -- these are booleans, and everything
+// in that set consumes a value, which here would be the script path.
+var unmappableLong = map[string]string{
+	"exclusive": "--exclusive is not translated: Grid Engine expresses whole-node " +
+		"allocation through the parallel environment, not the job. Use a partition " +
+		"whose PE has allocation_rule $pe_slots sized to the node, or add an " +
+		"exclusive complex -- both are site configuration, not a submission flag",
 }
 
 var shortToLong = map[byte]string{
@@ -117,7 +131,11 @@ func parseFlags(tokens []string) (options, []string, error) {
 			}
 			if !knownLong[name] {
 				if !warned[name] {
-					warns = append(warns, "unknown directive --"+name+" ignored")
+					if why, ok := unmappableLong[name]; ok {
+						warns = append(warns, why)
+					} else {
+						warns = append(warns, "unknown directive --"+name+" ignored")
+					}
 					warned[name] = true
 				}
 				// Known value-taking Pyxis flags consume their space-form value so
@@ -249,7 +267,12 @@ func setLong(opt *options, name, val string) error {
 	case "signal":
 		opt.signalDelay, opt.haveSignal = parseSignalDelay(val), true
 	case "dependency":
-		opt.holdJIDs = append(opt.holdJIDs, dependencyIDs(val)...)
+		// Last-wins, like every other flag here and like SLURM: directives are
+		// folded before the command line (see sbatch.go), so an explicit
+		// --dependency on the command line replaces the script's, rather than
+		// accumulating a hold on both sets.
+		opt.holdJIDs = dependencyIDs(val)
+		opt.depSpec = val
 	case "export":
 		opt.exportSpec = val
 	case "open-mode", "wckey":
@@ -369,10 +392,16 @@ func parseSignalDelay(val string) int {
 // dependencyIDs collects the numeric predecessor job ids from a SLURM
 // --dependency value ("afterok:12:13,afterany:14"). GE's -hold_jid waits for all
 // listed jobs to finish regardless of exit status, so every after* form maps to
-// the same hold; success-only (afterok) semantics are approximated, not enforced.
+// the same hold. Separators are SLURM's own: ',' (AND), ':' (id list) and '?'
+// (OR) -- omitting '?' silently swallowed the id fused to it, e.g.
+// "afterok:11?afterany:12" held on 12 alone.
+//
+// What this CANNOT translate is reported by dependencyWarning, which is the
+// authority on the gap; keep the two in step.
 func dependencyIDs(val string) []string {
 	var ids []string
-	for _, clause := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == ':' }) {
+	sep := func(r rune) bool { return r == ',' || r == ':' || r == '?' }
+	for _, clause := range strings.FieldsFunc(val, sep) {
 		clause = strings.TrimSpace(clause)
 		if clause == "" {
 			continue
@@ -382,6 +411,73 @@ func dependencyIDs(val string) []string {
 		}
 	}
 	return ids
+}
+
+// dependencyKinds extracts the dependency type of each clause in a --dependency
+// value, lowercased ("afterok:1?afterany:2" -> [afterok afterany]). Clauses are
+// separated by ',' (AND) and '?' (OR); the type is whatever precedes the first
+// ':'. Matching on whole types rather than substrings matters: every type starts
+// with "after", so a Contains check on "after" would fire for all of them.
+func dependencyKinds(val string) []string {
+	var kinds []string
+	for _, clause := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == '?' }) {
+		kind, _, _ := strings.Cut(strings.TrimSpace(clause), ":")
+		if kind != "" {
+			kinds = append(kinds, strings.ToLower(kind))
+		}
+	}
+	return kinds
+}
+
+// dependencyWarning reports what a --dependency request loses in translation, or
+// "" when nothing is lost. GE has exactly one dependency primitive, -hold_jid,
+// which releases when every predecessor FINISHES. Only SLURM's afterany means
+// that; the rest lose something, worst first:
+//
+//   - No predecessor id at all (singleton, "after:99+10", an empty expansion).
+//     Nothing is held and the job runs immediately -- strictly worse than an
+//     approximated gate, so it must not be the quiet case.
+//   - after is START-gated in SLURM ("after the specified jobs start"). Under
+//     -hold_jid the job instead waits for the predecessor to END, which for the
+//     usual case -- a client waiting on a long-lived server -- never happens.
+//     This one can deadlock a workflow, so it is not "exact".
+//   - Success-gated forms. afterok/aftercorr run anyway when the predecessor
+//     fails, afternotok is inverted outright, and aftercorr additionally loses
+//     its element-wise pairing (the whole array waits on the whole array).
+func dependencyWarning(spec string, ids []string) string {
+	if strings.TrimSpace(spec) == "" {
+		return ""
+	}
+	if len(ids) == 0 {
+		return "--dependency=" + spec + " has no job id Grid Engine can hold on: " +
+			"the job is NOT held and runs immediately"
+	}
+	var startGated, successGated, inverted bool
+	for _, k := range dependencyKinds(spec) {
+		switch k {
+		case "after":
+			startGated = true
+		case "afternotok":
+			inverted = true
+		case "afterok", "aftercorr":
+			successGated = true
+		}
+	}
+	switch {
+	case inverted:
+		return "--dependency=afternotok cannot be expressed: GE releases on completion " +
+			"regardless of exit status, so the job runs whether or not the predecessor failed"
+	case startGated:
+		return "--dependency=after is start-gated in SLURM but completion-gated in Grid " +
+			"Engine: the job waits for the predecessor to FINISH, not to start, which " +
+			"never happens if the predecessor is long-lived. Use afterany if that is what " +
+			"you meant"
+	case successGated:
+		return "--dependency=afterok/aftercorr is approximated: GE releases when the " +
+			"predecessor finishes, whatever its exit status (and aftercorr's per-element " +
+			"pairing becomes a whole-array hold)"
+	}
+	return ""
 }
 
 // parseArraySpec parses a SLURM --array value: "<min>-<max>[:<step>][%<throttle>]"

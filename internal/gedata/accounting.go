@@ -192,7 +192,9 @@ func firstLine(s string) string {
 // them without the requested h_rt/h_vmem, so failed=100 defaults to CANCELLED;
 // the only distinct timeout signal is the qmaster-enforced failed=37. A consumer
 // like submitit only needs *a* terminal state to stop waiting, so the
-// CANCELLED/TIMEOUT nuance is cosmetic, not a correctness concern.
+// CANCELLED/TIMEOUT nuance is cosmetic, not a correctness concern. Verified live
+// on 9.1.5: an ordinary --time expiry is enforced by the execd and lands in the
+// failed=100 bucket, so failed=37 is the rarer path, not the usual one.
 //
 // This relies on go-clusterscheduler's qacct parser stripping the trailing
 // description from the failed field (e.g. "100 : assumedly after job"); the
@@ -204,7 +206,7 @@ func acctState(failed, exit int64) string {
 	case failed == 0:
 		return "FAILED" // ran and exited non-zero (or died by a non-GE signal)
 	case failed == 37:
-		return "TIMEOUT" // qmaster-enforced h_rt
+		return "TIMEOUT" // qmaster-enforced h_rt; see the note above on failed=100
 	case failed == 22:
 		return "NODE_FAIL" // node / execd lost the job
 	case failed == 24 || failed == 25:

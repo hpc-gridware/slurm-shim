@@ -57,8 +57,8 @@ overloaded) and clears any stale `QERROR`.
 ## Validated end-to-end (OCS 9.1.5, fresh cluster)
 
 Re-verified on 2026-08-28 against **OCS 9.1.5 (250826-0734)** on a clean cluster
-brought up by this harness: `make e2e` green (106 assertions across 10 checks),
-plus all three demos. The same suite is green on **OCS 9.0.10** (104 -- the two
+brought up by this harness: `make e2e` green (122 assertions across 11 checks),
+plus all three demos. The same suite is green on **OCS 9.0.10** (the two
 exit-status assertions skip there). Nothing in the shim needed changing for
 9.1.5; the one behavior difference is the exit-status fix noted below.
 
