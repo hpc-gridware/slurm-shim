@@ -11,12 +11,20 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
-// Run is the scancel entry point.
+// Run is the scancel entry point. Under SLURM_SHIM_DRY_RUN the runner reports the
+// qdel/qmod it would run rather than cancelling anything, on stderr -- real
+// scancel writes nothing to stdout, and a caller must not mistake the report for
+// output. The banner is printed up front so a run that reaches no mutating client
+// is still distinguishable from a real cancellation.
 func Run(args []string, stdout, stderr io.Writer) int {
-	return run(gedata.ExecRunner{}, args, stdout, stderr)
+	if dryrun.Enabled() {
+		fmt.Fprintln(stderr, dryrun.Banner("scancel"))
+	}
+	return run(dryrun.Wrap(gedata.ExecRunner{}, stderr, "scancel"), args, stdout, stderr)
 }
 
 func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {

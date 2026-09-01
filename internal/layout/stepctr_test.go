@@ -1,6 +1,7 @@
 package layout_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -103,3 +104,72 @@ func seq(n int) []int {
 	}
 	return out
 }
+
+var _ = Describe("layout.PeekStep [REQ-LCY-003]", func() {
+	var path string
+
+	BeforeEach(func() {
+		path = filepath.Join(GinkgoT().TempDir(), layout.StepCtrFile)
+	})
+
+	It("reports 0 for a freshly initialized counter, without consuming it", func() {
+		Expect(layout.InitStepCounter(path)).To(Succeed())
+
+		n, err := layout.PeekStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+
+		// Peeking twice must not advance, and the next real issue must match.
+		again, err := layout.PeekStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(again).To(Equal(0))
+
+		issued, err := layout.NextStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(issued).To(Equal(0))
+	})
+
+	// The property the dry run depends on: after steps are consumed, the peek
+	// reports the id the NEXT real srun gets. A stuck-at-zero implementation
+	// passes the fresh-counter case above but fails this one.
+	It("agrees with the next issue after steps have been consumed", func() {
+		Expect(layout.InitStepCounter(path)).To(Succeed())
+		for i := 0; i < 3; i++ {
+			_, err := layout.NextStep(path)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		n, err := layout.PeekStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(3))
+
+		issued, err := layout.NextStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(issued).To(Equal(3))
+	})
+
+	It("treats a missing or empty counter as the first step", func() {
+		n, err := layout.PeekStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+
+		Expect(os.WriteFile(path, nil, 0o600)).To(Succeed())
+		n, err = layout.PeekStep(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+	})
+
+	// Diverging here is what let a dry run report "step id 0" for a job whose
+	// every real srun would exit 1.
+	It("reports a corrupt counter as an error, exactly as layout.NextStep does", func() {
+		Expect(os.WriteFile(path, []byte("garbage\n"), 0o600)).To(Succeed())
+
+		_, peekErr := layout.PeekStep(path)
+		Expect(peekErr).To(HaveOccurred())
+		Expect(peekErr.Error()).To(ContainSubstring("corrupt step counter"))
+
+		_, nextErr := layout.NextStep(path)
+		Expect(nextErr).To(HaveOccurred())
+		Expect(nextErr.Error()).To(ContainSubstring("corrupt step counter"))
+	})
+})

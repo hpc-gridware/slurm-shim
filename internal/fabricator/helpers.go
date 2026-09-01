@@ -174,9 +174,19 @@ func submitDir(e envReader) string {
 // unsetPreamble is the fixed set of fabricated SLURM_*/MASTER_* variables the
 // emission clears first (REQ-ENV-011), so a child job inheriting a parent's
 // environment does not retain phantom values. It excludes the user-input
-// control variables SLURM_KILL_BAD_EXIT and all SLURM_SHIM_* (SI-56).
+// control variables SLURM_KILL_BAD_EXIT and the SLURM_SHIM_* job overrides
+// (SI-56) -- with one deliberate exception, below.
 func unsetPreamble() []string {
 	return []string{
+		// SLURM_SHIM_DRY_RUN is scrubbed despite the SI-56 carve-out. That carve-out
+		// exists because SLURM_SHIM_TASK_POLICY / SLURM_SHIM_NTASKS / SLURM_SHIM_DISABLE
+		// are job CONFIGURATION that must survive into the allocation. Dry run is a
+		// client-side switch whose on-state suppresses work: inherited into a job
+		// (qsub -V forwards the submit environment) it turns every srun into a
+		// no-op, so the job burns its allocation, exits 0 and is recorded COMPLETED
+		// having computed nothing. It joined that family by naming convention, not
+		// by intent.
+		"SLURM_SHIM_DRY_RUN",
 		"SLURM_JOB_ID", "SLURM_JOBID", "SLURM_JOB_NAME",
 		"SLURM_ARRAY_JOB_ID", "SLURM_ARRAY_TASK_ID",
 		"SLURM_ARRAY_TASK_MIN", "SLURM_ARRAY_TASK_MAX",

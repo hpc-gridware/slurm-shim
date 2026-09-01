@@ -20,6 +20,7 @@ checks=(
   80_sinfo
   90_array
   91_sacct
+  95_dryrun
 )
 
 fails=0

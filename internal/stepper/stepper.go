@@ -308,12 +308,21 @@ func (s *stepper) killAll(sig syscall.Signal) { s.forwardSignal(sig) }
 // the step base environment, deduplicating by key so a Table B value shadows
 // the Table A value of the same name (B shadows A, REQ-ENV-041).
 func rankEnv(spec proto.StepSpec, r proto.RankSpec, host string) []string {
+	return dedupEnv(spec.Env, RankOverlay(r, host))
+}
+
+// RankOverlay is everything the stepper adds on top of the step environment for
+// one rank: its Table B delta plus the host-local variables. Exported so the srun
+// dry run reports the same set a rank actually receives instead of re-deriving it
+// -- SLURMD_NODENAME and CUDA_VISIBLE_DEVICES are added here, not by the planner,
+// so a report built from RankSpec alone silently omits them.
+func RankOverlay(r proto.RankSpec, host string) []string {
 	overlay := append([]string(nil), r.EnvDelta...)
 	overlay = append(overlay, "SLURMD_NODENAME="+host)
 	if len(r.GPUs) > 0 {
 		overlay = append(overlay, "CUDA_VISIBLE_DEVICES="+joinInts(r.GPUs))
 	}
-	return dedupEnv(spec.Env, overlay)
+	return overlay
 }
 
 // dedupEnv merges base then overlay, keeping the last value for each key while

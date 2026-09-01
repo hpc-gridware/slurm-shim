@@ -12,14 +12,21 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
 )
 
-// Run is the scontrol entry point.
+// Run is the scontrol entry point. Under SLURM_SHIM_DRY_RUN the runner reports the
+// mutating clients (requeue's qmod) on stderr instead of running them; the
+// read-only qstat behind `show job` still runs, so show subcommands work as usual
+// and their key=value record keeps stdout to itself.
 func Run(args []string, stdout, stderr io.Writer) int {
-	return run(gedata.ExecRunner{}, args, stdout, stderr)
+	if dryrun.Enabled() {
+		fmt.Fprintln(stderr, dryrun.Banner("scontrol"))
+	}
+	return run(dryrun.Wrap(gedata.ExecRunner{}, stderr, "scontrol"), args, stdout, stderr)
 }
 
 func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {

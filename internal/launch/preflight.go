@@ -2,6 +2,7 @@ package launch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -28,16 +29,11 @@ func Preflight(ctx context.Context, r gedata.Runner, peName string) PreflightRes
 		return res
 	}
 
-	stdout, stderr, exit, err := r.Run(ctx, "qconf", "-sp", peName)
+	pe, err := PEConfig(ctx, r, peName)
 	if err != nil {
 		res.Errors = append(res.Errors, fmt.Sprintf("cannot read PE %q config: %v", peName, err))
 		return res
 	}
-	if exit != 0 {
-		res.Errors = append(res.Errors, fmt.Sprintf("cannot read PE %q config: %s", peName, strings.TrimSpace(string(stderr))))
-		return res
-	}
-	pe := ParsePEConfig(stdout)
 
 	// control_slaves TRUE is mandatory: without it the slave execd will not
 	// accept `qrsh -inherit` tasks, so tight-integration launch is impossible.
@@ -67,6 +63,27 @@ func Preflight(ctx context.Context, r gedata.Runner, peName string) PreflightRes
 		"token delivered via qrsh -v: confirm the execd env spool file is owner-only for the step lifetime (SI-51)")
 
 	return res
+}
+
+// PEConfig reads a parallel environment's configuration with `qconf -sp`. It is
+// the single reader of that command, so callers that need PE facts (the launch
+// preflight, the sbatch dry run) cannot disagree about how a failure is detected.
+//
+// A non-zero exit with empty stderr still yields an error: an empty message read
+// as success is how a failed lookup gets reported as a definitive verdict.
+func PEConfig(ctx context.Context, r gedata.Runner, peName string) (map[string]string, error) {
+	stdout, stderr, exit, err := r.Run(ctx, "qconf", "-sp", peName)
+	if err != nil {
+		return nil, err
+	}
+	if exit != 0 {
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = fmt.Sprintf("qconf -sp %s exited %d", peName, exit)
+		}
+		return nil, errors.New(msg)
+	}
+	return ParsePEConfig(stdout), nil
 }
 
 // ParsePEConfig parses `qconf -sp <pe>` output (one "key   value" pair per line)

@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata/fake"
 )
 
@@ -82,5 +83,49 @@ var _ = Describe("scancel [REQ-SCL-001]", func() {
 
 	It("errors when no job id is given", func() {
 		Expect(run(&fake.Runner{}, nil, io.Discard, io.Discard)).To(Equal(1))
+	})
+})
+
+var _ = Describe("scancel dry run [SLURM_SHIM_DRY_RUN]", func() {
+	// Drives the same wrapping Run() installs, so a spec fails if the wiring is
+	// removed or pointed at the wrong stream.
+	dry := func(args ...string) (*fake.Runner, string, int) {
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+		inner := &fake.Runner{}
+		var errBuf bytes.Buffer
+		code := run(dryrun.Wrap(inner, &errBuf, "scancel"), args, io.Discard, &errBuf)
+		return inner, errBuf.String(), code
+	}
+
+	It("reports the qdel for a whole job and cancels nothing", func() {
+		inner, out, code := dry("4711")
+		Expect(code).To(Equal(0))
+		Expect(inner.Calls).To(BeEmpty(), "a dry run must not reach the cluster")
+		Expect(out).To(ContainSubstring("would run: qdel 4711"))
+	})
+
+	// The 0-based array mapping is the part most worth previewing, since element
+	// k becomes GE task k+1.
+	It("reports the array-element mapping", func() {
+		inner, out, code := dry("4711_2")
+		Expect(code).To(Equal(0))
+		Expect(inner.Calls).To(BeEmpty())
+		Expect(out).To(ContainSubstring("would run: qdel 4711 -t 3"))
+	})
+
+	It("reports the reschedule behind --signal", func() {
+		inner, out, code := dry("--signal", "USR2", "4711")
+		Expect(code).To(Equal(0))
+		Expect(inner.Calls).To(BeEmpty())
+		Expect(out).To(ContainSubstring("would run: qmod -rj 4711"))
+	})
+
+	It("cancels for real when the mode is off", func() {
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "0")
+		inner := &fake.Runner{}
+		var errBuf bytes.Buffer
+		Expect(run(dryrun.Wrap(inner, &errBuf, "scancel"), []string{"4711"}, io.Discard, &errBuf)).To(Equal(0))
+		Expect(inner.Calls).To(HaveLen(1))
+		Expect(inner.Calls[0].Name).To(Equal("qdel"))
 	})
 })

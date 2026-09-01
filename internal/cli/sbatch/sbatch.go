@@ -8,15 +8,22 @@ import (
 	"path/filepath"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
-// Run is the sbatch entry point.
+// Run is the sbatch entry point. The runner is wrapped for dry-run mode so a
+// mutating client cannot be reached by a path that skipped the explicit branch;
+// the branch itself is what renders the report.
 func Run(args []string, stdout, stderr io.Writer) int {
 	cfg, _, _ := config.Load()
 	self, _ := os.Executable()
-	return run(gedata.ExecRunner{}, cfg, self, args, stdout, stderr)
+	return run(dryrun.Wrap(gedata.ExecRunner{}, stderr, "sbatch"), cfg, self, args, stdout, stderr)
 }
+
+// baseName is filepath.Base, named so the dry-run report can show the shim's
+// command name without importing path handling into its own file.
+func baseName(p string) string { return filepath.Base(p) }
 
 // run parses directives + CLI flags, translates to a qsub submission, runs
 // `qsub -terse`, and prints "Submitted batch job <id>" (spec sec. 7.6).
@@ -66,10 +73,36 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		return 1
 	}
 
+	if err := validateGeometry(opt); err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+
 	slots, err := computeSlots(opt, part)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
+	}
+
+	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots)
+	for _, w := range qwarns {
+		fmt.Fprintln(stderr, "sbatch: warning: "+w)
+	}
+
+	// Dry run reports and stops before any state changes -- including
+	// materializeScript, whose wrapper mode would spool a copy of the script for
+	// a job that is never submitted. --test-only is SLURM's spelling of the same
+	// request and reaches callers that control only argv or #SBATCH directives.
+	if dryrun.Enabled() || opt.testOnly {
+		if v := dryrun.Unrecognized(); v != "" {
+			fmt.Fprintf(stderr, "sbatch: warning: %s=%q is not a recognized on/off value; treating as off\n",
+				dryrun.EnvVar, v)
+		}
+		return dryRun(runner, cfg, self, opt, part, slots, qargs, stdout, stderr)
+	}
+	if v := dryrun.Unrecognized(); v != "" {
+		fmt.Fprintf(stderr, "sbatch: warning: %s=%q is not a recognized on/off value; submitting for real\n",
+			dryrun.EnvVar, v)
 	}
 
 	scriptPath, cleanup, err := materializeScript(cfg, self, opt)
@@ -79,10 +112,6 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	}
 	defer cleanup()
 
-	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots)
-	for _, w := range qwarns {
-		fmt.Fprintln(stderr, "sbatch: warning: "+w)
-	}
 	qargs = append(qargs, scriptPath)
 	qargs = append(qargs, opt.scriptArgs...)
 
@@ -106,6 +135,56 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	return 0
 }
 
+// submitMode names how the script reaches qsub.
+type submitMode int
+
+const (
+	submitPlain   submitMode = iota // the user's file, submitted unchanged
+	submitWrap                      // a temp script synthesized from --wrap
+	submitWrapper                   // wrapper mode (SI-57): a generated wrapper execs the stored original
+)
+
+// submitShape is the decision materializeScript acts on and the dry run reports:
+// which of the three shapes applies, where the spool directory is rooted, and the
+// path pattern to show for a directory whose name is only chosen at submit time.
+type submitShape struct {
+	mode         submitMode
+	spoolRoot    string
+	spoolPattern string
+}
+
+// submitPlan resolves the submission shape without touching the filesystem. Both
+// materializeScript (which acts on it) and the dry run (which reports it) read it
+// here, so the reported script path cannot drift from the submitted one.
+func submitPlan(cfg *config.Config, opt options) submitShape {
+	if !cfg.WrapperMode {
+		if opt.wrap == "" {
+			return submitShape{mode: submitPlain}
+		}
+		return submitShape{
+			mode:         submitWrap,
+			spoolRoot:    os.TempDir(),
+			spoolPattern: filepath.Join(os.TempDir(), "slurm-shim-sbatch-XXXX", "wrap.sh"),
+		}
+	}
+	// Wrapper mode: the stored original is referenced by path at RUN time, so it
+	// must live on shared storage that persists for the job (SI-57). Prefer the
+	// configured spool dir; else store next to the user's script (assumed shared).
+	root := cfg.WrapperSpoolDir
+	if root == "" {
+		if opt.wrap != "" {
+			root = "." // --wrap has no script dir; submit CWD is usually shared
+		} else {
+			root = filepath.Dir(opt.script)
+		}
+	}
+	return submitShape{
+		mode:         submitWrapper,
+		spoolRoot:    root,
+		spoolPattern: filepath.Join(root, ".slurm-shim-sbatch-XXXX", "wrapper.sh"),
+	}
+}
+
 // materializeScript returns the path to submit to qsub and a cleanup func. In PE
 // (default) mode it submits the user script directly (a --wrap command becomes a
 // throwaway temp script that qsub copies into GE's spool, so it is cleaned after
@@ -116,6 +195,7 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 // site owns, e.g. via stop_proc_args).
 func materializeScript(cfg *config.Config, self string, opt options) (string, func(), error) {
 	noop := func() {}
+	shape := submitPlan(cfg, opt)
 
 	// The "original" is the user's script file, or a script synthesized from
 	// --wrap.
@@ -132,10 +212,10 @@ func materializeScript(cfg *config.Config, self string, opt options) (string, fu
 		origName = "orig" + filepath.Ext(opt.script)
 	}
 
-	if !cfg.WrapperMode {
-		if opt.wrap == "" {
-			return opt.script, noop, nil // submit the user's file unchanged
-		}
+	switch shape.mode {
+	case submitPlain:
+		return opt.script, noop, nil // submit the user's file unchanged
+	case submitWrap:
 		// A --wrap temp script is copied into GE's spool by qsub at submit time,
 		// so it is safe to clean once qsub returns; node-local /tmp is fine.
 		dir, err := os.MkdirTemp("", "slurm-shim-sbatch-")
@@ -149,18 +229,7 @@ func materializeScript(cfg *config.Config, self string, opt options) (string, fu
 		return p, func() { _ = os.RemoveAll(dir) }, nil
 	}
 
-	// Wrapper mode: the stored original is referenced by path at RUN time, so it
-	// must live on shared storage that persists for the job (SI-57). Prefer the
-	// configured spool dir; else store next to the user's script (assumed shared).
-	spoolRoot := cfg.WrapperSpoolDir
-	if spoolRoot == "" {
-		if opt.wrap != "" {
-			spoolRoot = "." // --wrap has no script dir; submit CWD is usually shared
-		} else {
-			spoolRoot = filepath.Dir(opt.script)
-		}
-	}
-	dir, err := os.MkdirTemp(spoolRoot, ".slurm-shim-sbatch-")
+	dir, err := os.MkdirTemp(shape.spoolRoot, ".slurm-shim-sbatch-")
 	if err != nil {
 		return "", noop, err
 	}

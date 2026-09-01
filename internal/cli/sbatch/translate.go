@@ -34,6 +34,36 @@ func (o options) resolveGeometry() (ntasks, cpusPerTask int) {
 	return ntasks, cpusPerTask
 }
 
+// maxGeometry bounds the task-geometry flags. Grid Engine rejects an absurd slot
+// request at submit time, but the shim itself now models the allocation for the
+// dry run, so an unvalidated --nodes drove an unbounded allocation (and a
+// makeslice panic) on a shared login node. Validating once here keeps every path
+// -- real and dry -- from carrying a value no cluster could satisfy.
+const maxGeometry = 1 << 20
+
+// validateGeometry rejects task-geometry values that no allocation could satisfy,
+// with a diagnostic rather than a panic or an OOM.
+func validateGeometry(o options) error {
+	for _, f := range []struct {
+		name string
+		v    int
+	}{
+		{"--nodes", o.nodes},
+		{"--ntasks", o.ntasks},
+		{"--ntasks-per-node", o.ntasksPerNode},
+		{"--cpus-per-task", o.cpusPerTask},
+	} {
+		if f.v < 0 {
+			return fmt.Errorf("sbatch: error: %s must not be negative (got %d)", f.name, f.v)
+		}
+		if f.v > maxGeometry {
+			return fmt.Errorf("sbatch: error: %s=%d exceeds the maximum supported value %d",
+				f.name, f.v, maxGeometry)
+		}
+	}
+	return nil
+}
+
 // computeSlots applies the partition's slots rule (REQ-SBT-002), the inverse of
 // task policy N3. A literal integer pins the slot count; "per-task" (and the
 // empty default) multiplies ntasks by cpus_per_task.

@@ -84,6 +84,17 @@ func Fabricate(opts Options) (*Result, error) {
 	res.Warnings = append(res.Warnings,
 		discoverGPUs(qctx, opts.Runner, cfg, e, e.get("JOB_ID"), nodes.hosts)...)
 
+	if err := assemble(qctx, res, e, cfg, opts, nodes); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// assemble derives the geometry, layout and Table A exports from a resolved
+// allocation. It is the half of fabrication that is pure assembly over the node
+// set, shared by the real run and by Predict so a submit-time dry run cannot
+// drift from what the job will actually see.
+func assemble(qctx context.Context, res *Result, e envReader, cfg *config.Config, opts Options, nodes nodeSet) error {
 	policy := taskPolicy(e, cfg, nodes.peName)
 	allocs := make([]plan.NodeAlloc, len(nodes.hosts))
 	for i, h := range nodes.hosts {
@@ -91,7 +102,7 @@ func Fabricate(opts Options) (*Result, error) {
 	}
 	geom, err := plan.ApplyPolicy(policy, allocs)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	res.Warnings = append(res.Warnings, geom.Warnings...)
 
@@ -117,10 +128,7 @@ func Fabricate(opts Options) (*Result, error) {
 			"non-uniform per-node task counts: SLURM_NTASKS_PER_NODE omitted (Lightning requires it)")
 	}
 
-	if err := validate(res, geom); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return validate(res, geom)
 }
 
 // nodeSet is the parsed, IP-resolved allocation plus job-scoped metadata.

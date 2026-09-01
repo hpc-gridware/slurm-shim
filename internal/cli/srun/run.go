@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
@@ -71,7 +72,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		errln(stderr, w)
 	}
 
-	stepID, err := layout.NextStep(filepath.Join(stateDir(), layout.StepCtrFile))
+	// A dry run must not consume a step id: the step it describes is the one the
+	// next real srun will create. Both readers surface the same failures, so a
+	// counter that would abort the real step aborts the report too.
+	ctr := filepath.Join(stateDir(), layout.StepCtrFile)
+	dry := dryrun.Enabled() || opt.testOnly
+	var stepID int
+	if dry {
+		stepID, err = layout.PeekStep(ctr)
+	} else {
+		stepID, err = layout.NextStep(ctr)
+	}
 	if err != nil {
 		errln(stderr, "srun: error: reserving step id: "+err.Error())
 		return 1
@@ -90,19 +101,40 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		user = os.Getenv("USER")
 	}
 
-	return (&supervisor{
+	// The absolute shim path is the stepper argv[0] on every host, and the dry run
+	// reports it, so both resolve it the same way and at the same point.
+	self, err := os.Executable()
+	if err != nil {
+		errln(stderr, "srun: error: locating self: "+err.Error())
+		return 1
+	}
+
+	sup := &supervisor{
 		cfg:         cfg,
 		opt:         opt,
 		lay:         lay,
 		plan:        p,
 		stepID:      stepID,
+		self:        self,
 		stdout:      stdout,
 		stderr:      stderr,
 		kill:        resolveKill(opt.killFlag, cfg),
 		arrayJobID:  arrayJob,
 		arrayTaskID: arrayTask,
 		user:        user,
-	}).launch()
+	}
+	if dry {
+		if v := dryrun.Unrecognized(); v != "" {
+			errln(stderr, fmt.Sprintf("srun: warning: %s=%q is not a recognized on/off value; treating as off",
+				dryrun.EnvVar, v))
+		}
+		return sup.dryRun()
+	}
+	if v := dryrun.Unrecognized(); v != "" {
+		errln(stderr, fmt.Sprintf("srun: warning: %s=%q is not a recognized on/off value; launching for real",
+			dryrun.EnvVar, v))
+	}
+	return sup.launch()
 }
 
 type supervisor struct {
@@ -111,6 +143,8 @@ type supervisor struct {
 	lay    *layout.Layout
 	plan   *plan.StepPlan
 	stepID int
+	// self is the absolute shim path used as the stepper's argv[0] on every host.
+	self   string
 	stdout io.Writer
 	stderr io.Writer
 	kill   bool
@@ -144,15 +178,10 @@ func (s *supervisor) launch() int {
 		return 1
 	}
 
-	self, err := os.Executable()
-	if err != nil {
-		errln(s.stderr, "srun: error: locating self: "+err.Error())
-		return 1
-	}
 	// The master host always runs under the LocalLauncher (REQ-RUN-012); slave
 	// hosts use the configured backend (qrsh-inherit by default).
-	master := launch.LocalLauncher{Self: self, Stderr: s.stderr}
-	slave, err := launch.For(s.cfg, self, s.stderr)
+	master := launch.LocalLauncher{Self: s.self, Stderr: s.stderr}
+	slave, err := launch.For(s.cfg, s.self, s.stderr)
 	if err != nil {
 		errln(s.stderr, "srun: error: "+err.Error())
 		return exitLauncher
@@ -384,15 +413,7 @@ func (s *supervisor) killHandles(handles []launch.Handle) {
 // selected with `-w <worker>` also runs off-box, since its one node carries a
 // non-zero layout index and the launch loop hands it to the slave launcher.
 func (s *supervisor) stepIsRemote(slaveIsQrsh bool) bool {
-	if !slaveIsQrsh {
-		return false
-	}
-	for _, n := range s.plan.Nodes {
-		if n.LayoutIndex != 0 {
-			return true
-		}
-	}
-	return false
+	return slaveIsQrsh && s.hasSlaveNode()
 }
 
 func (s *supervisor) bindAddr(remote bool) string {

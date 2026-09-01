@@ -50,16 +50,51 @@ type options struct {
 	depSpec         string   // raw --dependency value, for dependencyWarning
 	exportSpec      string   // --export value; "" means the SLURM default ALL
 
+	// testOnly is SLURM's --test-only: report what would be submitted and submit
+	// nothing. It is OR'd with SLURM_SHIM_DRY_RUN so callers that can only inject
+	// #SBATCH directives or argv (Hydra, submitit, CI templates) can reach the
+	// mode without controlling the environment.
+	testOnly bool
+
 	script     string   // script file path (first non-flag token)
 	scriptArgs []string // tokens after the script
 }
 
-// knownLong is the set of long flags the translator handles. Every one of them
-// takes a value -- parseFlags consumes the next token when the "=" form was not
-// used -- so the bool is only there to make it a set; it is never read. Anything
-// absent is warn-and-ignored (REQ-SBT-001).
+// boolLong are the long flags that take NO value. They are also listed in
+// knownLong (which gates recognition), but parseFlags checks this set first so a
+// boolean flag does not consume the following token -- which would be the script
+// path.
+var boolLong = map[string]bool{
+	"test-only": true,
+}
+
+// setBool applies a valueless long flag.
+func setBool(o *options, name string) error {
+	switch name {
+	case "test-only":
+		o.testOnly = true
+		return nil
+	}
+	return fmt.Errorf("sbatch: error: --%s is not a boolean flag", name)
+}
+
+// truthyFlag reads the value of a --flag=VALUE form given for a boolean flag, so
+// `--test-only=false` means what it says rather than enabling the mode.
+func truthyFlag(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "1", "true", "yes", "y", "on":
+		return true
+	}
+	return false
+}
+
+// knownLong is the set of long flags the translator handles. All of them take a
+// value -- parseFlags consumes the next token when the "=" form was not used --
+// EXCEPT those also listed in boolLong, which take none. Anything absent is
+// warn-and-ignored (REQ-SBT-001).
 var knownLong = map[string]bool{
-	"nodes": true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
+	"test-only": true,
+	"nodes":     true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
 	"partition": true, "job-name": true, "output": true, "error": true,
 	"chdir": true, "wrap": true, "array": true,
 	"time": true, "mem": true, "mem-per-cpu": true,
@@ -145,6 +180,17 @@ func parseFlags(tokens []string) (options, []string, error) {
 				// templates use the = form, avoiding the ambiguity.
 				if !hasVal && containerValueFlags[name] {
 					_, _ = next()
+				}
+				continue
+			}
+			// Boolean flags take no value: consuming the next token would swallow
+			// the script path.
+			if boolLong[name] {
+				if hasVal && !truthyFlag(val) {
+					continue
+				}
+				if err := setBool(&opt, name); err != nil {
+					return opt, warns, err
 				}
 				continue
 			}

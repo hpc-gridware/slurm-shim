@@ -17,6 +17,38 @@ func InitStepCounter(path string) error {
 	return os.WriteFile(path, []byte("-1\n"), 0o600)
 }
 
+// PeekStep returns the id NextStep would issue, without consuming it. It exists
+// for the dry run (SLURM_SHIM_DRY_RUN), which must report the step a real srun
+// would create while leaving the counter untouched.
+//
+// It reports the same failures NextStep does rather than substituting 0: a
+// corrupt counter makes the real srun exit 1, and a dry run that answered
+// "step id 0" for that job would report success for a step that cannot be
+// created. A missing counter is not an error -- that is the state a freshly
+// initialized job is in, and the first id is 0.
+//
+// No lock is taken (the read cannot corrupt the counter), so a concurrent
+// NextStep on the master host can make the returned id stale. That is acceptable
+// for a report and is why this must not be used to reserve anything.
+func PeekStep(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "" {
+		return 0, nil
+	}
+	last, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("corrupt step counter %s: %q", path, s)
+	}
+	return last + 1, nil
+}
+
 // NextStep atomically issues the next step id under concurrent sruns from the
 // master host: it takes an exclusive flock, reads the last id, increments,
 // writes it back, and returns the new id (REQ-LCY-003). flock serializes even

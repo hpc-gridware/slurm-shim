@@ -68,14 +68,24 @@ func twoByEight() string {
 // The suite has no GE cluster, so every host launches locally: a config with
 // launcher: local keeps all other defaults (Parse overlays onto Default()).
 func runSrun(tmp string, args ...string) *gexec.Session {
+	return runSrunEnv(tmp, nil, args...)
+}
+
+// runSrunEnv is runSrun with extra environment entries ("KEY=VALUE"), for specs
+// that drive srun through an environment switch such as SLURM_SHIM_DRY_RUN.
+func runSrunEnv(tmp string, extraEnv []string, args ...string) *gexec.Session {
+	// A spec that needs different settings (e.g. the qrsh launcher) writes its own
+	// config into tmp first; the default here is only a fallback.
 	cfgPath := filepath.Join(tmp, "config.yaml")
-	Expect(os.WriteFile(cfgPath, []byte("launcher: local\n"), 0o600)).To(Succeed())
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		Expect(os.WriteFile(cfgPath, []byte("launcher: local\n"), 0o600)).To(Succeed())
+	}
 	cmd := exec.Command(shimBin, append([]string{"srun"}, args...)...)
-	cmd.Env = []string{
+	cmd.Env = append([]string{
 		"TMPDIR=" + tmp,
 		"SLURM_SHIM_CONFIG=" + cfgPath,
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-	}
+	}, extraEnv...)
 	sess, err := gexec.Start(cmd, GinkgoWriter, GinkgoWriter)
 	Expect(err).NotTo(HaveOccurred())
 	return sess

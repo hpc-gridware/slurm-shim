@@ -107,12 +107,12 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 
 | Command | Status | Notes |
 |---|---|---|
-| `sbatch` | ✅ | `#SBATCH` directives -> `qsub -terse`; prints `Submitted batch job <id>`. Flag coverage is limited (below). |
-| `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + `CUDA_VISIBLE_DEVICES`. See [srun notes](#srun-semantics). |
+| `sbatch` | ✅ | `#SBATCH` directives -> `qsub -terse`; prints `Submitted batch job <id>`. Flag coverage is limited (below). `--test-only` / `SLURM_SHIM_DRY_RUN` report without submitting ([dry run](#dry-run)). |
+| `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + `CUDA_VISIBLE_DEVICES`. See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
 | `srun` (standalone) | ⚠️ | `standalone: local` runs the command with a synthetic single-node env; default `standalone: reject` exits 1. |
 | `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
-| `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). |
-| `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`). |
+| `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). Honors [dry run](#dry-run). |
+| `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`); honors [dry run](#dry-run). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
 | `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-s/--state`, `-S`/`-E`; `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NodeList, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); SLURM's default columns when `-o` is absent; `-P`/`--parsable2`/`-n`/`-X`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
 | `salloc` | ❌ | Not implemented. |
@@ -212,6 +212,9 @@ differences are worth knowing:
 - `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal` (all verified against a live cluster by `test/e2e/31_sbatch_resources.sh`); `--exclusive` is warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
 - **Requests that are accepted but cannot be fully honored now warn rather than failing quietly.** `sbatch` warns at submit time for `--exclusive` (a PE property, not a job one) and for every `--dependency` form GE cannot express (see the table above). `srun` warns *on the compute node* — not at submit — when per-task GPU binding was requested under `gpu.isolation: cgroup`, since GE masks devices per job there; use `gpu.isolation: shim` to bind per rank.
 - No PMI/PMIx (MPI via the PE's `mpirun`, which is the supported path anyway).
+- **Under a dry run `sbatch` prints no `Submitted batch job` line.** A tool that
+  parses stdout for a job id (clearml-agent does) gets the predicted environment
+  block instead. See [dry run](#dry-run).
 - **GPU paths are not validated on real hardware** — the live e2e suite uses a fake RSMAP complex, so device *assignment* is asserted but CUDA/NCCL never runs.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
 
@@ -246,6 +249,132 @@ launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)
 ```
 
 🚧 A full configuration reference is planned; the authoritative source today is [`internal/config`](internal/config/config.go).
+
+### Environment variables
+
+| Variable | Effect | Off value |
+|---|---|---|
+| `SLURM_SHIM_CONFIG` | Path to the config file (overrides `/etc/slurm-shim/config.yaml`). | unset |
+| `SLURM_SHIM_DRY_RUN` | Report what would happen; change nothing. See below. | anything but `1`/`true`/`yes`/`y`/`on` |
+| `SLURM_SHIM_DISABLE` | In-job scrub-only mode: no layout, no `SLURM_*` exports. | **unset only** — any value, including `0`, enables it |
+| `SLURM_SHIM_TASK_POLICY` | Per-job override of the PE's `task_policy`. | unset |
+
+> The three do not share a truthiness rule. `SLURM_SHIM_DRY_RUN` allowlists the
+> *on* spellings, so anything it does not recognize (including a typo) leaves the
+> real behavior in place — the safe direction for a switch whose on-state
+> suppresses work. `SLURM_SHIM_DISABLE` keys on non-empty, so `SLURM_SHIM_DISABLE=0`
+> **enables** scrub-only mode.
+
+## Dry run
+
+Report what a command would do and change nothing. Nothing is submitted, launched,
+cancelled or spooled; the read-only GE clients (`qstat`, `qconf`) still run, so the
+report resolves real cluster state where it can.
+
+```bash
+SLURM_SHIM_DRY_RUN=1 sbatch train.sh   # session-wide switch
+sbatch --test-only train.sh            # per-invocation; also works as an #SBATCH directive
+srun --test-only -n 4 hostname
+```
+
+`--test-only` is SLURM's own spelling and reaches callers that control only argv or
+`#SBATCH` lines (Hydra, submitit, CI templates). Either turns the mode on.
+
+`sbatch` reports the exact `qsub` command line, how the partition, slot rule and
+requested geometry were resolved, and **the `SLURM_*` environment the job would
+get** — fabricated by the same code the PE hook runs:
+
+```
+sbatch: dry run (SLURM_SHIM_DRY_RUN is set) -- no job was submitted or launched
+
+would submit:
+  qsub -terse -q gpu.q -pe gpu.pe 32 -N llm-train -o 'slurm-$JOB_ID.out' -j y -cwd -V -l h_rt=3600,gpu=2 train.sh
+
+request:
+  partition           gpu -> queue gpu.q, pe gpu.pe
+  slots               32 (rule "per-task": ntasks 4 x cpus-per-task 8)
+  requested geometry  ntasks 4, cpus-per-task 8, nodes 4
+  gpus per node       2
+  script              train.sh (submitted as-is; the PE start_proc_args hook fabricates)
+  predicted spread    4 node(s) x 8 slots -- allocation_rule 8 grants 8 slot(s) on each node
+
+job environment (fabricated on the master host when the job starts):
+  ...
+```
+
+with the environment block itself on **stdout**:
+
+```
+SLURM_JOB_ID=<assigned by qsub>
+SLURM_JOB_NUM_NODES=4
+SLURM_NTASKS=8                 <- the gpu task policy, not the 4 tasks requested
+SLURM_NTASKS_PER_NODE=2
+SLURM_CPUS_PER_TASK=4
+```
+
+That last point is the reason the mode exists. `SLURM_NTASKS` is derived from the
+**grant and the PE's `task_policy`**, not from `--ntasks` — as is
+`SLURM_CPUS_PER_TASK` — and a partition with a literal `slots` rule ignores the
+requested geometry entirely. A dry run shows the number your framework will
+actually read.
+
+### Streams and exit codes
+
+The report goes to **stderr**; only the `KEY=VALUE` environment block goes to
+**stdout**, so `SLURM_SHIM_DRY_RUN=1 sbatch job.sh 2>/dev/null` yields a diffable
+environment prediction and nothing else. For `srun` this matters more than
+convention: its stdout is the ranks' own output stream, and a dry run writes
+nothing there.
+
+The exit code is the verdict, so the mode works as a gate:
+
+| Code | Meaning |
+|---|---|
+| 0 | This would run. |
+| 1 | The report proved it cannot: an unsatisfiable `task_policy gpu`, a slot count no `allocation_rule` can dispatch. |
+| 8 | `srun` only: no usable launcher, or the PE cannot host the step. |
+
+```bash
+sbatch --test-only train.sh && sbatch train.sh
+```
+
+### What is and is not predicted
+
+Values in `<angle brackets>` come from the real allocation (job id, host names,
+device ids, the memory grant). Everything else is exact **for the predicted
+spread**.
+
+The spread is the one thing the shim models rather than reuses, so it is where a
+prediction can be wrong. `$pe_slots`, a fixed `allocation_rule` and `$round_robin`
+are decidable and are reported as such; `$fill_up` is decided at dispatch, and the
+report says so and falls back to `--nodes`. Note that **`--nodes` is not translated
+to `qsub` at all** — it only feeds the slot count, and Grid Engine places the nodes.
+
+The prediction honors `SLURM_SHIM_TASK_POLICY` and `SLURM_SHIM_DISABLE` from the
+submit environment, because `qsub -V` forwards them into the job.
+
+### Other commands
+
+Inside an allocation, `srun` reports where each rank lands, its cpuset and devices,
+the `qrsh -inherit` line that would carry its stepper (rendered by the launcher's
+own argv builder, with the control-channel token replaced by a placeholder), and
+the per-rank environment additions. It reserves no step id, so the step it
+describes is the one the next real `srun` creates.
+
+`scancel` and `scontrol requeue` report the `qdel`/`qmod` they would run, on
+stderr.
+
+### Limitations
+
+- **`sbatch` prints no `Submitted batch job` line.** A tool that parses stdout for
+  a job id (clearml-agent does) gets the environment block instead. Redirect with
+  `2>/dev/null` and check for the `Submitted batch job` prefix, or use the exit code.
+- **Secret values are redacted.** `--export=ALL,TOKEN=...` renders as
+  `-v 'TOKEN=<value>'`; the key is shown, the value never is.
+- **The reported command line is for reading, not pasting** — a `--wrap` or
+  wrapper-mode submission names a temp directory that only exists at submit time.
+- `SLURM_SHIM_DRY_RUN` is scrubbed from the job environment, so it cannot be
+  inherited into an allocation and silently turn every `srun` there into a no-op.
 
 ## Support
 

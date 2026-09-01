@@ -116,6 +116,16 @@ func (l QrshLauncher) Start(ctx context.Context, host string, env proto.Envelope
 	}
 }
 
+// QrshPreview renders the qrsh argv for display, with the caller's placeholders
+// standing in for the routing envelope and the per-step token. It delegates to the
+// same builder the launcher uses so a reported command line cannot drift from the
+// one Grid Engine actually receives (REQ-RUN-009).
+//
+// The token placeholder must never be a real token (REQ-CHN-003, SI-51).
+func QrshPreview(self, host, envelopePlaceholder, tokenPlaceholder string) []string {
+	return buildQrshArgs(self, host, envelopePlaceholder, tokenPlaceholder)
+}
+
 // buildQrshArgs builds the qrsh argv (REQ-RUN-009). The command line carries only
 // routing data in the envelope - never the environment - and the per-step token
 // travels via -v (REQ-CHN-002), landing in the remote owner-readable environ.

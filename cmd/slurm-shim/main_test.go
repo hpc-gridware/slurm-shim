@@ -73,3 +73,33 @@ var _ = Describe("arg0 dispatch", func() {
 		Expect(strings.TrimSpace(stderr.String())).NotTo(BeEmpty())
 	})
 })
+
+// These drive the real Run() entry points, so they fail if dryrun.Wrap is ever
+// removed from a mutating command's wiring -- the unit specs drive the unexported
+// run() and would stay green.
+var _ = Describe("dry-run wiring at the command entry points [SLURM_SHIM_DRY_RUN]", func() {
+	var stdout, stderr *bytes.Buffer
+
+	BeforeEach(func() {
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+		stdout = &bytes.Buffer{}
+		stderr = &bytes.Buffer{}
+	})
+
+	It("intercepts scancel before it can reach qdel", func() {
+		code := run("scancel", []string{"4711"}, stdout, stderr)
+
+		Expect(code).To(Equal(0))
+		Expect(stderr.String()).To(ContainSubstring("dry run"))
+		Expect(stderr.String()).To(ContainSubstring("would run: qdel 4711"))
+		Expect(stdout.String()).To(BeEmpty(), "real scancel writes nothing to stdout")
+	})
+
+	It("intercepts scontrol requeue before it can reach qmod", func() {
+		code := run("scontrol", []string{"requeue", "4711_2"}, stdout, stderr)
+
+		Expect(code).To(Equal(0))
+		Expect(stderr.String()).To(ContainSubstring("would run: qmod -rj 4711.2"))
+		Expect(stdout.String()).To(BeEmpty())
+	})
+})

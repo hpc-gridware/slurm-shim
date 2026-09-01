@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata/fake"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
 )
@@ -257,3 +258,49 @@ var _ = Describe("scontrol errors", func() {
 		Expect(errBuf.String()).To(HavePrefix("scontrol: error:"))
 	})
 })
+
+var _ = Describe("scontrol dry run [SLURM_SHIM_DRY_RUN]", func() {
+	It("reports the requeue and reschedules nothing", func() {
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+		inner := &fake.Runner{}
+		var errBuf bytes.Buffer
+		code := run(dryrun.Wrap(inner, &errBuf, "scontrol"),
+			[]string{"requeue", "4711_2"}, io.Discard, &errBuf)
+
+		Expect(code).To(Equal(0))
+		Expect(inner.Calls).To(BeEmpty(), "a dry run must not reach the cluster")
+		Expect(errBuf.String()).To(ContainSubstring("would run: qmod -rj 4711.2"))
+	})
+
+	// The read-only client behind `show job` must still run, or the wrapper would
+	// break a subcommand that changes nothing.
+	It("still answers show job, whose qstat is read-only", func() {
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+		inner := &fake.Runner{Responder: func(name string, args []string) fake.Response {
+			return fake.Response{Stdout: []byte(qstatShowJob)}
+		}}
+		var out, errBuf bytes.Buffer
+		code := run(dryrun.Wrap(inner, &errBuf, "scontrol"),
+			[]string{"show", "job", "4711"}, &out, &errBuf)
+
+		Expect(code).To(Equal(0))
+		Expect(inner.Calls).To(HaveLen(1))
+		Expect(inner.Calls[0].Name).To(Equal("qstat"))
+		Expect(out.String()).To(ContainSubstring("JobId=4711"))
+	})
+})
+
+// qstatShowJob is a single running job 4711, for the dry-run show-job spec.
+const qstatShowJob = `<?xml version='1.0'?>
+<job_info>
+  <queue_info>
+    <job_list state="running">
+      <JB_job_number>4711</JB_job_number>
+      <JB_name>train</JB_name>
+      <JB_owner>alice</JB_owner>
+      <state>r</state>
+      <queue_name>all.q@node1</queue_name>
+      <slots>4</slots>
+    </job_list>
+  </queue_info>
+</job_info>`

@@ -27,6 +27,7 @@ type options struct {
 	strictFlags bool
 	version     bool
 	gpuBind     string // --gpu-bind: "" unset, "none", "per_task[:n]"
+	testOnly    bool   // --test-only: report the step, launch nothing
 	// warnings accumulated during parsing (unknown flags, etc.).
 	warnings []string
 }
@@ -68,6 +69,9 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		// so a space-form --cpu-bind value is never mistaken for the command.
 		_ = fs.Bool("unbuffered", false, "")
 		_ = fs.String("cpu-bind", "", "")
+		// SLURM's --test-only: report the step and launch nothing. OR'd with
+		// SLURM_SHIM_DRY_RUN so a caller that controls only argv can reach the mode.
+		testOnly = fs.Bool("test-only", false, "")
 	)
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"
@@ -98,6 +102,7 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		strictFlags: strict,
 		version:     *version,
 		gpuBind:     *gpuBind,
+		testOnly:    *testOnly,
 	}
 	if *nodelist != "" {
 		hosts, err := encoders.ExpandNodelist(*nodelist)
