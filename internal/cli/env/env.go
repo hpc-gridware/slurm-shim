@@ -27,8 +27,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	cfg, warnings, err := config.Load()
 	if err != nil {
+		// Route through fail(), never a bare non-zero return. In PE mode this hook
+		// IS start_proc_args: exiting non-zero puts the queue instance into E state
+		// and disables it for every user on the host. In wrapper mode the job's
+		// `eval "$(slurm-shim-env --export)"` needs the `exit 1` token, or it runs
+		// on with no SLURM_* environment at all and silently produces wrong results.
 		fmt.Fprintf(stderr, "slurm-shim-env: error: %v\n", err)
-		return 2
+		return fail(exportMode, stateDir, stdout, stderr)
 	}
 	for _, w := range warnings {
 		fmt.Fprintf(stderr, "slurm-shim-env: warning: %s\n", w)

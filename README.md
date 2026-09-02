@@ -124,10 +124,10 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | Flag | Status | Mapped to |
 |---|---|---|
 | `--partition` / `-p` | ✅ | queue + PE + slots, via `partitions` config; falls back to `default_partition` when omitted |
-| `--nodes` / `-N` | ✅ | feeds the slot count (GE's PE `allocation_rule` places the nodes) |
+| `--nodes` / `-N` | ✅ | feeds the slot count **and pins the node count**: on OCS 9.1.5+ the shim emits `qsub -par <slots-per-node> -w e`, so the job gets exactly this many nodes or is refused at submit. Below 9.1.5 it only feeds the slot count and the PE's `allocation_rule` places the nodes (with a warning saying so) |
 | `--ntasks` / `-n` | ✅ | feeds the slot count |
-| `--ntasks-per-node` | ✅ | feeds the slot count |
-| `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule) |
+| `--ntasks-per-node` | ✅ | feeds the slot count **and pins tasks per node**, through the same `-par` path as `--nodes`. A layout Grid Engine cannot grant evenly (`-N 3 -n 7` -> 3,2,2) pins nothing and warns: a fixed allocation rule puts the same count on every node |
+| `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule). It scales the pinned rule too: `-N 3 --ntasks-per-node=2 -c 4` pins 8 **slots** per node, which is still 2 tasks |
 | `--job-name` / `-J` | ✅ | `qsub -N` |
 | `--output` / `--error` | ✅ | `qsub -o`/`-e`; SLURM `%j`/`%A`/`%a`/`%x`/`%u`/`%N` patterns are translated to GE `$JOB_ID`/`$TASK_ID`/`$JOB_NAME`/`$USER`/`$HOSTNAME` (a zero-pad width like `%3a` expands but is not padded). **Exception:** GE's `$TASK_ID` is a dense 1..N over the submitted range, so for a 0-based or stepped array a `%a` batch-level path is replaced by `<literal-dir>/slurm-$JOB_ID.$TASK_ID.{out,err}` with a warning; the per-task files `srun` writes keep the SLURM indices. SLURM defaults hold: no `--output` -> `slurm-<jobid>.out` (non-array), no `--error` -> merged into stdout (`qsub -j y`) |
 | `--chdir` / `-D` | ✅ | `qsub -wd`; without it the job runs in the **submit directory** (`qsub -cwd`), matching SLURM's default (GE's own default would be `$HOME`) |
@@ -141,7 +141,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--dependency` | ⚠️ | GE has one primitive, `-hold_jid`, which releases when every predecessor **finishes**. Only `afterany` means exactly that. `after` is *start*-gated in SLURM, so it becomes a wait-for-exit here (it will never release on a long-lived predecessor); `afterok`/`aftercorr` are approximated (they run anyway on failure, and `aftercorr` loses its per-element pairing); `afternotok` is inverted outright; `singleton` and the `+time` offset form yield no id, so **nothing is held**. Every one of those warns at submit time |
 | `--signal` | ✅ | `qsub -notify -r y` (GE sends SIGUSR2 before a kill/reschedule -- submitit's preempt signal -- and the job is rerunnable), plus `-l s_rt=h_rt-lead` as an early SIGUSR1 warning. With `scancel --signal`/`scontrol requeue` -> `qmod -rj`, this makes submitit checkpoint-then-requeue work |
 | `--export` | ✅ | SLURM default `ALL` -> `qsub -V` (full submit env forwarded, so `PATH`/`PYTHON_BIN` reach the job like on SLURM); `NONE` -> nothing; a `VAR=val` list -> `qsub -v` per entry; `ALL,VAR=val` composes. Newline-valued vars are flattened to spaces by GE |
-| `--exclusive` | ❌ | not translated, and it is not a translation: GE expresses whole-node allocation through the **PE**, not the job. Use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or an exclusive complex. Warn-and-ignored, with that advice in the warning |
+| `--exclusive` | ❌ | not translated: it means *all of whatever the node has*, and sbatch does not query per-host capacity. Since 9.1.5 the shim does pin slots-per-node per job, so ask for the width explicitly (`--ntasks-per-node=<cores>`), or use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or add an exclusive complex. Warn-and-ignored, with that advice in the warning |
 
 Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
 
@@ -209,7 +209,9 @@ differences are worth knowing:
 ### Known limitations
 
 - No `salloc` / `sattach`; no job-step overlap or heterogeneous steps.
-- `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal` (all verified against a live cluster by `test/e2e/31_sbatch_resources.sh`); `--exclusive` is warn-and-ignored. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
+- `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal` (all verified against a live cluster by `test/e2e/31_sbatch_resources.sh`) and pins `--nodes`/`--ntasks-per-node` on OCS 9.1.5+ (`test/e2e/32_par_allocation.sh`); `--exclusive` is warn-and-ignored.
+- **A layout Grid Engine cannot grant evenly is not pinned.** A fixed allocation rule puts the *same* slot count on every node, so SLURM's `-N 3 -n 7` (3,2,2) has no faithful translation: the shim warns and lets the PE place the nodes, as it did before.
+- **Pinning the layout changes the per-node memory ceiling.** `--mem` is per node on SLURM but the memory complex is per slot on most GE sites, so a job whose 6 slots used to land on one host now gets its grant on each of three. `sbatch` prints a `note:` line with the arithmetic when `--mem` and a pinned rule are both present. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
 - **Requests that are accepted but cannot be fully honored now warn rather than failing quietly.** `sbatch` warns at submit time for `--exclusive` (a PE property, not a job one) and for every `--dependency` form GE cannot express (see the table above). `srun` warns *on the compute node* — not at submit — when per-task GPU binding was requested under `gpu.isolation: cgroup`, since GE masks devices per job there; use `gpu.isolation: shim` to bind per rank.
 - No PMI/PMIx (MPI via the PE's `mpirun`, which is the supported path anyway).
 - **Under a dry run `sbatch` prints no `Submitted batch job` line.** A tool that
@@ -222,7 +224,7 @@ differences are worth knowing:
 
 - **Open Cluster Scheduler** — end-to-end suite runs green against live OCS **9.0.10** and **9.1.5**; **9.1.5 or newer recommended**.
 - Also targets **Gridware Cluster Scheduler** (same lineage); other SGE-compatible variants: untested.
-- A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). 🚧 A `docs/pe-setup.md` guide is planned; the PE hook scripts are in [`docs/install/`](docs/install/).
+- A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). On **OCS 9.1.5+** its `allocation_rule` no longer has to match the job shape — the shim overrides it per job — so one PE covers every *placement*. It does not cover every *task policy*: `task_policy` is keyed on the PE, so a site needing both `slot` and `node` semantics still configures one PE per policy. 🚧 A `docs/pe-setup.md` guide is planned; the PE hook scripts are in [`docs/install/`](docs/install/).
 - Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).
 
 ## Configuration
@@ -233,7 +235,10 @@ The shim reads a YAML file at `$SLURM_SHIM_CONFIG`, else `/etc/slurm-shim/config
 partitions:                       # SLURM --partition -> GE queue + PE + slots
   gpu:   {queue: gpu.q, pe: gpu.pe, slots: "per-task"}   # per-task = ntasks * cpus_per_task
   batch: {queue: all.q, pe: smp.pe, slots: "16"}          # or a fixed slot count
+  # Opt one partition out when its PE's allocation_rule IS the site policy:
+  # smp: {queue: all.q, pe: smp.pe, slots: "per-task", allocation_rule_override: never}
 default_partition: batch          # sbatch without -p lands here (SLURM's DEFAULT)
+allocation_rule_override: auto    # auto (probe qsub for -par) | never | always
 pes:
   gpu.pe: {task_policy: gpu}      # gpu | node | slot -> how SLURM_NTASKS is derived
   smp.pe: {task_policy: slot}     # one task per slot (MPI-style)
@@ -288,15 +293,16 @@ get** — fabricated by the same code the PE hook runs:
 sbatch: dry run (SLURM_SHIM_DRY_RUN is set) -- no job was submitted or launched
 
 would submit:
-  qsub -terse -q gpu.q -pe gpu.pe 32 -N llm-train -o 'slurm-$JOB_ID.out' -j y -cwd -V -l h_rt=3600,gpu=2 train.sh
+  qsub -terse -q gpu.q -pe gpu.pe 32 -par 8 -w e -N llm-train -o 'slurm-$JOB_ID.out' -j y -cwd -V -l h_rt=3600,gpu=2 train.sh
 
 request:
   partition           gpu -> queue gpu.q, pe gpu.pe
   slots               32 (rule "per-task": ntasks 4 x cpus-per-task 8)
   requested geometry  ntasks 4, cpus-per-task 8, nodes 4
+  allocation rule     -par 8 (overrides PE gpu.pe's $fill_up); -w e rejects the job at submit if the layout is not schedulable
   gpus per node       2
   script              train.sh (submitted as-is; the PE start_proc_args hook fabricates)
-  predicted spread    4 node(s) x 8 slots -- allocation_rule 8 grants 8 slot(s) on each node
+  predicted spread    4 node(s) x 8 slots -- qsub -par 8 pins 8 slot(s) on each of 4 node(s)
 
 job environment (fabricated on the master host when the job starts):
   ...
@@ -345,10 +351,15 @@ device ids, the memory grant). Everything else is exact **for the predicted
 spread**.
 
 The spread is the one thing the shim models rather than reuses, so it is where a
-prediction can be wrong. `$pe_slots`, a fixed `allocation_rule` and `$round_robin`
-are decidable and are reported as such; `$fill_up` is decided at dispatch, and the
-report says so and falls back to `--nodes`. Note that **`--nodes` is not translated
-to `qsub` at all** — it only feeds the slot count, and Grid Engine places the nodes.
+prediction can be wrong — **unless an allocation rule was pinned**, in which case
+it is not a model at all. When the request states a layout (`--nodes` or
+`--ntasks-per-node`) and the cluster supports `-par`, the report shows the emitted
+rule and the spread is exact: Grid Engine grants it or refuses the job at submit.
+
+Without a pinned rule the old caveats stand: `$pe_slots`, a fixed
+`allocation_rule` and `$round_robin` are decidable and are reported as such;
+`$fill_up` is decided at dispatch, and the report says so and falls back to
+`--nodes`.
 
 The prediction honors `SLURM_SHIM_TASK_POLICY` and `SLURM_SHIM_DISABLE` from the
 submit environment, because `qsub -V` forwards them into the job.

@@ -1,0 +1,98 @@
+OCS 9.1.5 (250826-0734)
+usage: qsub [options]
+   [-a date_time]                           request a start time
+   [-ac context_list]                       add context variable(s)
+   [-ar ar_id]                              bind job to advance reservation
+   [-A account_string]                      account string in accounting record
+   [-b y[es]|n[o]]                          handle command as binary
+   [-bamount number]                        defines the number of binding units to be used
+   [-bstop [S|s|C|c|E|e|N|n|X|x|Y|y]]       defines the stop position for binding
+   [-bfilter topology_string]               specifies binding filter to mask binding units
+   [-binstance [set|env|pe]]                defines the instance applying the binding
+   [-bsort [SsCcEeNnXxYy]]                  enables and specifieds binding sort order
+   [-bstart [S|s|C|c|E|e|N|n|X|x|Y|y]]      defines the start position for binding
+   [-bstrategy name]]                       defines the binding strategy
+   [-btype [host|slot]]                     set type of binding
+   [-bunit [T|ET|C|E|S|ES|X|EX|Y|EY|N|EN]   set binding unit
+   [-c ckpt_selector]                       define type of checkpointing for job
+   [-ckpt ckpt-name]                        request checkpoint method
+   [-clear]                                 skip previous definitions for job
+   [-cwd]                                   use current working directory
+   [-C directive_prefix]                    define command prefix for job script
+   [-dc simple_context_list]                delete context variable(s)
+   [-dept department_name]                  set job's department
+   [-dl date_time]                          request a deadline initiation time
+   [-e path_list]                           specify standard error stream path(s)
+   [-h]                                     place user hold on job
+   [-hard]                                  consider following requests "hard"
+   [-help]                                  print this help
+   [-hold_jid job_identifier_list]          define jobnet interdependencies
+   [-hold_jid_ad job_identifier_list]       define jobnet array interdependencies
+   [-i file_list]                           specify standard input stream file(s)
+   [-j y[es]|n[o]]                          merge stdout and stderr stream of job
+   [-js job_share]                          share tree or functional job share
+   [-jsv jsv_url]                           job submission verification script to be used
+   [-l resource_list]                       request the given resources
+   [-m mail_options]                        define mail notification events
+   [-masterq wc_queue_list]                 bind master task to queue(s)
+   [-notify]                                notify job before killing/suspending it
+   [-now y[es]|n[o]]                        start job immediately or not at all
+   [-M mail_list]                           notify these e-mail addresses
+   [-N name]                                specify job name
+   [-o path_list]                           specify standard output stream path(s)
+   [-P project_name]                        set job's project
+   [-p priority]                            define job's relative priority
+   [-par allocation_rule]                   set the parallel job allocation rule
+   [-pe pe-name slot_range]                 request slot range for parallel jobs
+   [-q wc_queue_list]                       bind job to queue(s)
+   [-R y[es]|n[o]]                          reservation desired
+   [-r y[es]|n[o]]                          define job as (not) restartable
+   [-sc context_list]                       set job context (replaces old context)
+   [-scope scope_name]                      switch the request scope
+   [-shell y[es]|n[o]]                      start command with or without wrapping <loginshell> -c
+   [-soft]                                  consider following requests as soft
+   [-sync r|x|n]                            wait for job to end and return exit code
+   [-S path_list]                           command interpreter to be used
+   [-t task_id_range]                       create a job-array with these tasks
+   [-tc max_running_tasks]                  throttle the number of concurrent tasks
+   [-terse]                                 tersed output, print only the job-id
+   [-v variable_list]                       export these environment variables
+   [-verify]                                do not submit just verify
+   [-V]                                     export all environment variables
+   [-w e|w|n|v|p]                           verify mode (error|warning|none|just verify|poke) for jobs
+   [-wd working_directory]                  use working_directory
+   [-@ file]                                read commandline input from file
+   [{command|-} [command_args]]
+   [-pty y[es]|n[o]]                        start job in a pty
+
+account_string          account_name
+allocation_rule         <int> | $pe_slots | $fill_up | $round_robin
+complex_list            complex[,complex,...]
+context_list            variable[=value][,variable[=value],...]
+ckpt_selector           `n' `s' `m' `x' <interval> 
+date_time               [[CC]YY]MMDDhhmm[.SS]
+job_identifier_list     {job_id|job_name|reg_exp}[,{job_id|job_name|reg_exp},...]
+jsv_url                 [script:][username@]path
+mail_address            username[@host]
+mail_list               mail_address[,mail_address,...]
+mail_options            `e' `b' `a' `n' `s'
+working_directory       path
+path_list               [host:]path[,[host:]path,...]
+file_list               [host:]file[,[host:]file,...]
+priority                -1023 - 1024
+resource_list           resource[=value][,resource[=value],...]
+scope_name              'global' 'master' 'slave'
+simple_context_list     variable[,variable,...]
+slot_range              [n[-m]|[-]m] - n,m > 0
+task_id_range           task_id['-'task_id[':'step]]
+variable_list           variable[=value][,variable[=value],...]
+wc_cqueue               wildcard expression matching a cluster queue
+wc_host                 wildcard expression matching a host
+wc_hostgroup            wildcard expression matching a hostgroup
+wc_qinstance            wc_cqueue@wc_host
+wc_qdomain              wc_cqueue@wc_hostgroup
+wc_queue                wc_cqueue|wc_qdomain|wc_qinstance
+wc_queue_list           wc_queue[,wc_queue,...]
+ar_id                   advance reservation id
+max_running_tasks       maximum number of simultaneously running tasks
+topology_string         topology string where lower case letters show masked units

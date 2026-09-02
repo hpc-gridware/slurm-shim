@@ -16,7 +16,18 @@ import (
 // mutating client cannot be reached by a path that skipped the explicit branch;
 // the branch itself is what renders the report.
 func Run(args []string, stdout, stderr io.Writer) int {
-	cfg, _, _ := config.Load()
+	// Surface the config error rather than discarding it: config.Parse returns a
+	// nil *Config on a hard error, so a swallowed error becomes a nil dereference
+	// at the first cfg field access instead of a diagnostic. Warnings are printed
+	// for the same reason a typo'd key must not pass silently (REQ-CFG-002).
+	cfg, warnings, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "sbatch: error: loading config: %v\n", err)
+		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "sbatch: warning: %s\n", w)
+	}
 	self, _ := os.Executable()
 	return run(dryrun.Wrap(gedata.ExecRunner{}, stderr, "sbatch"), cfg, self, args, stdout, stderr)
 }
@@ -84,7 +95,9 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		return 1
 	}
 
-	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots)
+	rule := resolveAllocationRule(runner, cfg, opt, part, slots, stderr)
+
+	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots, rule)
 	for _, w := range qwarns {
 		fmt.Fprintln(stderr, "sbatch: warning: "+w)
 	}
@@ -98,14 +111,26 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 			fmt.Fprintf(stderr, "sbatch: warning: %s=%q is not a recognized on/off value; treating as off\n",
 				dryrun.EnvVar, v)
 		}
-		return dryRun(runner, cfg, self, opt, part, slots, qargs, stdout, stderr)
+		return dryRun(runner, cfg, self, opt, part, slots, rule, qargs, stdout, stderr)
 	}
 	if v := dryrun.Unrecognized(); v != "" {
 		fmt.Fprintf(stderr, "sbatch: warning: %s=%q is not a recognized on/off value; submitting for real\n",
 			dryrun.EnvVar, v)
 	}
 
-	scriptPath, cleanup, err := materializeScript(cfg, self, opt)
+	// Printed only on the real submit path. The dry-run report renders both itself,
+	// and a note above dryrun.Banner reads as output from a submission that never
+	// happened -- the banner exists so the reason nothing ran is never in doubt.
+	for _, w := range geometryWarnings(cfg, opt, part, rule) {
+		fmt.Fprintln(stderr, "sbatch: warning: "+w)
+	}
+	// The one thing a pinned spread changes that the user did not ask for: a smaller
+	// per-node memory ceiling, enforced at run time and otherwise silent.
+	if note := memoryNote(cfg, opt, rule, slots); note != "" {
+		fmt.Fprintln(stderr, "sbatch: note: "+note)
+	}
+
+	scriptPath, cleanup, discard, err := materializeScript(cfg, self, opt)
 	if err != nil {
 		fmt.Fprintf(stderr, "sbatch: error: %v\n", err)
 		return 1
@@ -117,11 +142,22 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 
 	out, errOut, exit, err := runner.Run(context.Background(), "qsub", qargs...)
 	if err != nil {
+		discard()
 		fmt.Fprintf(stderr, "sbatch: error: running qsub: %v\n", err)
 		return 1
 	}
 	if exit != 0 {
-		if msg := trim(errOut); msg != "" {
+		// No job id was created, so nothing can reference a wrapper-mode spool.
+		discard()
+		msg := trim(errOut)
+		// Only a -w e verification refusal gets the SLURM-shaped diagnostic. Every
+		// other failure -- unreachable qmaster, unknown queue, denied ACL -- keeps
+		// Grid Engine's own message, which is the one that explains it.
+		if rule.emit() && isGeometryRejection(msg) {
+			fmt.Fprintf(stderr, "sbatch: error: %s\n", geometryRejection(part, rule, slots, msg))
+			return 1
+		}
+		if msg != "" {
 			fmt.Fprintf(stderr, "sbatch: error: %s\n", msg)
 		}
 		return 1
@@ -193,7 +229,11 @@ func submitPlan(cfg *config.Config, opt options) submitShape {
 // cleaned, because the wrapper references the stored original by path at run
 // time - it must survive until the job runs (a shared-FS/retention concern the
 // site owns, e.g. via stop_proc_args).
-func materializeScript(cfg *config.Config, self string, opt options) (string, func(), error) {
+// The third result discards the spool outright. It is used only when qsub
+// refused the job: no job id exists, so nothing can reference the stored original
+// and leaving it behind would litter the submit directory -- a `-w e` rejection is
+// a routine outcome, not an exceptional one.
+func materializeScript(cfg *config.Config, self string, opt options) (string, func(), func(), error) {
 	noop := func() {}
 	shape := submitPlan(cfg, opt)
 
@@ -206,7 +246,7 @@ func materializeScript(cfg *config.Config, self string, opt options) (string, fu
 	} else {
 		b, err := os.ReadFile(opt.script)
 		if err != nil {
-			return "", noop, fmt.Errorf("reading script %q: %w", opt.script, err)
+			return "", noop, noop, fmt.Errorf("reading script %q: %w", opt.script, err)
 		}
 		origBytes = b
 		origName = "orig" + filepath.Ext(opt.script)
@@ -214,34 +254,38 @@ func materializeScript(cfg *config.Config, self string, opt options) (string, fu
 
 	switch shape.mode {
 	case submitPlain:
-		return opt.script, noop, nil // submit the user's file unchanged
+		return opt.script, noop, noop, nil // submit the user's file unchanged (never delete it)
 	case submitWrap:
 		// A --wrap temp script is copied into GE's spool by qsub at submit time,
 		// so it is safe to clean once qsub returns; node-local /tmp is fine.
 		dir, err := os.MkdirTemp("", "slurm-shim-sbatch-")
 		if err != nil {
-			return "", noop, err
+			return "", noop, noop, err
 		}
 		p := filepath.Join(dir, "wrap.sh")
 		if err := os.WriteFile(p, origBytes, 0o700); err != nil {
-			return "", noop, err
+			return "", noop, noop, err
 		}
-		return p, func() { _ = os.RemoveAll(dir) }, nil
+		rm := func() { _ = os.RemoveAll(dir) }
+		return p, rm, rm, nil
 	}
 
 	dir, err := os.MkdirTemp(shape.spoolRoot, ".slurm-shim-sbatch-")
 	if err != nil {
-		return "", noop, err
+		return "", noop, noop, err
 	}
 	stored := filepath.Join(dir, origName)
 	if err := os.WriteFile(stored, origBytes, 0o700); err != nil {
-		return "", noop, err
+		return "", noop, noop, err
 	}
 	wrapper := filepath.Join(dir, "wrapper.sh")
 	if err := os.WriteFile(wrapper, []byte(buildWrapper(self, stored)), 0o700); err != nil {
-		return "", noop, err
+		return "", noop, noop, err
 	}
-	return wrapper, noop, nil
+	// cleanup is a no-op: the wrapper execs the stored original by path at run
+	// time, so the spool must outlive the submit. discard removes it, and is
+	// only reached when qsub refused the job.
+	return wrapper, noop, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 func trim(b []byte) string {

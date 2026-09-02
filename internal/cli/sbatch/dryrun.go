@@ -60,7 +60,7 @@ var omittedAtRuntime = []struct{ key, note string }{
 // Nothing here mutates cluster or filesystem state -- in particular it does not
 // call materializeScript, whose wrapper mode would leave a spool directory next to
 // the user's script for a job that is never submitted.
-func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, part config.Partition, slots int, qargs []string, stdout, stderr io.Writer) int {
+func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, part config.Partition, slots int, par allocationRule, qargs []string, stdout, stderr io.Writer) int {
 	w := &section{out: stderr}
 	fmt.Fprintln(stderr, dryrun.Banner("sbatch"))
 
@@ -76,12 +76,19 @@ func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, 
 	w.kv("slots", slotsExplain(part, slots, ntasks, cpusPerTask))
 	w.kv("requested geometry", fmt.Sprintf("ntasks %d, cpus-per-task %d, nodes %s",
 		ntasks, cpusPerTask, nodesText(opt.nodes)))
+	if par.emit() {
+		w.kv("allocation rule", fmt.Sprintf("-par %s (overrides PE %s's %s); -w e rejects the "+
+			"job at submit if the layout is not schedulable", par.Value, part.PE, peRuleText(pe)))
+	}
+	if note := memoryNote(cfg, opt, par, slots); note != "" {
+		w.kv("memory", note)
+	}
 	if n, ok := gpuRequest(opt); ok {
 		w.kv("gpus per node", strconv.Itoa(n))
 	}
 	w.kv("script", script+scriptNote)
 
-	nodes, spread, fatal := predictNodes(opt, pe, slots)
+	nodes, spread, fatal := predictNodes(opt, pe, slots, par)
 	w.kv("predicted spread", spread)
 	if fatal != "" {
 		w.kv("ERROR", fatal)
@@ -141,8 +148,7 @@ func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, 
 	fmt.Fprintf(stderr, "  (written to stdout; everything else in this report is on stderr)\n")
 	fmt.Fprintf(stderr, "\n  Values in <angle brackets> come from the real allocation. Everything else is\n"+
 		"  exact for the predicted spread above; a different spread changes the task\n"+
-		"  geometry. Note that Grid Engine decides the spread at dispatch, and --nodes\n"+
-		"  is not translated to qsub -- it only feeds the slot count.\n")
+		"  geometry.%s\n", spreadCaveat(par))
 	return 0
 }
 
@@ -258,11 +264,21 @@ func peFacts(runner gedata.Runner, cfg *config.Config, pe string) peConfig {
 // so inventing a remainder node would fabricate a heterogeneous allocation that GE
 // cannot produce -- and the fabricator would then emit a real warning about the
 // non-uniformity the model invented.
-func predictNodes(opt options, pe peConfig, slots int) ([]fabricator.PredictedNode, string, string) {
+func predictNodes(opt options, pe peConfig, slots int, par allocationRule) ([]fabricator.PredictedNode, string, string) {
 	rule := strings.TrimSpace(pe.allocationRule)
 	count, perNode, why := 0, 0, ""
 
 	switch {
+	// An emitted -par makes the spread a fact rather than a model: Grid Engine
+	// grants exactly this many slots on exactly this many hosts, or refuses the
+	// job at submit. Nothing below can improve on that, so it wins outright.
+	case par.emit() && par.Value == "$pe_slots":
+		count, perNode = 1, slots
+		why = "qsub -par $pe_slots pins the job to one node"
+	case par.emit():
+		count, perNode = par.Nodes, slots/par.Nodes
+		why = fmt.Sprintf("qsub -par %s pins %d slot(s) on each of %d node(s)",
+			par.Value, perNode, count)
 	case rule == "$pe_slots":
 		count, perNode = 1, slots
 		why = "allocation_rule $pe_slots pins the job to one node"
@@ -345,16 +361,16 @@ func gpusPerPredictedNode(opt options, nodeCount int) int {
 	if !opt.haveGPUsPerTask {
 		return 0
 	}
-	ntasks, _ := opt.resolveGeometry()
-	perNode := (ntasks + nodeCount - 1) / nodeCount
-	if perNode < 1 {
-		perNode = 1
-	}
-	return opt.gpusPerTask * perNode
+	// Same helper the emitted -l <gres> request uses, so the report cannot claim a
+	// per-node device count the submission did not ask for.
+	return opt.gpusPerTask * opt.tasksOnNode(nodeCount)
 }
 
 // slotsExplain states where the slot count came from, since a partition's literal
 // slots rule silently overrides the requested geometry.
+// A literal rule never yields an allocation rule (parSpec declines to derive a
+// width from a slot count the geometry did not produce), so the geometry really
+// does not change anything on such a partition -- count or spread.
 func slotsExplain(part config.Partition, slots, ntasks, cpusPerTask int) string {
 	rule := strings.TrimSpace(part.Slots)
 	if rule == "" || rule == "per-task" {
@@ -413,3 +429,45 @@ type section struct{ out io.Writer }
 func (s *section) head(title string) { fmt.Fprintf(s.out, "\n%s:\n", title) }
 
 func (s *section) kv(key, value string) { fmt.Fprintf(s.out, "  %-19s %s\n", key, value) }
+
+// peRuleText names the PE's own allocation_rule for the report, so the user can
+// see what the emitted -par is overriding. Falls back to a hedge when qconf could
+// not be read -- claiming a rule we did not observe is the trap todo 005 closed.
+func peRuleText(pe peConfig) string {
+	if r := strings.TrimSpace(pe.allocationRule); r != "" {
+		return r
+	}
+	return "configured allocation_rule (not read)"
+}
+
+// spreadCaveat is the closing note about how much of the report is a prediction.
+// With a rule emitted the spread is pinned at submit, so the old blanket warning
+// ("Grid Engine decides the spread at dispatch, and --nodes is not translated to
+// qsub") would now be false.
+func spreadCaveat(par allocationRule) string {
+	if par.emit() {
+		return " The spread above is pinned by qsub -par, not modelled:\n" +
+			"  Grid Engine grants it or refuses the job at submit."
+	}
+	return " Note that Grid Engine decides the spread at dispatch, and no\n" +
+		"  allocation rule was emitted for this request -- the PE's own rule places the\n" +
+		"  nodes, and --nodes only feeds the slot count."
+}
+
+// memoryNote spells out the per-node memory a pinned spread actually yields.
+//
+// It exists because pinning the layout silently changes that number: --mem is per
+// node on SLURM, but the memory complex is per slot on most Grid Engine sites, so
+// a job whose 6 slots used to land on one host (6 x the grant) gets 2 x on each of
+// three under -par 2. The multiplication is only right for a per-slot consumable,
+// which is a site setting the shim does not read, so the note says so rather than
+// asserting a number it cannot verify.
+func memoryNote(cfg *config.Config, opt options, par allocationRule, slots int) string {
+	if !par.emit() || opt.mem == "" || cfg.MemoryComplex == "" {
+		return ""
+	}
+	perNode := slots / par.Nodes
+	return fmt.Sprintf("%s=%s x %d slot(s)/node (the per-node ceiling, if %s is a "+
+		"per-slot consumable at your site; pinning the spread changes it)",
+		cfg.MemoryComplex, opt.mem, perNode, cfg.MemoryComplex)
+}

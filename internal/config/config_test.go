@@ -97,3 +97,78 @@ gpu:
 		})
 	})
 })
+
+var _ = Describe("allocation rule override and slot-rule validation", func() {
+	It("defaults to probing the cluster", func() {
+		Expect(config.Default().AllocationRuleOverride).To(Equal(config.OverrideAuto))
+	})
+
+	// A slot rule that cannot yield a positive count only WARNS at load. config.Load
+	// is called by every command -- including slurm-shim-env, the PE start_proc_args
+	// hook -- so one partition's typo must not take down squeue, sinfo, srun, or
+	// environment fabrication for jobs that are already queued. computeSlots fails
+	// the submission that actually names the partition.
+	DescribeTable("warns about a slot rule that could never yield a positive count",
+		func(rule string) {
+			cfg, warns, err := config.Parse([]byte(
+				"partitions:\n  batch: {queue: all.q, pe: make, slots: \"" + rule + "\"}\n"))
+			Expect(err).NotTo(HaveOccurred(), "one bad partition must not fail every command")
+			Expect(cfg).NotTo(BeNil())
+			Expect(warns).To(ContainElement(SatisfyAll(
+				ContainSubstring("batch"), ContainSubstring(rule))))
+		},
+		Entry("zero", "0"),
+		Entry("negative", "-4"),
+		Entry("not a number", "sixteen"),
+	)
+
+	It("names partitions in a stable order so warnings do not flap", func() {
+		_, warns, err := config.Parse([]byte(
+			"partitions:\n  zeta: {queue: a.q, pe: p, slots: \"0\"}\n" +
+				"  alpha: {queue: a.q, pe: p, slots: \"-1\"}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(HaveLen(2))
+		Expect(warns[0]).To(ContainSubstring("alpha"))
+		Expect(warns[1]).To(ContainSubstring("zeta"))
+	})
+
+	DescribeTable("accepts the rules the translator understands",
+		func(rule string) {
+			_, _, err := config.Parse([]byte(
+				"partitions:\n  batch: {queue: all.q, pe: make, slots: \"" + rule + "\"}\n"))
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("per-task", "per-task"),
+		Entry("a positive integer", "16"),
+		Entry("empty (defaults to per-task)", ""),
+	)
+
+	// An unrecognized policy is forward compatibility, not a fatal error: a value
+	// a newer shim understands must not stop this one from submitting.
+	It("warns on an unknown global policy and falls back to auto", func() {
+		cfg, warns, err := config.Parse([]byte("allocation_rule_override: sometimes\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring("sometimes")))
+		Expect(cfg.AllocationRuleOverride).To(Equal(config.OverrideAuto))
+	})
+
+	It("warns on an unknown partition policy and clears it", func() {
+		cfg, warns, err := config.Parse([]byte(
+			"partitions:\n  batch: {queue: all.q, pe: make, allocation_rule_override: maybe}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring("batch")))
+		Expect(cfg.Partitions["batch"].AllocationRuleOverride).To(BeEmpty())
+	})
+
+	DescribeTable("resolves the effective policy partition-first",
+		func(global, partition, want string) {
+			cfg := config.Default()
+			cfg.AllocationRuleOverride = global
+			Expect(cfg.AllocationRuleMode(config.Partition{AllocationRuleOverride: partition})).To(Equal(want))
+		},
+		Entry("partition wins over global", config.OverrideAuto, config.OverrideNever, config.OverrideNever),
+		Entry("partition wins the other way", config.OverrideNever, config.OverrideAlways, config.OverrideAlways),
+		Entry("global applies when the partition is silent", config.OverrideNever, "", config.OverrideNever),
+		Entry("auto when both are silent", "", "", config.OverrideAuto),
+	)
+})

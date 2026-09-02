@@ -2,8 +2,10 @@ package sbatch
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -70,8 +72,16 @@ var _ = Describe("sbatch dry run [REQ-DRY-001] [REQ-DRY-002] [REQ-DRY-003] [REQ-
 		Expect(r.stderr).To(ContainSubstring("dry run"))
 		Expect(r.stderr).To(ContainSubstring("qsub -terse -q gpu.q -pe gpu.pe 8"))
 		Expect(r.stdout).NotTo(ContainSubstring("Submitted batch job"))
+		// The capability probe is the one qsub a dry run may reach: `qsub -help`
+		// prints usage and cannot touch cluster state, and it has to answer the
+		// same here as on the real path or the report explains a submission that
+		// would never happen. Everything else is still forbidden.
 		for _, c := range runner.Calls {
-			Expect(c.Name).NotTo(Equal("qsub"), "dry run must not reach qsub")
+			if c.Name == "qsub" {
+				Expect(c.Args).To(Equal([]string{"-help"}), "dry run must not submit")
+				continue
+			}
+			Expect(c.Name).NotTo(Equal("qsub"))
 		}
 	})
 
@@ -184,8 +194,14 @@ var _ = Describe("sbatch dry run [REQ-DRY-001] [REQ-DRY-002] [REQ-DRY-003] [REQ-
 	// round-robin `make` PE lands 2 slots on each of 3 hosts. Predicting the widest
 	// spread (6 nodes x 1) there would be wrong on every geometry variable.
 	It("honors --nodes under $round_robin, since the slot count came from it", func() {
-		r := dryRunSbatch(qconfPE("allocation_rule    $round_robin\ncontrol_slaves     TRUE\n"),
-			"-p", "batch", "-N", "3", "--ntasks-per-node=2", script)
+		// Mirrors the OCS test cluster's `batch`: per-task slots on a round-robin PE
+		// whose task policy is one task per slot.
+		cfg := dryCfg()
+		cfg.Partitions["rr"] = config.Partition{Queue: "all.q", PE: "make", Slots: "per-task"}
+		cfg.PEs["make"] = config.PE{TaskPolicy: "slot"}
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+		r := dryRunSbatchCfg(qconfPE("allocation_rule    $round_robin\ncontrol_slaves     TRUE\n"),
+			cfg, "-p", "rr", "-N", "3", "--ntasks-per-node=2", script)
 
 		Expect(r.stderr).To(ContainSubstring("over the requested 3 node(s)"))
 		Expect(r.stdout).To(ContainSubstring("SLURM_JOB_NUM_NODES=3"))
@@ -394,3 +410,97 @@ func splitLines(s string) []string {
 	}
 	return out
 }
+
+// parQconfPE answers BOTH `qconf -sp` and the `qsub -help` capability probe, so a
+// spec exercises the pinned report rather than the pre-9.1.5 model.
+//
+// This exists because qconfPE returns a bare fake.Response{} for anything that is
+// not qconf: the probe then reads empty usage, no rule is emitted, and every
+// -par branch of the report goes unexercised while the suite stays green.
+func parQconfPE(lines string) *fake.Runner {
+	return &fake.Runner{Responder: func(name string, args []string) fake.Response {
+		switch {
+		case name == "qconf":
+			return fake.Response{Stdout: []byte(lines)}
+		case name == "qsub" && len(args) == 1 && args[0] == "-help":
+			return fake.Response{Stdout: []byte(parUsage)}
+		}
+		return fake.Response{}
+	}}
+}
+
+var _ = Describe("the dry run reports a pinned allocation rule [REQ-SBT-006] [REQ-DRY-004]", func() {
+	var script string
+
+	BeforeEach(func() {
+		script = filepath.Join(GinkgoT().TempDir(), "train.sh")
+		Expect(os.WriteFile(script, []byte("#!/bin/bash\nsrun hostname\n"), 0o700)).To(Succeed())
+	})
+
+	// The report shape reproduced in README.md, which until now no spec produced.
+	It("names the emitted rule, what it overrides, and an exact spread", func() {
+		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
+			"-p", "gpu", "-N", "4", "-c", "8", script)
+
+		Expect(r.code).To(Equal(0))
+		Expect(r.stderr).To(ContainSubstring("qsub -terse -q gpu.q -pe gpu.pe 32 -par 8 -w e"))
+		Expect(r.stderr).To(ContainSubstring("-par 8 (overrides PE gpu.pe's $fill_up)"))
+		Expect(r.stderr).To(ContainSubstring("4 node(s) x 8 slots -- qsub -par 8 pins 8 slot(s) on each of 4 node(s)"))
+		Expect(r.stderr).To(ContainSubstring("pinned by qsub -par, not modelled"))
+	})
+
+	It("reports the single-node rule as $pe_slots", func() {
+		r := dryRunSbatch(parQconfPE("allocation_rule $round_robin\ncontrol_slaves TRUE\n"),
+			"-p", "gpu", "-N", "1", "-c", "8", script)
+
+		Expect(r.stderr).To(ContainSubstring("-par '$pe_slots'"))
+		Expect(r.stderr).To(ContainSubstring("qsub -par $pe_slots pins the job to one node"))
+	})
+
+	// todo 005's trap: a qconf we could not read must never be reported as a verdict.
+	It("hedges when the PE's own rule could not be read", func() {
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+		r := dryRunSbatchCfg(&fake.Runner{Responder: func(name string, args []string) fake.Response {
+			if name == "qsub" && len(args) == 1 && args[0] == "-help" {
+				return fake.Response{Stdout: []byte(parUsage)}
+			}
+			return fake.Response{Exit: 1, Err: errors.New("qconf: command not found")}
+		}}, dryCfg(), "-p", "gpu", "-N", "2", script)
+
+		Expect(r.stderr).To(ContainSubstring("configured allocation_rule (not read)"))
+		Expect(r.stderr).NotTo(ContainSubstring("overrides PE gpu.pe's \n"))
+	})
+
+	// The note belongs to the report in this mode. Printed again before the banner
+	// it would read as output from a submission that never happened.
+	It("prints the memory note exactly once, below the banner", func() {
+		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
+			"-p", "gpu", "-N", "3", "--ntasks-per-node=2", "--mem=4G", script)
+
+		Expect(strings.Count(r.stderr, "slot(s)/node")).To(Equal(1))
+		Expect(strings.Index(r.stderr, "dry run")).To(BeNumerically("<",
+			strings.Index(r.stderr, "slot(s)/node")), "the banner must come first")
+	})
+
+	// -par counts slots, devices count tasks: the reported per-node device count and
+	// the emitted -l request must agree.
+	It("agrees with the emitted gres request on devices per node", func() {
+		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
+			"-p", "gpu", "-N", "3", "--ntasks-per-node=2", "-c", "4", "--gpus-per-task=1", script)
+
+		Expect(r.stderr).To(ContainSubstring("-par 8"), "8 slots per node")
+		Expect(r.stderr).To(ContainSubstring("gpu=2"), "but only 2 tasks per node")
+		Expect(r.stderr).To(ContainSubstring("gpus per node       2"))
+	})
+
+	// A literal slots rule pins the count, so nothing is derived and the report must
+	// not claim a spread it did not pin.
+	It("pins nothing on a literal-slots partition and says why", func() {
+		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
+			"-p", "batch", "-N", "4", script)
+
+		Expect(r.stderr).NotTo(ContainSubstring("-par"))
+		Expect(r.stderr).To(ContainSubstring("the requested geometry does not change it"))
+		Expect(r.stderr).To(ContainSubstring("not enforced on partition \"batch\""))
+	})
+})
