@@ -158,9 +158,13 @@ unbound ranks each see `cuda=[0,1]` (the node's whole grant), while
 
 ## Site prerequisites
 
-- A partition whose PE places the tasks you ask for (one per GPU). The test
-  cluster's `batch`/`gpu` use a round-robin PE; single-node jobs want a
-  `$pe_slots` PE such as `smp`.
+- A partition whose PE places the tasks you ask for (one per GPU). On **OCS
+  9.1.5+** the shim pins that placement per job (`qsub -par`), so the PE's own
+  `allocation_rule` no longer has to match the job shape and `batch`/`gpu` work for
+  both single- and multi-node jobs. Below 9.1.5 the PE still decides: single-node
+  jobs then want a `$pe_slots` PE such as `smp`. Note the shim pins **slots** per
+  node -- `--ntasks-per-node=4 --cpus-per-task=8` is 32 slots per node -- so the
+  geometry has to fit a real node either way.
 - The GPU complex (`gpu.gres_complex`) and whether it is a **per-slot** or
   **per-job** consumable -- a JAX job asks for many slots *and* N GPUs per node,
   which is exactly where the two differ. Check with `qconf -sc`.

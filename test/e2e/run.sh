@@ -13,6 +13,7 @@ checks=(
   20_srun
   30_sbatch
   31_sbatch_resources
+  32_par_allocation
   40_squeue_scancel
   50_scontrol
   60_gpu

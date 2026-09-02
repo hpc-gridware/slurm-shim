@@ -78,11 +78,47 @@ var _ = Describe("slurm-shim-env command", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("exits 2 on a malformed config file [REQ-CFG-002]", func() {
+	// A config failure must go through the same sentinel path as any other failure.
+	// This hook IS the PE start_proc_args: a non-zero exit puts the queue instance
+	// into E state and disables it for every user on the host.
+	It("writes the sentinel and exits 0 on a malformed config file [REQ-CFG-002]", func() {
 		bad := filepath.Join(tmp, "bad.yaml")
 		Expect(os.WriteFile(bad, []byte("launcher: [unclosed\n"), 0o600)).To(Succeed())
 		GinkgoT().Setenv("SLURM_SHIM_CONFIG", bad)
-		Expect(envcmd.Run(nil, io.Discard, io.Discard)).To(Equal(2))
+
+		var errOut bytes.Buffer
+		Expect(envcmd.Run(nil, io.Discard, &errOut)).To(Equal(0))
+
+		Expect(errOut.String()).To(ContainSubstring("slurm-shim-env: error:"))
+		_, err := os.Stat(filepath.Join(tmp, "slurm_shim", "environment.failed"))
+		Expect(err).NotTo(HaveOccurred(), "the sentinel is what makes the job fail loudly")
+	})
+
+	// Wrapper mode has no sentinel: the job's `eval` needs the exit 1 token, or it
+	// runs on with no SLURM_* environment at all.
+	It("emits the exit-1 token in export mode on a config failure [REQ-FAB-008]", func() {
+		bad := filepath.Join(tmp, "bad.yaml")
+		Expect(os.WriteFile(bad, []byte("launcher: [unclosed\n"), 0o600)).To(Succeed())
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", bad)
+
+		var out bytes.Buffer
+		Expect(envcmd.Run([]string{"--export"}, &out, io.Discard)).To(Equal(1))
+		Expect(strings.TrimSpace(out.String())).To(Equal("exit 1"))
+	})
+
+	// A bad slots rule on one partition must not reach this hook at all: it is a
+	// submit-time concern, and jobs already queued still need their environment.
+	It("fabricates normally despite an unusable slots rule on some partition", func() {
+		cfgPath := filepath.Join(tmp, "slots.yaml")
+		Expect(os.WriteFile(cfgPath,
+			[]byte("partitions:\n  legacy: {queue: a.q, pe: p, slots: \"0\"}\n"), 0o600)).To(Succeed())
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", cfgPath)
+
+		var errOut bytes.Buffer
+		Expect(envcmd.Run(nil, io.Discard, &errOut)).To(Equal(0))
+		Expect(errOut.String()).To(ContainSubstring("warning"))
+		_, err := os.Stat(filepath.Join(tmp, "slurm_shim", "environment.failed"))
+		Expect(os.IsNotExist(err)).To(BeTrue(), "a warning must not fail the job")
 	})
 
 	It("removes the state directory on --cleanup [REQ-LCY-002]", func() {

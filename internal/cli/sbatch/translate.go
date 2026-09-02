@@ -68,18 +68,17 @@ func validateGeometry(o options) error {
 // task policy N3. A literal integer pins the slot count; "per-task" (and the
 // empty default) multiplies ntasks by cpus_per_task.
 func computeSlots(opt options, part config.Partition) (int, error) {
-	ntasks, cpt := opt.resolveGeometry()
-	rule := strings.TrimSpace(part.Slots)
-	switch rule {
-	case "", "per-task":
-		return ntasks * cpt, nil
-	default:
-		n, err := strconv.Atoi(rule)
-		if err != nil {
-			return 0, fmt.Errorf("sbatch: error: partition slots rule %q is neither an integer nor \"per-task\"", rule)
-		}
-		return n, nil
+	n, perTask, err := config.ParseSlotsRule(part.Slots)
+	if err != nil {
+		// The rule also warns at config load, but the failure belongs here: only the
+		// submission that actually names this partition is affected.
+		return 0, fmt.Errorf("sbatch: error: partition %q: %w", opt.partition, err)
 	}
+	if perTask {
+		ntasks, cpt := opt.resolveGeometry()
+		return ntasks * cpt, nil
+	}
+	return n, nil
 }
 
 // parseJobID extracts the base job id from qsub -terse output. A plain job
@@ -98,9 +97,20 @@ func parseJobID(terse string) string {
 // path GE cannot express). -terse yields just the job id on stdout
 // (REQ-SBT-003). cfg supplies the site's GE complex names for the resource (-l)
 // mapping.
-func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots int) ([]string, []string) {
+func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots int,
+	rule allocationRule) ([]string, []string) {
 	var warns []string
 	args := []string{"-terse", "-q", part.Queue, "-pe", part.PE, strconv.Itoa(slots)}
+	if rule.emit() {
+		// -w e rides along with -par, never alone. Grid Engine accepts a rule its
+		// scheduler can never satisfy and then leaves the job in qw forever, with
+		// no error anywhere; -w e turns that into a submit-time refusal, the way
+		// SLURM rejects an impossible geometry. It verifies against an empty
+		// cluster and ignores load, so a merely busy cluster cannot trip it.
+		// Scoping it to jobs that carry -par keeps every other submission's argv
+		// byte-identical to what it was before this feature.
+		args = append(args, "-par", rule.Value, "-w", "e")
+	}
 	if opt.jobName != "" {
 		args = append(args, "-N", opt.jobName)
 	}
@@ -228,16 +238,26 @@ func gpuRequest(opt options) (int, bool) {
 // request. --ntasks-per-node states it outright; otherwise it is derived from the
 // resolved task count spread over the requested nodes (rounding up, since a
 // remainder still needs devices on some node). Defaults to one task per node.
-func (o options) tasksPerNode() int {
+func (o options) tasksPerNode() int { return o.tasksOnNode(o.nodes) }
+
+// tasksOnNode is how many TASKS land on one node when the job occupies nodeCount
+// of them. Both the emitted `-l <gres>` request and the dry run's per-node device
+// count go through here so they cannot drift apart.
+//
+// The unit matters: with an allocation rule in play it is tempting to reuse the
+// -par value, but -par counts SLOTS per node, and slots are tasks x cpus-per-task.
+// `-N 3 --ntasks-per-node=2 -c 4 --gpus-per-task=1` pins -par 8 while only 2 tasks
+// land on each node -- deriving devices from 8 would request four times the GPUs
+// the job can use, on a host that likely has none to spare.
+func (o options) tasksOnNode(nodeCount int) int {
 	if o.havePerNode && o.ntasksPerNode > 0 {
 		return o.ntasksPerNode
 	}
-	ntasks, _ := o.resolveGeometry()
-	nodes := o.nodes
-	if nodes < 1 {
-		nodes = 1
+	if nodeCount < 1 {
+		nodeCount = 1
 	}
-	if perNode := (ntasks + nodes - 1) / nodes; perNode > 0 {
+	ntasks, _ := o.resolveGeometry()
+	if perNode := (ntasks + nodeCount - 1) / nodeCount; perNode > 0 {
 		return perNode
 	}
 	return 1
@@ -435,4 +455,113 @@ func buildWrapper(shimPath, storedScript string) string {
 // the POSIX-safe sequence quote-backslash-quote-quote.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// allocationRule is the `qsub -par` request derived from a SLURM geometry: the
+// rule value to emit, the node count it pins, and a warning when a geometry the
+// user did state could not be expressed. A zero Value means emit nothing.
+type allocationRule struct {
+	Value string
+	Nodes int
+	Warn  string
+}
+
+// emit reports whether a rule was derived.
+func (a allocationRule) emit() bool { return a.Value != "" }
+
+// parSpec derives the allocation rule for a request (REQ-SBT-006). It is pure --
+// no Runner, no config lookup -- so the whole decision table is unit-testable; the
+// caller owns the override policy and the capability probe.
+//
+// The rule is `slots / desiredNodes`, not `ntasks-per-node * cpus-per-task`,
+// because a partition with a literal `slots` rule discards the geometry when
+// computing slots (computeSlots): `slots: "16"` with `-N 4 -c 1` must yield 4
+// slots per node, not 1.
+//
+// Nothing is emitted unless SLURM was actually told where to put the job. A bare
+// `--ntasks` never asked for a placement, so the site's PE keeps deciding -- the
+// shim overrides an admin's allocation_rule only to honor an explicit request.
+//
+// The divisibility guard is doing two jobs at once. Grid Engine grants the same
+// slot count on every host under a fixed rule, so a spread SLURM would make
+// uneven (2,2,2,1) has no faithful rule; and a slot count that is not a multiple
+// of the rule is not schedulable at all -- qsub accepts it and the job then sits
+// in qw forever (verified on OCS 9.1.5: `-pe mype 7 -par 2` never dispatches).
+// One test rules out both.
+func parSpec(opt options, part config.Partition, slots int) allocationRule {
+	// A literal `slots:` rule is the site declaring that geometry does not size this
+	// partition -- computeSlots discards --ntasks entirely for it. Dividing that
+	// site-chosen total by a user-chosen --nodes fabricates a per-node width neither
+	// party stated, and -w e then turns it into a hard refusal for a job that ran
+	// before. Verified: `-p batch -N 1 -n 4` on `slots: "16"` emitted
+	// `-par $pe_slots` and was refused on 14-slot hosts, with the user's --ntasks
+	// invisible in both the request and the diagnostic.
+	if _, perTask, err := config.ParseSlotsRule(part.Slots); err != nil || !perTask {
+		if opt.nodes >= 1 || (opt.havePerNode && opt.ntasksPerNode >= 1) {
+			return allocationRule{Warn: pinnedSlotsWarning(opt.partition, slots)}
+		}
+		return allocationRule{}
+	}
+	ntasks, _ := opt.resolveGeometry()
+	switch {
+	// The `>= 1` tests come first and are not redundant: validateGeometry rejects
+	// negatives and absurd values but accepts zero, so `--nodes=0` and
+	// `--ntasks-per-node=0` reach here and would otherwise divide by zero.
+	case opt.nodes >= 1:
+		return ruleFor(ntasks, opt.nodes, slots)
+	case opt.havePerNode && opt.ntasksPerNode >= 1:
+		// SLURM would spread a remainder (7 tasks at 2 per node -> 2,2,2,1). Grid
+		// Engine grants the same count on every host under a fixed rule, so there
+		// is no faithful value to emit.
+		if ntasks%opt.ntasksPerNode != 0 {
+			return allocationRule{Warn: unevenSpreadWarning(fmt.Sprintf(
+				"%d task(s) at %d per node", ntasks, opt.ntasksPerNode), slots)}
+		}
+		return ruleFor(ntasks, ntasks/opt.ntasksPerNode, slots)
+	default:
+		// No layout was stated, so there is nothing to honor -- the site's PE keeps
+		// deciding, exactly as before.
+		return allocationRule{}
+	}
+}
+
+// ruleFor turns a resolved node count into the rule, or explains why it cannot.
+func ruleFor(ntasks, nodes, slots int) allocationRule {
+	if slots%nodes != 0 {
+		return allocationRule{Warn: unevenSpreadWarning(fmt.Sprintf(
+			"%d task(s) over %d node(s)", ntasks, nodes), slots)}
+	}
+	par := slots / nodes
+	if par < 1 {
+		return allocationRule{}
+	}
+	if nodes == 1 {
+		// Identical placement to `-par <slots>`, but it survives a PE slot range
+		// and reads as intent rather than arithmetic in `qstat -j`.
+		return allocationRule{Value: "$pe_slots", Nodes: 1}
+	}
+	return allocationRule{Value: strconv.Itoa(par), Nodes: nodes}
+}
+
+// pinnedSlotsWarning explains why a stated layout is not enforced on a partition
+// whose slot count the site pinned. It names the fixed count rather than the task
+// count, because the task count is exactly what such a partition ignores -- telling
+// the user to change it would send them somewhere that cannot help.
+func pinnedSlotsWarning(partition string, slots int) string {
+	return fmt.Sprintf(
+		"the requested layout is not enforced on partition %q: its slots rule pins every "+
+			"request at %d slot(s) regardless of geometry, so --nodes/--ntasks-per-node "+
+			"cannot size it and the PE's allocation_rule places the nodes. Submit to a "+
+			"\"per-task\" partition to pin the layout", partition, slots)
+}
+
+// unevenSpreadWarning explains why an explicitly requested layout was not pinned.
+// It names the numbers rather than the allocation rule, because the user's lever
+// is the task or node count, not a Grid Engine concept they never mentioned.
+func unevenSpreadWarning(layout string, slots int) string {
+	return fmt.Sprintf(
+		"the requested layout (%s) is uneven; Grid Engine grants the same number of "+
+			"slots on every node, so the node count is left to the PE's allocation_rule "+
+			"and %d slot(s) may land anywhere. Use a task count that divides by the node "+
+			"count to pin the layout", layout, slots)
 }

@@ -192,6 +192,13 @@ PE (`batch`), while a *single-task* job wanting several CPUs wants the `$pe_slot
 PE (`smp`). The `smp` partition uses the `node` task policy (one task per node), so
 do not use it for multi-task work -- `tasks_per_node` would collapse to 1.
 
+On **OCS 9.1.5+** the *placement* half of that choice no longer depends on the
+partition: submitit always passes `nodes=`, so `sbatch` pins the layout per job
+(`qsub -par`) whichever partition you submit to -- `nodes=1` lands on one host even
+on `batch`. The *task policy* half is unchanged, and it is the half that decides
+`tasks_per_node`, so the rule above still holds: match the partition to the task
+shape, not to the node count.
+
 ### Checkpoint / preemption / requeue
 
 submitit's `Checkpointable` jobs (and its `job._interrupt()`) **work on the shim**,

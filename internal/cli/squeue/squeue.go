@@ -24,9 +24,18 @@ type options struct {
 	format   string
 }
 
-// Run is the squeue entry point.
+// Run is the squeue entry point. The config error is surfaced rather than
+// discarded: config.Parse returns a nil *Config on a hard error, so swallowing it
+// turns a malformed config into a nil dereference instead of a diagnostic.
 func Run(args []string, stdout, stderr io.Writer) int {
-	cfg, _, _ := config.Load()
+	cfg, warnings, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "squeue: error: loading config: %v\n", err)
+		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "squeue: warning: %s\n", w)
+	}
 	return run(gedata.ExecRunner{}, cfg, args, stdout, stderr)
 }
 

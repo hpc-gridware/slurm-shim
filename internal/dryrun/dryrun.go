@@ -101,11 +101,22 @@ type Runner struct {
 
 // Run reports and skips a mutating client, and delegates everything else.
 func (r Runner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
-	if !mutating[name] {
+	if !mutating[name] || printsUsageOnly(name, args) {
 		return r.Inner.Run(ctx, name, args...)
 	}
 	fmt.Fprintf(r.Out, "%s: dry run: would run: %s\n", r.Prefix, Command(name, args))
 	return nil, nil, 0, nil
+}
+
+// printsUsageOnly reports whether a mutating client was invoked in a form that
+// only prints its usage text and cannot touch cluster state.
+//
+// `qsub -help` is the capability probe (does this client understand -par?).
+// Intercepting it would answer "no" under a dry run and "yes" on the real submit
+// path, so the report would contradict the submission it is supposed to explain --
+// and it would blame the cluster's OCS version for a mode the user turned on.
+func printsUsageOnly(name string, args []string) bool {
+	return name == "qsub" && len(args) == 1 && args[0] == "-help"
 }
 
 // Wrap returns r wrapped for dry-run mode, or r unchanged when the mode is off.

@@ -6,6 +6,18 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --output=deepspeed-%j.out
 #
+# Node width: this asks for 32 slots on each of 2 nodes (1 task(s) x
+# 32 cpus-per-task), which models a real 32-core node -- one torchrun per node,
+# one worker per GPU. On OCS 9.1.5+ the shim pins that layout
+# with `qsub -par 32`, so a cluster whose nodes are narrower refuses the job at
+# submit. That is not new strictness -- such a request could never have run; it
+# used to wait in the queue forever for a node that does not exist.
+#
+# To run it on a small cluster, override the geometry on the command line (CLI
+# flags win over #SBATCH). Verified on the shipped 3 x 14-slot test cluster:
+#
+#   sbatch -N 2 --ntasks-per-node=1 --cpus-per-task=2 deepspeed-multinode.sh
+#
 # DeepSpeed multi-node training on the slurm-shim (GE tight integration).
 #
 # Pattern: one srun task per NODE (--ntasks-per-node=1); each task launches a

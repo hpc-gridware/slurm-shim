@@ -103,6 +103,14 @@ Use a partition backed by a `$pe_slots` PE with the `node` task policy — the t
 cluster's `smp`, which this recipe defaults to. Verified: `cpus_per_task=4` on
 `smp` runs each job exactly once.
 
+**On OCS 9.1.5+ the shim removes half of this trap, not all of it.** Since the
+launcher sets `nodes: 1`, `sbatch` now pins the job to one host (`qsub -par
+$pe_slots`), so the *spreading* cannot happen on any partition. What it does not
+change is the task count: `task_policy` is keyed on the PE, so a `slot`-policy
+partition still starts one task per slot — two tasks, now both on one host. The
+task policy, not the allocation rule, is what makes a Hydra sweep entry run once,
+so the guidance below is unchanged.
+
 | Your job shape | Partition to use |
 |---|---|
 | one task, several CPUs (the common Hydra case) | `$pe_slots` + `node` policy (`smp`) |
@@ -115,7 +123,7 @@ cluster's `smp`, which this recipe defaults to. Verified: `cpus_per_task=4` on
 | `KeyError: 'SLURM_JOB_ID'` in the job | the batch script never sourced the shim hook | add the `setup:` line above |
 | `sbatch: warning: Grid Engine cannot express %a` on every sweep | expected: GE's `$TASK_ID` is a dense 1..N, so the batch-level file is renamed | nothing to do -- the per-task logs Hydra reads are written by `srun` and are unaffected |
 | A task fails before Hydra logs anything | the traceback happens *before* submitit's `srun`, so it is not in a `%A_%a` log | look at the batch-level file `.submitit/slurm-<jobid>.<n>.out` (see below) |
-| Each sweep entry runs twice (or N times) | `cpus_per_task > 1` on a round-robin partition | use a `$pe_slots` partition (see above) |
+| Each sweep entry runs twice (or N times) | `cpus_per_task > 1` on a **slot**-policy partition | use a partition whose PE has `task_policy: node` (see above). On OCS 9.1.5+ the tasks land on one host instead of several, but there are still N of them |
 | Jobs submit but stay queued | asked for more slots than the partition can place | check `qstat -j <id>`; `qalter -w p <id>` says whether it can ever schedule |
 | Sweep runs locally, not on the cluster | the launcher override is missing | confirm `hydra/launcher: submitit_slurm` is in `defaults:`, and that `hydra-submitit-launcher` is installed |
 

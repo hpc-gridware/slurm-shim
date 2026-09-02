@@ -127,6 +127,26 @@ var _ = Describe("Runner interception [REQ-DRY-002]", func() {
 		Expect(inner.Calls).To(BeEmpty())
 	})
 
+	// The capability probe must answer the same under a dry run as on the real
+	// submit path, or the report explains a submission that never happens.
+	It("lets `qsub -help` through: it prints usage and cannot mutate", func() {
+		_, _, exit, err := r.Run(context.Background(), "qsub", "-help")
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exit).To(Equal(0))
+		Expect(out.String()).To(BeEmpty(), "a usage probe is not a 'would run' event")
+		Expect(inner.Calls).To(HaveLen(1))
+		Expect(inner.Calls[0].Args).To(Equal([]string{"-help"}))
+	})
+
+	It("still intercepts a real submission that merely mentions -help", func() {
+		_, _, _, err := r.Run(context.Background(), "qsub", "-terse", "-N", "-help", "job.sh")
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(inner.Calls).To(BeEmpty(), "only a bare `qsub -help` is exempt")
+		Expect(out.String()).To(ContainSubstring("would run: qsub -terse"))
+	})
+
 	// The map is the intercept set for clients reachable through gedata.Runner.
 	// qrsh mutates job state but is exec'd directly by internal/launch, so it
 	// cannot be intercepted here -- srun's explicit branch is what guards it.

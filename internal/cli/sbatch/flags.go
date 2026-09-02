@@ -111,10 +111,16 @@ var knownLong = map[string]bool{
 // equivalent. Keep them out of knownLong -- these are booleans, and everything
 // in that set consumes a value, which here would be the script path.
 var unmappableLong = map[string]string{
-	"exclusive": "--exclusive is not translated: Grid Engine expresses whole-node " +
-		"allocation through the parallel environment, not the job. Use a partition " +
-		"whose PE has allocation_rule $pe_slots sized to the node, or add an " +
-		"exclusive complex -- both are site configuration, not a submission flag",
+	// On OCS 9.1.5+ the shim does pin slots-per-node per job (qsub -par), so the
+	// old advice -- that whole-node allocation is site configuration and never a
+	// submission flag -- is no longer true. What is still missing is the target
+	// host's capacity: --exclusive means "all of whatever this node has", and
+	// sbatch does not query per-host slot counts.
+	"exclusive": "--exclusive is not translated: it means all of whatever the node " +
+		"has, and sbatch does not query per-host capacity. Ask for the width you " +
+		"need explicitly (--ntasks-per-node=<cores>, which IS pinned per job on " +
+		"OCS 9.1.5+), or use a partition whose PE has allocation_rule $pe_slots " +
+		"sized to the node, or add an exclusive complex",
 }
 
 var shortToLong = map[byte]string{

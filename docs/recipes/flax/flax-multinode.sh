@@ -6,6 +6,22 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --output=flax-%j.out
+#
+# Node width: this asks for 32 slots on each of 3 nodes (4 task(s) x
+# 8 cpus-per-task), which models a real 4-GPU / 32-core node. On OCS 9.1.5+ the
+# shim pins that layout
+# with `qsub -par 32`, so a cluster whose nodes are narrower refuses the job at
+# submit. That is not new strictness -- such a request could never have run; it
+# used to wait in the queue forever for a node that does not exist.
+#
+# To run it on a small cluster, override the geometry on the command line (CLI
+# flags win over #SBATCH). Verified on the shipped 3 x 14-slot test cluster:
+#
+#   sbatch -N 2 --ntasks-per-node=1 --cpus-per-task=2 --gpus-per-node=1 flax-multinode.sh
+##
+# -N 2, not 3: the test cluster carries its fake GPU complex on two hosts only, so
+# a third GPU node does not exist there.
+#
 # Multi-node data-parallel Flax. This is the standard SLURM shape -- unchanged
 # from what you would run on a real SLURM cluster -- because JAX needs no launcher
 # glue: it reads five SLURM_* variables, derives its own coordinator address, and

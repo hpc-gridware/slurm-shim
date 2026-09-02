@@ -13,9 +13,16 @@ default_partition: batch        # sbatch without -p lands here (like SLURM's DEF
 partitions:
   batch: {queue: all.q, pe: make, slots: "per-task"}
   gpu:   {queue: all.q, pe: make, slots: "per-task"}
-  # Single-node partition for tools like submitit: $pe_slots keeps a cpus-per-task
-  # request on ONE host, and the node task policy yields one task (not one per slot),
-  # which is what submitit's `srun python -m submitit.core._submit` expects.
+  # Single-node partition for tools like submitit. Two things keep a job here on
+  # one host with ONE task, and only one of them is the allocation rule:
+  #   - $pe_slots pins the placement -- which, on OCS 9.1.5+, `sbatch -N 1` now
+  #     does per job anyway (qsub -par $pe_slots), on any partition;
+  #   - task_policy: node yields one task rather than one per slot, which is what
+  #     submitit's `srun python -m submitit.core._submit` expects, and which is
+  #     keyed on the PE and so still needs its own PE.
+  # allocation_rule_override: never would pin the partition to $pe_slots even when
+  # a user asks for --nodes 2. Left off here on purpose: the e2e suite exercises
+  # both the pinned and the opted-out paths.
   smp:   {queue: all.q, pe: smp,  slots: "per-task"}
 
 pes:

@@ -608,6 +608,10 @@ var _ = Describe("unmappable and approximated flags warn instead of going quiet 
 		Expect(warns).To(HaveLen(1))
 		Expect(warns[0]).To(ContainSubstring("allocation_rule $pe_slots"))
 		Expect(warns[0]).NotTo(ContainSubstring("unknown directive"))
+		// Since OCS 9.1.5 the shim pins slots-per-node per job, so the old claim
+		// that whole-node allocation can only be site configuration is false.
+		Expect(warns[0]).NotTo(ContainSubstring("not a submission flag"))
+		Expect(warns[0]).To(ContainSubstring("--ntasks-per-node"))
 	})
 
 	DescribeTable("--exclusive never consumes a token, in any spelling",
@@ -684,5 +688,59 @@ var _ = Describe("unmappable and approximated flags warn instead of going quiet 
 		Expect(rc).To(Equal(0))
 		Expect(captured).To(ContainElements("-hold_jid", "99"))
 		Expect(errBuf.String()).NotTo(ContainSubstring("dependency"))
+	})
+})
+
+// config.Parse returns a nil *Config on a hard error, so discarding that error --
+// which Run did until the allocation-rule work needed load-time validation --
+// turned a config typo into a nil dereference at the first cfg field access.
+var _ = Describe("Run surfaces config failures instead of dereferencing nil", func() {
+	writeConfig := func(body string) string {
+		p := filepath.Join(GinkgoT().TempDir(), "config.yaml")
+		Expect(os.WriteFile(p, []byte(body), 0o600)).To(Succeed())
+		return p
+	}
+
+	// An unusable slot rule warns at load and fails only the submission that names
+	// that partition -- config.Load is shared with squeue, sinfo, srun and the PE
+	// hook, so it must not be fatal there.
+	It("warns about a bad slot rule and fails only the submission that uses it", func() {
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG",
+			writeConfig("partitions:\n  batch: {queue: all.q, pe: make, slots: \"0\"}\n"+
+				"  good: {queue: all.q, pe: make, slots: \"per-task\"}\n"))
+		var out, errOut bytes.Buffer
+
+		var code int
+		Expect(func() { code = Run([]string{"-p", "batch", "job.sh"}, &out, &errOut) }).NotTo(Panic())
+
+		Expect(code).To(Equal(1))
+		Expect(errOut.String()).To(ContainSubstring("sbatch: warning:"))
+		Expect(errOut.String()).To(ContainSubstring("slots rule"))
+		Expect(errOut.String()).To(ContainSubstring("partition \"batch\""))
+		Expect(errOut.String()).NotTo(ContainSubstring("loading config"),
+			"one partition's typo is not a config-load failure")
+	})
+
+	It("reports malformed YAML the same way", func() {
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", writeConfig("partitions: [oops\n"))
+		var out, errOut bytes.Buffer
+
+		var code int
+		Expect(func() { code = Run(nil, &out, &errOut) }).NotTo(Panic())
+
+		Expect(code).To(Equal(1))
+		Expect(errOut.String()).To(ContainSubstring("sbatch: error: loading config"))
+	})
+
+	// The warnings were discarded by the same statement, so an unknown key was
+	// computed and then thrown away -- the one signal a typo'd key ever produces.
+	It("surfaces a config warning that used to be swallowed", func() {
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", writeConfig("allocation_rule_overide: never\n"))
+		var out, errOut bytes.Buffer
+
+		// No script: the run stops right after the warning, so nothing is submitted.
+		Expect(Run(nil, &out, &errOut)).To(Equal(1))
+		Expect(errOut.String()).To(ContainSubstring("sbatch: warning: unknown config key"))
+		Expect(errOut.String()).To(ContainSubstring("allocation_rule_overide"))
 	})
 })
