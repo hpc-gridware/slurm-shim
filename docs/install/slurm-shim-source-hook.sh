@@ -9,6 +9,21 @@
 # predictable per-job TMPDIR. A production deployment MAY instead delegate the
 # checks to the shim binary once M2 ships a validating subcommand; this shell
 # reference keeps the contract explicit and dependency-free.
+#
+# Aborting: the abort paths call `exit 1`, which -- because this file is SOURCED
+# -- ends the job script itself. That is deliberate: enforcement belongs here,
+# not in every call site. A bare `. hook.sh` must be safe, because that is what
+# the README, the recipes and every hand-written job script actually do; a hook
+# that only RETURNED non-zero would let a job whose environment failed to
+# fabricate run on degraded (a 4-node training silently on 1 node) unless the
+# caller remembered `|| exit 1`. Signalling ($$ + SIGTERM) was considered and
+# rejected: an ordinary `trap ... TERM` cleanup handler in the job script
+# swallows it, and GE would record the self-kill as exit 143, which sacct
+# reports as ExitCode 0:15 -- indistinguishable from an operator qdel.
+#
+# The "continue" paths below MUST stay `return 0`, never `exit 0`: exiting zero
+# here would end the job successfully on the spot, which is a far worse failure
+# than the one this file guards against.
 
 slurm_shim_state="${TMPDIR:-/tmp}/slurm_shim"
 slurm_shim_env="$slurm_shim_state/environment"
@@ -19,7 +34,7 @@ slurm_shim_missing="${SLURM_SHIM_HOOK_MISSING_ENV:-continue}"
 # silently degraded (e.g. a multi-node training on one node).
 if [ -e "$slurm_shim_sentinel" ]; then
 	echo "slurm-shim: fabrication failed (sentinel present); aborting job" >&2
-	return 1 2>/dev/null || exit 1
+	exit 1
 fi
 
 # (c) Neither file present: follow the configured policy. Default "continue" so
@@ -27,7 +42,7 @@ fi
 if [ ! -e "$slurm_shim_env" ]; then
 	if [ "$slurm_shim_missing" = "abort" ]; then
 		echo "slurm-shim: no environment file; aborting job" >&2
-		return 1 2>/dev/null || exit 1
+		exit 1
 	fi
 	return 0 2>/dev/null || exit 0
 fi
@@ -38,7 +53,7 @@ fi
 slurm_shim_reject() {
 	echo "slurm-shim: environment file failed the safety check ($1); treating as missing" >&2
 	if [ "$slurm_shim_missing" = "abort" ]; then
-		return 1 2>/dev/null || exit 1
+		exit 1
 	fi
 	return 0 2>/dev/null || exit 0
 }

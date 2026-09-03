@@ -67,9 +67,10 @@ clean:
 # and try it out. Needs Docker + Compose v2.
 #   make cluster-up [OCS_VERSION=9.1.5] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.5)
 #   make demo / demo-gpu / demo-flax                   submit a demo job, print output
+#   make demo-envcheck                                 diagnose the fabricated SLURM_* env
 #   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
 CLUSTER := test/cluster
-.PHONY: cluster-up cluster-down cluster-install demo demo-gpu demo-flax
+.PHONY: cluster-up cluster-down cluster-install demo demo-gpu demo-flax demo-envcheck
 cluster-up:
 	$(CLUSTER)/up.sh $(ARGS)
 cluster-down:
@@ -82,6 +83,8 @@ demo-gpu:
 	$(CLUSTER)/demo.sh gpu
 demo-flax:
 	$(CLUSTER)/demo.sh flax
+demo-envcheck:
+	$(CLUSTER)/demo.sh envcheck
 
 # --- End-to-end + OCS version-compatibility suite -----------------------------
 #   make e2e                          run all e2e checks against a running cluster

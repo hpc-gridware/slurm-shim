@@ -17,6 +17,7 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 
 | Check | Asserts |
 |-------|---------|
+| `05_hook` | the sourcing hook ENFORCES its abort paths: a fabrication-failed sentinel (and `SLURM_SHIM_HOOK_MISSING_ENV=abort`) ends the job even when sourced bare, while the default "continue" policy and a good environment still let it run. Guards against the hook merely *reporting* a failure the job then ignores |
 | `10_env` | the PE hook fabricates `SLURM_NNODES/NTASKS/JOB_NODELIST/JOB_ID/MASTER_ADDR` |
 | `20_srun` | `srun -n` fans ranks across nodes, per-rank identity, `-l` labels |
 | `30_sbatch` | `#SBATCH` -> `qsub -terse` -> `Submitted batch job <id>`, job runs |

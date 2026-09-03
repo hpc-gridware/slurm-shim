@@ -9,6 +9,7 @@ source "$E2E_DIR/e2e-lib.sh"
 require_cluster
 
 checks=(
+  05_hook
   10_env
   20_srun
   30_sbatch
