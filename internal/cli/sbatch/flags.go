@@ -17,6 +17,7 @@ type options struct {
 
 	partition string
 	jobName   string
+	account   string
 	output    string
 	errorPath string
 	chdir     string
@@ -101,6 +102,7 @@ var knownLong = map[string]bool{
 	"gpus": true, "gpus-per-node": true, "gres": true,
 	"gpus-per-task": true, "gpu-bind": true,
 	"signal": true, "dependency": true, "export": true,
+	"account": true,
 	// Accepted and intentionally ignored (GE has no distinct behavior to map):
 	"open-mode": true, "wckey": true,
 }
@@ -126,7 +128,7 @@ var unmappableLong = map[string]string{
 var shortToLong = map[byte]string{
 	'N': "nodes", 'n': "ntasks", 'c': "cpus-per-task", 'p': "partition",
 	'J': "job-name", 'o': "output", 'e': "error", 'D': "chdir",
-	'a': "array", 't': "time", 'd': "dependency",
+	'a': "array", 't': "time", 'd': "dependency", 'A': "account",
 }
 
 // containerValueFlags are the Pyxis --container-* directives known to take a
@@ -275,6 +277,8 @@ func setLong(opt *options, name, val string) error {
 		opt.partition = val
 	case "job-name":
 		opt.jobName = val
+	case "account":
+		opt.account = val
 	case "output":
 		opt.output = val
 	case "error":

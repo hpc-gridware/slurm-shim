@@ -18,16 +18,22 @@ HOOK=/opt/slurm-shim/etc/slurm-shim-source-hook.sh
 wired="$(manager "qconf -sq all.q | awk '/^starter_method/{print \$2}'")"
 assert_eq "$wired" "$STARTER" "all.q starter_method is the shim starter"
 
-# The starter runs as the job user for every job in the queue, so the files it
-# executes must not be writable by that user.
-for f in "$STARTER" "$HOOK"; do
-  owner="$(manager "stat -c %U '$f'")"
-  assert_eq "$owner" "root" "$(basename "$f") is root-owned"
-  if manager "find '$f' -maxdepth 0 \\( -perm -0020 -o -perm -0002 \\) | grep -q ."; then
-    fail "$(basename "$f") is group- or world-writable"
-  else
-    pass "$(basename "$f") is not group/world-writable"
-  fi
+# The starter runs as the job user for every job in the queue, so nothing it
+# executes -- nor any directory on the path to it -- may be writable by that user.
+# Checked on EVERY node (the starter runs on all of them), over the binary, the
+# hook, the shim binary, and the containing directories (todos/035).
+SHIM_BIN=/opt/slurm-shim/bin/slurm-shim
+for n in "${NODES[@]}"; do
+  for f in "$STARTER" "$HOOK" "$SHIM_BIN" \
+           /opt/slurm-shim /opt/slurm-shim/bin /opt/slurm-shim/etc; do
+    owner="$(docker exec "$n" stat -c %U "$f" 2>/dev/null)"
+    assert_eq "$owner" "root" "$n: $f is root-owned"
+    if docker exec "$n" find "$f" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) 2>/dev/null | grep -q .; then
+      fail "$n: $f is group- or world-writable"
+    else
+      pass "$n: $f is not group/world-writable"
+    fi
+  done
 done
 
 job="$(mktemp)"
@@ -97,27 +103,14 @@ done
 assert_contains "$acct" "failed=0" "native job: failed=0"
 assert_contains "$acct" "exit_status=0" "native job: exit_status=0"
 
-# (3) A job-level abort policy must not reach srun's steppers: they pass through
-# the starter on every slave host, where the fabricator never ran. The starter
-# short-circuits its own stepper argv rather than relying on qrsh forwarding no
-# environment.
-cat >"$job" <<'EOF'
-#!/bin/bash
-#SBATCH --partition=batch
-#SBATCH --nodes=3
-#SBATCH --ntasks-per-node=1
-export SLURM_SHIM_HOOK_MISSING_ENV=abort
-srun bash -c 'echo "STEP on $(hostname)"'
-echo "SRUN_RC=$?"
-EOF
-remote=/home/gridware/e2e-06-abortpolicy.sh
-out=/home/gridware/e2e-06-abortpolicy.out
-put_job "$job" "$remote"
-id="$(sbatch_submit "$remote" "$out")"
-res="$(jobout "$id" "$out")"
-assert_contains "$res" "SRUN_RC=0" "srun succeeds with MISSING_ENV=abort exported in the job"
-steps="$(printf '%s\n' "$res" | grep -c '^STEP on ')"
-assert_eq "$steps" "3" "all 3 steppers ran through the starter"
+# (3) The starter passes its own stepper launch through BEFORE consulting the
+# hook, so a failed fabrication or an abort policy cannot kill a step. Tested
+# directly (not via a scheduled job): srun's qrsh -inherit does not forward the
+# job env to the stepper, so a job-level export could never reach it -- the only
+# faithful test is to invoke the starter as srun does. Deleting the starter's
+# short-circuit makes this fail (the hook would see the sentinel and exit 1).
+res="$(gridware 'd=$(mktemp -d); mkdir -p "$d/slurm_shim"; : > "$d/slurm_shim/environment.failed"; printf "#!/bin/sh\necho STEPPER-RAN\n" > "$d/slurm-shim"; chmod +x "$d/slurm-shim"; TMPDIR="$d" SLURM_SHIM_HOOK_MISSING_ENV=abort /opt/slurm-shim/bin/slurm-shim-starter "$d/slurm-shim" stepper --envelope X 2>&1; echo "RC=$?"; rm -rf "$d"')"
+assert_contains "$res" "STEPPER-RAN" "the starter passes a stepper launch through before the hook (sentinel + abort policy notwithstanding)"
 
 # (4) A failed fabrication must fail the JOB, not the queue instance. Point the
 # single-node 'smp' PE at a stand-in that does exactly what the fabricator does
@@ -136,6 +129,7 @@ remote=/home/gridware/e2e-06-sentinel.sh
 out=/home/gridware/e2e-06-sentinel.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
+[ -n "$id" ] || { fail "submit produced no job id"; finish; }
 res="$(jobout "$id" "$out")"
 manager "qconf -mattr pe start_proc_args '$fab_orig' smp >/dev/null"
 assert_contains "$res" "aborting job" "failed fabrication: the hook aborts through the starter"
@@ -156,7 +150,12 @@ if version_ge "${ocs:-0}" 9.1.5; then
 else
   skip "exit status under control_slaves TRUE is lost on OCS ${ocs:-unknown} (fixed in 9.1.5)"
 fi
-bad="$(gridware "qstat -f | awk '\$1 ~ /^all\\.q@/ && NF >= 6 && \$6 ~ /E/'" | grep -c . || true)"
+# Assert the probe actually saw the queue before trusting the E-state result: a
+# failed qstat or a renamed queue would otherwise make an empty result read as
+# "no E state" (todos/036).
+insts="$(gridware "qstat -f 2>/dev/null | grep -c '^all\.q@' || true")"
+assert_eq "$insts" "3" "qstat saw all three all.q instances (E-state probe ran)"
+bad="$(gridware "qstat -f 2>/dev/null | awk '\$1 ~ /^all\\.q@/ && NF >= 6 && \$6 ~ /E/' | grep -c . || true")"
 assert_eq "$bad" "0" "no all.q instance went into E state"
 
 # (5) SLURM runs a shebang-less script under the user's shell; so must the starter.
@@ -165,6 +164,7 @@ remote=/home/gridware/e2e-06-noshebang.sh
 out=/home/gridware/e2e-06-noshebang.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
+[ -n "$id" ] || { fail "submit produced no job id"; finish; }
 res="$(jobout "$id" "$out")"
 assert_contains "$res" "NOSHEBANG NODELIST=ocs-" "shebang-less script runs and sees the environment"
 

@@ -114,6 +114,12 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	if opt.jobName != "" {
 		args = append(args, "-N", opt.jobName)
 	}
+	if opt.account != "" {
+		// SLURM --account -> GE -A: a free-text accounting string (never rejected)
+		// that round-trips to SLURM_JOB_ACCOUNT via SGE_ACCOUNT. Not -P, which is a
+		// project that must exist and does not set SGE_ACCOUNT.
+		args = append(args, "-A", opt.account)
+	}
 	if opt.output != "" {
 		p, w := batchPath(opt, opt.output, "out")
 		args = append(args, "-o", p)

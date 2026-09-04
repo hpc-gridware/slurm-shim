@@ -136,7 +136,8 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 |---|---|---|
 | `sbatch` | ✅ | `#SBATCH` directives -> `qsub -terse`; prints `Submitted batch job <id>`. Flag coverage is limited (below). `--test-only` / `SLURM_SHIM_DRY_RUN` report without submitting ([dry run](#dry-run)). |
 | `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + `CUDA_VISIBLE_DEVICES`. See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
-| `srun` (standalone) | ⚠️ | `standalone: local` runs the command with a synthetic single-node env; default `standalone: reject` exits 1. |
+| `srun --pty` (interactive) | ✅ | Outside an allocation, `srun --pty [flags] <cmd>` becomes an interactive `qrsh -now no -pty y` session on a compute node, with the full `SLURM_*` environment; `srun` inside it launches steps. See [Interactive sessions](#interactive-sessions). |
+| `srun` (standalone, no `--pty`) | ❌ | A non-interactive `srun` outside an allocation exits 1 (`standalone: reject`). Run it inside an interactive session, or via `sbatch`. |
 | `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
 | `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). Honors [dry run](#dry-run). |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`); honors [dry run](#dry-run). |
@@ -182,6 +183,7 @@ Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) a
 | `--export=ALL\|NONE\|<list>` | ✅ |
 | `-o/--output`, `-e/--error` (`%j %J %t %n %N %s %%` patterns) | ✅ |
 | `-l/--label`, `-K/--kill-on-bad-exit`, `-J/--job-name`, `-D/--chdir`, `--quiet`, `-v`, `-V` | ✅ |
+| `--pty` (outside an allocation) | ✅ interactive session via `qrsh`; with `-p/--partition`, `-N/-n/--ntasks-per-node/-c`, `--time`, `--mem`, `--gres`/`--gpus`, `-A/--account`, `-J`. `--qos` warned (no GE analogue). See [Interactive sessions](#interactive-sessions) |
 | `--mpi=none` | ✅ (no-op) |
 | `--mpi=<anything else>` (e.g. `pmix`) | ❌ (hard-errors by design — no PMI/PMIx; see below) |
 
@@ -210,6 +212,51 @@ This is the strongest area — the fabricated environment is the whole point, an
 - **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
 - **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach` and `salloc`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
 
+### Interactive sessions
+
+`srun --pty ... <command>` run **outside** an allocation becomes an interactive
+Grid Engine session. The shim translates the SLURM flags and hands off to `qrsh`,
+which owns the terminal, the wait for resources, signal handling and the exit
+status:
+
+```bash
+# a shell on a compute node, 2 cores, 30-minute limit
+srun --pty -p batch -c 2 --time 0:30:00 bash
+
+# GPU debug shell (needs a GPU-configured partition)
+srun --pty -p gpu --gres=gpu:1 --time 0:30:00 bash
+```
+
+Inside the session the `SLURM_*` environment is set (the queue's `starter_method`
+runs the same fabrication as a batch job), so `srun` launches steps from it:
+
+```bash
+srun --pty -p batch -N 2 --ntasks-per-node=1 bash   # a 2-node allocation
+# ... then, inside the session:
+srun hostname                                        # fans out across both nodes
+```
+
+What maps to what: `--partition` -> queue + PE + slots; `-N`/`--ntasks-per-node`
+pin the layout via `qsub -par` on OCS 9.1.5+ (as with `sbatch`); `--time` ->
+`h_rt`, `--mem` -> the memory complex, `--gres=gpu:N`/`--gpus` -> the GPU complex;
+`--account` -> `-A` (surfaces as `SLURM_JOB_ACCOUNT`); `--export` -> `-V`/`-v`.
+`--qos` has no Grid Engine analogue and is warned; `--x11`/`--overlap`/`--no-kill`
+are accepted and ignored.
+
+Notes and limits:
+- The session starts in the directory you ran `srun` from (like SLURM), not `$HOME`.
+- `qrsh` uses `-now no`, so the request **queues and waits** for resources rather
+  than being rejected immediately -- and it may land on a `BATCH`-type queue.
+- `SLURM_SHIM_DRY_RUN` / `--test-only` print the `qrsh` line and create no job.
+- No `salloc` / `sattach`: `salloc`'s shell runs on the submit host, which has no
+  Grid Engine analogue worth emulating. A non-`--pty` `srun` outside an allocation
+  still exits 1.
+- GPU sessions see every device on the node under `gpu.isolation: shim`
+  (`CUDA_VISIBLE_DEVICES` is set per rank by `srun`, not at the session level);
+  run the workload through `srun` inside the session, or use `gpu.isolation: cgroup`.
+- On a site whose queue uses a non-builtin interactive daemon (e.g. `sshd -i`) the
+  environment still arrives but the session may have no terminal; `srun` warns.
+
 ### `sacct` fidelity
 
 `sacct` reports what GE records, not a SLURM accounting database. Five
@@ -235,7 +282,7 @@ differences are worth knowing:
 
 ### Known limitations
 
-- No `salloc` / `sattach`; no job-step overlap or heterogeneous steps.
+- No `salloc` / `sattach`; no job-step overlap or heterogeneous steps. Interactive shells use `srun --pty` (above), not `salloc`.
 - `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal` (all verified against a live cluster by `test/e2e/31_sbatch_resources.sh`) and pins `--nodes`/`--ntasks-per-node` on OCS 9.1.5+ (`test/e2e/32_par_allocation.sh`); `--exclusive` is warn-and-ignored.
 - **A layout Grid Engine cannot grant evenly is not pinned.** A fixed allocation rule puts the *same* slot count on every node, so SLURM's `-N 3 -n 7` (3,2,2) has no faithful translation: the shim warns and lets the PE place the nodes, as it did before.
 - **Pinning the layout changes the per-node memory ceiling.** `--mem` is per node on SLURM but the memory complex is per slot on most GE sites, so a job whose 6 slots used to land on one host now gets its grant on each of three. `sbatch` prints a `note:` line with the arithmetic when `--mem` and a pinned rule are both present. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.

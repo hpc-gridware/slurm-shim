@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/gedata/fake"
 )
 
 // The interactive path (srun --pty outside an allocation -> qrsh). These specs
@@ -99,5 +100,31 @@ var _ = Describe("srun --pty interactive translation", func() {
 		code := runInteractive(bare, opt, &errBuf)
 		Expect(code).To(Equal(1))
 		Expect(errBuf.String()).To(ContainSubstring("no partition specified"))
+	})
+})
+
+var _ = Describe("interactive pty-daemon preflight", func() {
+	confRunner := func(rsh string) *fake.Runner {
+		return &fake.Runner{Responder: func(string, []string) fake.Response {
+			return fake.Response{Stdout: []byte("execd_spool_dir /x\nrsh_daemon " + rsh + "\n")}
+		}}
+	}
+	It("warns when rsh_daemon is not builtin (session gets env but no pty)", func() {
+		var b bytes.Buffer
+		warnIfNoPtyDaemon(confRunner("/usr/sbin/sshd -i"), &b)
+		Expect(b.String()).To(ContainSubstring("not builtin"))
+		Expect(b.String()).To(ContainSubstring("no terminal"))
+	})
+	It("stays silent when rsh_daemon is builtin", func() {
+		var b bytes.Buffer
+		warnIfNoPtyDaemon(confRunner("builtin"), &b)
+		Expect(b.String()).To(BeEmpty())
+	})
+	It("stays silent when the probe fails (best-effort, never blocks)", func() {
+		var b bytes.Buffer
+		warnIfNoPtyDaemon(&fake.Runner{Responder: func(string, []string) fake.Response {
+			return fake.Response{Exit: 1}
+		}}, &b)
+		Expect(b.String()).To(BeEmpty())
 	})
 })

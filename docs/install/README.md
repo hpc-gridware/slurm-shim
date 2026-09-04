@@ -20,3 +20,12 @@ carries the shim path as the remote argv[0].
 Without a `starter_method`, a job script sources the hook itself as its first
 line, or the site enables `wrapper_mode` in `config.yaml` so `sbatch` injects
 fabrication (covers only jobs submitted through the shim's `sbatch`).
+
+## Shell requirement
+
+`slurm-shim-starter.sh` and `slurm-shim-source-hook.sh` are `#!/bin/sh` scripts
+that use `return` inside a sourced file and a `case` on `"$0"` -- POSIX features,
+no bashisms. Any POSIX `/bin/sh` (dash, ksh, or bash-as-sh) satisfies them. The
+suite exercises them under the test cluster's `/bin/sh` (bash); a site whose
+`/bin/sh` is dash is supported but not yet run in CI, so smoke-test one job there
+after install.

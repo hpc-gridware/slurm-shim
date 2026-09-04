@@ -34,7 +34,12 @@ for node in "${NODES[@]}"; do
   # tree must be root-owned and not writable by anyone else -- otherwise a user
   # who can edit it runs code in every other user's jobs. docker cp keeps the
   # host uid, so fix ownership explicitly.
-  docker exec "$node" bash -c "chown -R root:root '$SHIM_PREFIX' /etc/slurm-shim; chmod -R go-w '$SHIM_PREFIX' /etc/slurm-shim; chmod 755 '$SHIM_PREFIX/bin/slurm-shim-starter'; chmod 644 '$SHIM_PREFIX/etc/slurm-shim-source-hook.sh'"
+  # && so a failed chown/chmod aborts the install rather than being swallowed --
+  # the starter runs as the job user for every job, so a user-writable tree is
+  # arbitrary code in every other user's job. Verify the result rather than assume.
+  docker exec "$node" bash -c "chown -R root:root '$SHIM_PREFIX' /etc/slurm-shim && chmod -R go-w '$SHIM_PREFIX' /etc/slurm-shim && chmod 755 '$SHIM_PREFIX/bin/slurm-shim-starter' && chmod 644 '$SHIM_PREFIX/etc/slurm-shim-source-hook.sh'"
+  owner="$(docker exec "$node" stat -c '%U' "$SHIM_PREFIX/bin/slurm-shim-starter")"
+  [ "$owner" = root ] || die "install: $SHIM_PREFIX not root-owned on $node (got $owner)"
   # Put the shim commands on PATH for interactive shells. Login shells read
   # /etc/profile.d; interactive non-login shells (docker exec ... bash) read
   # /etc/bash.bashrc.local on openSUSE (see /etc/bash.bashrc). Hook both so

@@ -9,6 +9,7 @@ import (
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
 // resolveAllocationRule derives the allocation rule for a request and decides
@@ -41,23 +42,16 @@ func resolveAllocationRule(runner gedata.Runner, cfg *config.Config, opt options
 		return spec
 	}
 
+	// The -par capability probe and its two warnings live in internal/submit, so
+	// sbatch and interactive srun gate on the same OCS-version check and print the
+	// same guidance (todos/011).
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.QstatTimeout.Duration)
 	defer cancel()
-	supported, err := gedata.NewCapabilities(runner).AllocationRuleOverride(ctx)
-	switch {
-	case err != nil:
-		// Distinct from "this cluster is too old": the usual cause is no Grid
-		// Engine client on PATH, and telling that user to upgrade OCS sends them
-		// somewhere they cannot fix it.
-		fmt.Fprintf(stderr, "sbatch: warning: could not probe qsub for -par support (%v), so "+
-			"--nodes/--ntasks-per-node are not enforced -- Grid Engine places the nodes via "+
-			"the PE's allocation_rule\n", err)
-		return allocationRule{}
-	case !supported:
-		fmt.Fprintln(stderr, "sbatch: warning: this cluster's qsub has no -par, so "+
-			"--nodes/--ntasks-per-node are not enforced -- Grid Engine places the nodes via "+
-			"the PE's allocation_rule (needs OCS 9.1.5 or newer; set "+
-			"allocation_rule_override: never to silence)")
+	supported, warn := submit.AllocationRuleProbe(ctx, runner)
+	if warn != "" {
+		fmt.Fprintln(stderr, "sbatch: warning: "+warn)
+	}
+	if !supported {
 		return allocationRule{}
 	}
 	return spec

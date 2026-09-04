@@ -148,6 +148,33 @@ else
     "an inherited SLURM_SHIM_DRY_RUN does not silence srun inside the job [REQ-DRY-005]"
 fi
 
+# No-starter arm: a job that sources the hook ITSELF (the documented fallback for
+# sites without a queue starter_method) must scrub the inherited DRY_RUN flag too
+# -- the scrub lives in the fabricated environment file, which the hook sources
+# whichever path reaches it (todos/037).
+leak2_out=/home/gridware/e2e-95-leak2.out
+leak2="$(mktemp)"
+cat >"$leak2" <<'EOF'
+#!/bin/bash
+#SBATCH --partition=batch
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
+srun echo REAL-WORK-RAN-NOSTARTER
+EOF
+leak2_remote=/home/gridware/e2e-95-leak2.sh
+put_job "$leak2" "$leak2_remote"
+rm -f "$leak2"
+leak2_id="$(gridware "rm -f '$leak2_out'; sbatch --export=ALL,SLURM_SHIM_DRY_RUN=1 --output='$leak2_out' '$leak2_remote'" \
+  | awk '/Submitted batch job/{print $NF}')"
+if [ -z "$leak2_id" ]; then
+  fail "could not submit the no-starter leak-check job"
+else
+  leak2_res="$(jobout "$leak2_id" "$leak2_out")"
+  assert_contains "$leak2_res" "REAL-WORK-RAN-NOSTARTER" \
+    "the scrub reaches a job that sources the hook itself (no-starter fallback) [REQ-DRY-005]"
+fi
+
 # ------------------------------------------------- scancel changes nothing
 
 # A dry-run scancel that reported success while leaving the job running is how an

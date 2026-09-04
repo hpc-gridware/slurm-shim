@@ -1,8 +1,11 @@
 package srun
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
@@ -46,16 +49,26 @@ func runInteractive(cfg *config.Config, opt *options, stderr io.Writer) int {
 		return 1
 	}
 
+	// Pin the layout (-par / -w e) when -N / --ntasks-per-node ask for one and the
+	// cluster supports it -- the same resolver and OCS-version probe sbatch uses.
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.QstatTimeout.Duration)
+	defer cancel()
+	rule, warns := submit.AllocationRuleFor(ctx, gedata.ExecRunner{}, cfg, req, part, slots)
+	for _, w := range warns {
+		errln(stderr, "srun: warning: "+w)
+	}
+
 	spec := launch.SessionSpec{
-		Queue:     part.Queue,
-		PE:        part.PE,
-		Slots:     slots,
-		Resources: submit.ResourceList(cfg, req),
-		Account:   opt.account,
-		JobName:   opt.jobName,
-		Chdir:     opt.chdir,
-		Export:    submit.ExportArgs(opt.exportSpec),
-		Command:   opt.command,
+		Queue:          part.Queue,
+		PE:             part.PE,
+		Slots:          slots,
+		AllocationRule: rule.Value,
+		Resources:      submit.ResourceList(cfg, req),
+		Account:        opt.account,
+		JobName:        opt.jobName,
+		Chdir:          opt.chdir,
+		Export:         submit.ExportArgs(opt.exportSpec),
+		Command:        opt.command,
 	}
 
 	// A command beginning with "-" would be read by qrsh as its own option, since
@@ -68,6 +81,8 @@ func runInteractive(cfg *config.Config, opt *options, stderr io.Writer) int {
 	if dryrun.Enabled() || opt.testOnly {
 		return dryRunInteractive(spec, part, stderr)
 	}
+
+	warnIfNoPtyDaemon(gedata.ExecRunner{}, stderr)
 
 	// One honest line before the process is replaced: srun cannot print SLURM's
 	// "queued and waiting for resources" at the right moment once it has exec'd,
@@ -124,4 +139,27 @@ func redactSessionArgs(args []string) []string {
 		}
 	}
 	return out
+}
+
+// warnIfNoPtyDaemon warns when the queue's interactive daemon is not the builtin
+// IJS: verified that with an external rsh_daemon (e.g. "sshd -i") the fabricated
+// SLURM_* environment still arrives but -pty y allocates no terminal, so the
+// session lands without a tty. Read-only and best-effort: any probe failure is
+// silent, since it must never block a session that would otherwise work.
+func warnIfNoPtyDaemon(r gedata.Runner, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _, exit, err := r.Run(ctx, "qconf", "-sconf")
+	if err != nil || exit != 0 {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "rsh_daemon" && !strings.EqualFold(f[1], "builtin") {
+			fmt.Fprintf(stderr, "srun: warning: this cluster's rsh_daemon is %q, not builtin; "+
+				"the session's SLURM_* environment will be set but it may have no terminal "+
+				"(add -t to rsh_command, or use a builtin-IJS queue)\n", f[1])
+			return
+		}
+	}
 }

@@ -744,3 +744,25 @@ var _ = Describe("Run surfaces config failures instead of dereferencing nil", fu
 		Expect(errOut.String()).To(ContainSubstring("allocation_rule_overide"))
 	})
 })
+
+var _ = Describe("sbatch --account [parity with srun]", func() {
+	It("maps --account and -A to qsub -A, and the space form does not eat the script", func() {
+		for _, argv := range [][]string{
+			{"--account=proj1", "job.sh"},
+			{"--account", "proj1", "job.sh"},
+			{"-A", "proj1", "job.sh"},
+		} {
+			opt, _, err := parseFlags(argv)
+			Expect(err).NotTo(HaveOccurred(), "%v", argv)
+			Expect(opt.account).To(Equal("proj1"), "%v", argv)
+			Expect(opt.script).To(Equal("job.sh"), "%v: script must survive", argv)
+		}
+	})
+
+	It("emits -A in the qsub argv", func() {
+		opt, _, err := parseFlags([]string{"-A", "proj1", "--wrap", "true"})
+		Expect(err).NotTo(HaveOccurred())
+		args, _ := buildQsubArgs(&config.Config{}, opt, config.Partition{Queue: "all.q", PE: "make"}, 1, allocationRule{})
+		Expect(args).To(ContainElements("-A", "proj1"))
+	})
+})
