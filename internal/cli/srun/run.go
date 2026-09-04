@@ -59,8 +59,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	lay, err := loadLayout(cfg, stderr)
 	if err != nil {
+		// Outside an allocation. --pty means "give me an interactive session":
+		// translate to qrsh. SLURM_JOB_ID set (a slave host / inside a rank) is a
+		// different error loadLayout already phrased, and must not become one.
+		if opt.pty && os.Getenv("SLURM_JOB_ID") == "" {
+			return runInteractive(cfg, opt, stderr)
+		}
 		errln(stderr, err.Error())
 		return 1
+	}
+	// Inside an allocation: --pty and the allocation-shaping flags do not apply to
+	// a step; run the step but say so, so a user does not think they got a session.
+	if opt.pty {
+		errln(stderr, "srun: warning: --pty inside an allocation runs a step with no terminal; start an interactive session from a login node")
+	} else if opt.interactiveFlagsSet {
+		errln(stderr, "srun: warning: --partition/--time/--mem/--gres/--account apply only to an interactive session (--pty) started outside an allocation; ignored for this step")
 	}
 
 	p, err := plan.Place(lay, opt.req)

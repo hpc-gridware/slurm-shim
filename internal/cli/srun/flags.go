@@ -12,6 +12,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
 // options are the parsed srun invocation.
@@ -28,6 +29,22 @@ type options struct {
 	version     bool
 	gpuBind     string // --gpu-bind: "" unset, "none", "per_task[:n]"
 	testOnly    bool   // --test-only: report the step, launch nothing
+
+	// Interactive-session request (--pty outside an allocation -> qrsh). These are
+	// meaningful only on that path; inside an allocation srun ignores them with a
+	// warning, matching the fact that a step cannot carry its own allocation.
+	pty       bool
+	partition string
+	jobName   string
+	haveTime  bool
+	timeSec   int
+	mem       string // GE-formatted ("4G"), "" unset
+	haveGPUs  bool
+	gpus      int
+	account   string
+	// interactiveFlagsSet records that at least one allocation-shaping flag was
+	// given, so the inside-an-allocation path can warn that it ignored them.
+	interactiveFlagsSet bool
 	// warnings accumulated during parsing (unknown flags, etc.).
 	warnings []string
 }
@@ -61,7 +78,6 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		mpi          = fs.String("mpi", "", "")
 		version      = fs.BoolP("version", "V", false, "")
 		kill         = fs.StringP("kill-on-bad-exit", "K", "", "")
-		_            = fs.StringP("job-name", "J", "", "")
 		_            = fs.Bool("quiet", false, "")
 		_            = fs.CountP("verbose", "v", "")
 		// submitit's generated srun line always passes --unbuffered; users may add
@@ -72,6 +88,25 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		// SLURM's --test-only: report the step and launch nothing. OR'd with
 		// SLURM_SHIM_DRY_RUN so a caller that controls only argv can reach the mode.
 		testOnly = fs.Bool("test-only", false, "")
+
+		// Interactive-session flags. Defined (not left unknown) so pflag does not
+		// swallow the command as a flag value, and so a real translation exists.
+		pty         = fs.Bool("pty", false, "")
+		partition   = fs.StringP("partition", "p", "", "")
+		timeVal     = fs.StringP("time", "t", "", "")
+		memVal      = fs.String("mem", "", "")
+		gres        = fs.String("gres", "", "")
+		gpus        = fs.String("gpus", "", "")
+		gpusPerNode = fs.String("gpus-per-node", "", "")
+		account     = fs.StringP("account", "A", "", "")
+		qos         = fs.StringP("qos", "q", "", "")
+		jobName     = fs.StringP("job-name", "J", "", "")
+		// No GE analogue; defined so their values are not read as the command, then
+		// warned. --exclusive reuses sbatch's guidance.
+		x11       = fs.Bool("x11", false, "")
+		overlap   = fs.Bool("overlap", false, "")
+		noKill    = fs.Bool("no-kill", false, "")
+		exclusive = fs.Bool("exclusive", false, "")
 	)
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"
@@ -103,7 +138,23 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		version:     *version,
 		gpuBind:     *gpuBind,
 		testOnly:    *testOnly,
+		pty:         *pty,
+		partition:   *partition,
+		jobName:     *jobName,
 	}
+	if err := applyInteractiveFlags(opt, *timeVal, *memVal, *gres, *gpus, *gpusPerNode, *account, *qos); err != nil {
+		return nil, err
+	}
+	if *x11 {
+		opt.warnings = append(opt.warnings, "--x11 is not translated: DISPLAY is forwarded with the environment but xauth is not, so X clients will not connect")
+	}
+	if *exclusive {
+		opt.warnings = append(opt.warnings, "--exclusive is not translated: ask for the node width explicitly (--ntasks-per-node=<cores>) or use a partition sized to the node")
+	}
+	if *overlap || *noKill {
+		opt.warnings = append(opt.warnings, "--overlap/--no-kill are accepted and ignored (no Grid Engine analogue)")
+	}
+	_ = qos // consumed by applyInteractiveFlags's warning
 	if *nodelist != "" {
 		hosts, err := encoders.ExpandNodelist(*nodelist)
 		if err != nil {
@@ -224,4 +275,48 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// applyInteractiveFlags parses the value-taking allocation flags (--time, --mem,
+// --gres/--gpus, --account, --qos) into opt, using the shared submit converters
+// so srun and sbatch agree. --qos has no Grid Engine analogue and is warned.
+func applyInteractiveFlags(opt *options, timeVal, memVal, gres, gpus, gpusPerNode, account, qos string) error {
+	if account != "" {
+		opt.account = account
+		opt.interactiveFlagsSet = true
+	}
+	if qos != "" {
+		opt.warnings = append(opt.warnings,
+			"--qos is not translated: Grid Engine has no QOS concept")
+		opt.interactiveFlagsSet = true
+	}
+	if timeVal != "" {
+		sec, err := submit.ParseSlurmTime(timeVal)
+		if err != nil {
+			return fmt.Errorf("srun: error: %w", err)
+		}
+		opt.haveTime, opt.timeSec = true, sec
+		opt.interactiveFlagsSet = true
+	}
+	if memVal != "" {
+		opt.mem = submit.ConvertMem(memVal)
+		opt.interactiveFlagsSet = true
+	}
+	// --gres=gpu:N takes precedence over --gpus/--gpus-per-node when both name a
+	// count, matching sbatch; any one of them sets the request.
+	if n, ok := submit.GresGPUCount(gres); ok {
+		opt.haveGPUs, opt.gpus = true, n
+		opt.interactiveFlagsSet = true
+	} else if v := firstNonEmpty(gpus, gpusPerNode); v != "" {
+		n, err := submit.ParseGPUCount(v)
+		if err != nil {
+			return fmt.Errorf("srun: error: %w", err)
+		}
+		opt.haveGPUs, opt.gpus = true, n
+		opt.interactiveFlagsSet = true
+	}
+	if opt.partition != "" || opt.pty {
+		opt.interactiveFlagsSet = true
+	}
+	return nil
 }
