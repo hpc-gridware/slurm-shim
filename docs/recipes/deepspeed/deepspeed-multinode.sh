@@ -24,6 +24,11 @@
 # torchrun that forks one worker per GPU. torchrun sets RANK/LOCAL_RANK/WORLD_SIZE
 # for torch.distributed, which DeepSpeed consumes directly -- so there is no MPI
 # bootstrap and no silent-singleton footgun. Submit with: sbatch deepspeed-multinode.sh
+#
+# Where the site wired the shim's queue starter_method the environment is already
+# present and this line is a harmless re-source; on a site without one it is
+# what provides SLURM_JOB_NODELIST to the scontrol call below.
+. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 set -euo pipefail
 
 # Rendezvous host: master is the first name in the nodelist (MASTER_ADDR is off

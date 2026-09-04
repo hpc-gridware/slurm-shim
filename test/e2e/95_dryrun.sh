@@ -18,7 +18,6 @@ cat >"$job" <<'EOF'
 #SBATCH --nodes=3
 #SBATCH --ntasks-per-node=2
 #SBATCH --job-name=e2e-dryrun
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 env | grep '^SLURM_' | sort
 EOF
 
@@ -133,7 +132,6 @@ cat >"$leak" <<'EOF'
 #SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 srun echo REAL-WORK-RAN
 EOF
 leak_remote=/home/gridware/e2e-95-leak.sh

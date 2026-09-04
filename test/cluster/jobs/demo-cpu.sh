@@ -1,13 +1,11 @@
 #!/bin/bash
 # CPU demo: submitted through the shim's `sbatch` (partition -> queue + PE +
-# slots). The PE start_proc_args hook fabricates the SLURM_* environment; this
-# script sources it, then `srun` fans ranks out across the allocation over
-# qrsh -inherit tight integration.
+# slots). The PE start_proc_args hook fabricates the SLURM_* environment and the
+# queue starter_method sources it -- nothing shim-specific in this script. `srun`
+# then fans ranks out across the allocation over qrsh -inherit tight integration.
 #SBATCH --partition=batch
 #SBATCH --nodes=3
 #SBATCH --ntasks-per-node=2
-
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 
 echo "[alloc] SLURM_NNODES=$SLURM_NNODES SLURM_NTASKS=$SLURM_NTASKS"
 echo "[alloc] nodelist=$SLURM_JOB_NODELIST master=$MASTER_ADDR:$MASTER_PORT"

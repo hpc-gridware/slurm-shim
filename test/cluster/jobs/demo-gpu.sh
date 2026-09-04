@@ -8,7 +8,6 @@
 # grant (what JAX and LOCAL_RANK-indexing frameworks need), while
 # --gpus-per-task=1 gives each rank its own device.
 
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 
 echo "[alloc] SLURM_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE SLURM_JOB_GPUS=$SLURM_JOB_GPUS"
 echo "[alloc] nodelist=$SLURM_JOB_NODELIST"

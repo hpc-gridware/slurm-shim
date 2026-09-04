@@ -57,6 +57,35 @@ var _ = Describe("slurm-shim-env command", func() {
 		}
 	})
 
+	It("refuses to write PE-mode state with TMPDIR unset and leaves no sentinel [REQ-FAB-010]", func() {
+		GinkgoT().Setenv("TMPDIR", "")
+		errBuf := &bytes.Buffer{}
+		code := envcmd.Run(nil, io.Discard, errBuf)
+		Expect(code).To(Equal(0), "start_proc_args must still exit 0 so the queue instance stays out of E state")
+		Expect(errBuf.String()).To(ContainSubstring("TMPDIR is not set"))
+		_, err := os.Stat("/tmp/slurm_shim/environment.failed")
+		Expect(os.IsNotExist(err)).To(BeTrue(), "no sentinel may be planted at a shared fallback path")
+	})
+
+	It("still exports in wrapper mode with TMPDIR unset (no state dir needed) [REQ-FAB-002]", func() {
+		GinkgoT().Setenv("TMPDIR", "")
+		out := &bytes.Buffer{}
+		Expect(envcmd.Run([]string{"--export"}, out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("export SLURM_JOB_ID='77'"))
+	})
+
+	It("evicts a planted sentinel from the state dir path before fabricating [REQ-FAB-010]", func() {
+		dir := filepath.Join(tmp, "slurm_shim")
+		Expect(os.Mkdir(dir, 0o777)).To(Succeed())
+		Expect(os.Chmod(dir, 0o777)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "environment.failed"), []byte("planted"), 0o666)).To(Succeed())
+		Expect(envcmd.Run(nil, io.Discard, io.Discard)).To(Equal(0))
+		_, err := os.Stat(filepath.Join(dir, "environment.failed"))
+		Expect(os.IsNotExist(err)).To(BeTrue(), "the planted sentinel must be gone")
+		_, err = os.Stat(filepath.Join(dir, "environment"))
+		Expect(err).NotTo(HaveOccurred(), "and the real environment must have been written")
+	})
+
 	It("aborts wrapper mode with the sole token exit 1 on failure [REQ-FAB-008]", func() {
 		// A present-but-empty PE_HOSTFILE is a fabrication error.
 		hf := filepath.Join(tmp, "empty_hostfile")

@@ -35,14 +35,15 @@ hydra:
     nodes: 1
     tasks_per_node: 1
     cpus_per_task: 1
-    setup:                    # the one shim-specific line
+    setup:                    # not needed where the site wired starter_method
       - . /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 ```
 
-`setup` is Hydra's passthrough to submitit's `slurm_setup`. It is needed because
-Hydra writes its own batch script, so it must source the hook to get
-`SLURM_JOB_ID` / `SLURM_NTASKS` and `srun` on `PATH`. Set the hook cluster-wide and
-you can drop even that line.
+`setup` is Hydra's passthrough to submitit's `slurm_setup`. Hydra writes its own
+batch script, so on a site that has not wired the shim's queue `starter_method`
+that script must source the hook itself to get `SLURM_JOB_ID` / `SLURM_NTASKS`
+and `srun` on `PATH`. Where the site has wired it (see the top-level README), the
+environment is already present and the `setup:` line can be dropped.
 
 Everything else is stock Hydra — override launcher settings per run:
 
@@ -120,7 +121,7 @@ so the guidance below is unchanged.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `KeyError: 'SLURM_JOB_ID'` in the job | the batch script never sourced the shim hook | add the `setup:` line above |
+| `KeyError: 'SLURM_JOB_ID'` in the job | no `starter_method` on the queue and the batch script never sourced the shim hook | add the `setup:` line above, or have the site wire `starter_method` |
 | `sbatch: warning: Grid Engine cannot express %a` on every sweep | expected: GE's `$TASK_ID` is a dense 1..N, so the batch-level file is renamed | nothing to do -- the per-task logs Hydra reads are written by `srun` and are unaffected |
 | A task fails before Hydra logs anything | the traceback happens *before* submitit's `srun`, so it is not in a `%A_%a` log | look at the batch-level file `.submitit/slurm-<jobid>.<n>.out` (see below) |
 | Each sweep entry runs twice (or N times) | `cpus_per_task > 1` on a **slot**-policy partition | use a partition whose PE has `task_policy: node` (see above). On OCS 9.1.5+ the tasks land on one host instead of several, but there are still N of them |

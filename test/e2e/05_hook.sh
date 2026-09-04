@@ -28,7 +28,7 @@ hook_case() {
       ${policy:+'export SLURM_SHIM_HOOK_MISSING_ENV=$policy'} \
       '. $HOOK' \
       'echo \"BODY \${SLURM_JOB_NODELIST:-unset}\"' > job.sh
-    bash job.sh; echo \"EXIT \$?\"
+    bash job.sh 2>&1; echo \"EXIT \$?\"
     rm -rf \"\$d\"
   "
 }
@@ -63,5 +63,44 @@ res="$(hook_case 'printf "export SLURM_JOB_NODELIST=evil\n" > "$d/planted"; ln -
 assert_contains "$res" "EXIT 1" "(b) symlink + policy=abort: job aborts"
 case "$res" in *evil*) fail "(b) symlink: planted environment was sourced" ;;
                *) pass "(b) symlink: planted environment was not sourced" ;; esac
+
+# ---- Co-tenant cases (todos/029, 030). The per-job TMPDIR is a predictable path
+# a co-tenant can pre-create; nothing in it may be believed until it is proven
+# the job's own. Each of these would have killed the job (or sourced foreign shell
+# code) before the trust checks; now they are reported and ignored.
+
+# (d) The sentinel is a symlink: ignored, job runs.
+res="$(hook_case 'printf x > "$d/planted"; ln -s "$d/planted" "$d/slurm_shim/environment.failed"' '')"
+assert_contains "$res" "EXIT 0" "(d) symlink sentinel: ignored, job continues"
+assert_contains "$res" "BODY" "(d) symlink sentinel: job body ran"
+
+# (e) The sentinel is writable by others: ignored, job runs.
+res="$(hook_case 'touch "$d/slurm_shim/environment.failed"; chmod 666 "$d/slurm_shim/environment.failed"' '')"
+assert_contains "$res" "BODY" "(e) group/world-writable sentinel: ignored, job body ran"
+
+# (f) The state dir itself is writable by others: everything in it is ignored,
+# even a sentinel and a good-looking environment file.
+res="$(hook_case 'chmod 777 "$d/slurm_shim"; touch "$d/slurm_shim/environment.failed"; printf "export SLURM_JOB_NODELIST=evil\n" > "$d/slurm_shim/environment"; chmod 600 "$d/slurm_shim/environment"' '')"
+assert_contains "$res" "BODY unset" "(f) world-writable state dir: sentinel and environment both ignored"
+assert_contains "$res" "not a private directory" "(f) world-writable state dir: reported on stderr"
+
+# (g) TMPDIR itself is writable by others (the OCS pre-creation shape): ignored.
+res="$(hook_case 'chmod 777 "$d"; printf "export SLURM_JOB_NODELIST=evil\n" > "$d/slurm_shim/environment"; chmod 600 "$d/slurm_shim/environment"' '')"
+assert_contains "$res" "BODY unset" "(g) world-writable TMPDIR: per-job state ignored"
+
+# (h) The state dir is owned by someone else (root stands in for the co-tenant),
+# holding a sentinel: ignored regardless of mode, job runs. Node-local /tmp on the
+# master -- the shared home (virtiofs) does not honour a root chown reliably.
+fd=/tmp/e2e-05-foreign.$$
+manager "rm -rf '$fd'; mkdir -p '$fd/slurm_shim'; chown gridware:gridware '$fd'; chown root:root '$fd/slurm_shim'; chmod 755 '$fd' '$fd/slurm_shim'; : > '$fd/slurm_shim/environment.failed'"
+res="$(gridware "printf '%s\n' 'export TMPDIR=$fd' '. $HOOK' 'echo \"BODY \${SLURM_JOB_NODELIST:-unset}\"' > /tmp/e2e-05-h.sh; bash /tmp/e2e-05-h.sh 2>&1; echo \"EXIT \$?\"; rm -f /tmp/e2e-05-h.sh")"
+manager "rm -rf '$fd'"
+assert_contains "$res" "not a private directory" "(h) foreign-owned state dir: reported and ignored"
+assert_contains "$res" "BODY unset" "(h) foreign-owned state dir with sentinel: ignored, job body ran"
+assert_contains "$res" "EXIT 0" "(h) foreign-owned state dir: exit 0"
+
+# (i) No TMPDIR at all: no /tmp fallback, job continues (default policy).
+res="$(gridware "printf '%s\n' 'unset TMPDIR' '. $HOOK' 'echo \"BODY \${SLURM_JOB_NODELIST:-unset}\"' > /tmp/e2e-05-notmp.sh; bash /tmp/e2e-05-notmp.sh; echo \"EXIT \$?\"; rm -f /tmp/e2e-05-notmp.sh")"
+assert_contains "$res" "BODY unset" "(i) TMPDIR unset: no shared fallback, job continues"
 
 finish

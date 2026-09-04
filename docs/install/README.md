@@ -1,0 +1,19 @@
+# Reference install scripts
+
+Three shell files. Each is a delivered artifact (REQ-FAB-001/-009/-010); the
+top-level README's Quickstart shows where each goes and the `qconf` lines that
+wire them, and `test/cluster/install-shim.sh` performs the whole sequence
+against the Docker test cluster.
+
+| File | Installs to | Wired by | Does |
+|---|---|---|---|
+| `pe-start_proc_args.sh` | (not installed; the PE points straight at the binary) | `qconf -mattr pe start_proc_args /opt/slurm-shim/bin/slurm-shim-env <pe>` | Runs the fabricator on the master host before the job: writes `layout.json` and the `SLURM_*` environment file into the job's `$TMPDIR`, or a failure sentinel. Exits 0 even on failure so a failing `start_proc_args` cannot put the queue instance into error state. |
+| `slurm-shim-source-hook.sh` | `/opt/slurm-shim/etc/slurm-shim-source-hook.sh` (0644, root) | sourced by the starter, or by a job script on a site without one | Reconciles the fabricator's outcome and is the trust boundary for the per-job state: `TMPDIR` and the state directory must be private directories of the job, and the sentinel/environment files private files, or they are reported and ignored (a co-tenant can pre-create the predictable `/tmp/<job>.<task>.<queue>` path). Then: sources the environment file; aborts the job (exit 1) on the sentinel; continues when nothing was fabricated (a native job). `SLURM_SHIM_HOOK_MISSING_ENV=abort` makes the last case fail -- per job only, never cluster-wide. |
+| `slurm-shim-starter.sh` | `/opt/slurm-shim/bin/slurm-shim-starter` (0755, root) | `qconf -mattr queue starter_method /opt/slurm-shim/bin/slurm-shim-starter <queue>` | Open Cluster Scheduler runs every job in the queue through it: sources the hook, then starts the job the way the scheduler would have, honouring `SGE_STARTER_SHELL_START_MODE` / `SHELL_PATH` / `USE_LOGIN_SHELL` (so `posix_compliant`, `script_from_stdin` and login-shell queues keep their semantics; login shells get `argv[0]=-<shell>` via bash's `exec -a`). This is what lets an unmodified SLURM batch script see `SLURM_*`. Passes its own `stepper` launches straight through. A non-zero exit fails the job, not the queue instance. |
+
+Everything under `/opt/slurm-shim` must be root-owned and not group/world-
+writable: the starter runs as the job user, for every job in the queue.
+
+Without a `starter_method`, a job script sources the hook itself as its first
+line, or the site enables `wrapper_mode` in `config.yaml` so `sbatch` injects
+fabrication (covers only jobs submitted through the shim's `sbatch`).

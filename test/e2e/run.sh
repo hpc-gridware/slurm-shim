@@ -10,6 +10,7 @@ require_cluster
 
 checks=(
   05_hook
+  06_starter
   10_env
   20_srun
   30_sbatch

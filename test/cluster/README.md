@@ -49,8 +49,12 @@ To switch OCS version: `make cluster-down ARGS=-v` then `OCS_VERSION=... make cl
 `docker cp`s it to `/opt/slurm-shim/bin/slurm-shim` **on every node** (identical
 absolute path — the qrsh envelope carries it as the remote argv0), symlinks the
 command names, drops `config.yaml` to `/etc/slurm-shim/`, installs the source
-hook, and wires the `make` PE's `start_proc_args` to `slurm-shim-env` so PE jobs
-fabricate the `SLURM_*` environment. It also disables GE's load alarm on `all.q`
+hook and the starter, makes the install tree root-owned (the starter runs as the
+job user for every job), wires the `make` and `smp` PEs' `start_proc_args` to
+`slurm-shim-env` so PE jobs fabricate the `SLURM_*` environment, and wires
+`all.q`'s `starter_method` to `slurm-shim-starter` so every job -- an unmodified
+SLURM script included -- gets that environment without sourcing anything. It
+also disables GE's load alarm on `all.q`
 (Docker containers share the host loadavg, which otherwise falsely marks queues
 overloaded) and clears any stale `QERROR`.
 

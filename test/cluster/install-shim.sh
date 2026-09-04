@@ -28,7 +28,13 @@ for node in "${NODES[@]}"; do
   docker cp "$tmp/slurm-shim" "$node:$SHIM_PREFIX/bin/slurm-shim"
   docker exec "$node" bash -c "chmod +x '$SHIM_PREFIX/bin/slurm-shim'; cd '$SHIM_PREFIX/bin'; for c in ${cmds[*]}; do ln -sf slurm-shim \"\$c\"; done"
   docker cp "$REPO_ROOT/docs/install/slurm-shim-source-hook.sh" "$node:$SHIM_PREFIX/etc/slurm-shim-source-hook.sh"
+  docker cp "$REPO_ROOT/docs/install/slurm-shim-starter.sh" "$node:$SHIM_PREFIX/bin/slurm-shim-starter"
   docker cp "$CLUSTER_DIR/config.yaml" "$node:/etc/slurm-shim/config.yaml"
+  # The starter runs AS THE JOB USER for every job in the queue, so the install
+  # tree must be root-owned and not writable by anyone else -- otherwise a user
+  # who can edit it runs code in every other user's jobs. docker cp keeps the
+  # host uid, so fix ownership explicitly.
+  docker exec "$node" bash -c "chown -R root:root '$SHIM_PREFIX' /etc/slurm-shim; chmod -R go-w '$SHIM_PREFIX' /etc/slurm-shim; chmod 755 '$SHIM_PREFIX/bin/slurm-shim-starter'; chmod 644 '$SHIM_PREFIX/etc/slurm-shim-source-hook.sh'"
   # Put the shim commands on PATH for interactive shells. Login shells read
   # /etc/profile.d; interactive non-login shells (docker exec ... bash) read
   # /etc/bash.bashrc.local on openSUSE (see /etc/bash.bashrc). Hook both so
@@ -40,7 +46,8 @@ for node in "${NODES[@]}"; do
 done
 
 # PE mode: the 'make' PE runs slurm-shim-env on the master before the job script,
-# which fabricates layout.json + the SLURM_* environment file into $TMPDIR.
+# which fabricates layout.json + the SLURM_* environment file into $TMPDIR. The
+# queue's starter_method (below) then sources that file into the job.
 # qconf mutations require a GE manager (root on this cluster).
 log "wiring PE 'make' start_proc_args -> slurm-shim-env"
 manager "qconf -mattr pe start_proc_args '$SHIM_PREFIX/bin/slurm-shim-env' make"
@@ -54,6 +61,13 @@ manager "qconf -sp make | sed 's/^pe_name .*/pe_name            smp/; s/^allocat
 qconf -Ap /tmp/smp.pe 2>/dev/null || qconf -Mp /tmp/smp.pe
 qconf -mattr pe start_proc_args '$SHIM_PREFIX/bin/slurm-shim-env' smp
 qconf -mattr queue pe_list 'make smp' all.q"
+
+# Queue starter_method: Open Cluster Scheduler runs every job in all.q through the starter,
+# which sources the fabricated environment and execs the job script. This is
+# what lets an UNMODIFIED SLURM batch script -- no hook line -- see SLURM_*.
+# A non-zero starter fails the job, not the queue instance (verified live).
+log "wiring all.q starter_method -> slurm-shim-starter (unmodified SLURM scripts get the environment)"
+manager "qconf -mattr queue starter_method '$SHIM_PREFIX/bin/slurm-shim-starter' all.q"
 
 # Test-cluster tuning (validated live): Docker containers share the HOST load
 # average (loadavg is not namespaced), so GE's default load_thresholds falsely

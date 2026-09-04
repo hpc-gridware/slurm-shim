@@ -23,7 +23,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cleanup(stderr)
 	}
 
-	stateDir := fabricator.StateDir(tmpdir())
+	// PE mode writes into the per-job state dir, which sits at a predictable,
+	// co-tenant-reachable path. EnsureStateDir is the trust boundary: it refuses a
+	// TMPDIR that is not the job's own and evicts anything planted at the state
+	// dir path. Wrapper mode prints to stdout and needs no state dir at all.
+	var stateDir string
+	if !exportMode {
+		var err error
+		stateDir, err = fabricator.EnsureStateDir(os.Getenv("TMPDIR"))
+		if err != nil {
+			fmt.Fprintf(stderr, "slurm-shim-env: error: %v\n", err)
+			// There is nowhere trustworthy to leave a sentinel, so leave nothing:
+			// the hook then sees "no fabrication" and warns, and exit 0 keeps the
+			// queue instance out of E state (see fail).
+			return fail(exportMode, "", stdout, stderr)
+		}
+	}
 
 	cfg, warnings, err := config.Load()
 	if err != nil {
@@ -84,11 +99,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 // fail applies the mode-specific failure contract: wrapper mode prints the sole
 // stdout token `exit 1` so `eval` aborts the job (REQ-FAB-008); PE mode writes
 // the sentinel and exits 0 so a failed start_proc_args does not error the queue
-// (REQ-FAB-009).
+// (REQ-FAB-009). An empty stateDir means no trustworthy state dir exists: write
+// nothing rather than plant a sentinel where a co-tenant could have put one.
 func fail(exportMode bool, stateDir string, stdout, stderr io.Writer) int {
 	if exportMode {
 		fmt.Fprintln(stdout, "exit 1")
 		return 1
+	}
+	if stateDir == "" {
+		return 0
 	}
 	if err := fabricator.WriteSentinel(stateDir); err != nil {
 		fmt.Fprintf(stderr, "slurm-shim-env: error: writing sentinel: %v\n", err)
@@ -96,18 +115,17 @@ func fail(exportMode bool, stateDir string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// cleanup removes the state dir. With TMPDIR unset there is nothing of ours to
+// remove: the fabricator never writes to a shared fallback path.
 func cleanup(stderr io.Writer) int {
-	if err := os.RemoveAll(fabricator.StateDir(tmpdir())); err != nil {
+	tmp := os.Getenv("TMPDIR")
+	if tmp == "" {
+		return 0
+	}
+	if err := os.RemoveAll(fabricator.StateDir(tmp)); err != nil {
 		fmt.Fprintf(stderr, "slurm-shim-env: warning: cleanup: %v\n", err)
 	}
 	return 0
-}
-
-func tmpdir() string {
-	if d := os.Getenv("TMPDIR"); d != "" {
-		return d
-	}
-	return "/tmp"
 }
 
 func hasFlag(args []string, flag string) bool {

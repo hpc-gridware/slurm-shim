@@ -33,9 +33,11 @@ sbatch accelerate-multinode.sh
   `all_reduce` of each rank's index (must equal `0+1+...+(N-1)`) to prove the group
   spans all nodes.
 
-One shim-specific point (handled in the script): **source the hook**
+One shim-specific point (handled in the script): it **sources the hook**
 (`. /opt/slurm-shim/etc/slurm-shim-source-hook.sh`) so the batch job has
-`SLURM_JOB_ID`/`SLURM_NNODES`/`SLURM_JOB_NODELIST`. Everything else is plain
+`SLURM_JOB_ID`/`SLURM_NNODES`/`SLURM_JOB_NODELIST` on a site that has not wired
+the shim's queue `starter_method`; where it has, the line is a harmless
+re-source. Everything else is plain
 SLURM behavior: the job runs in the submit dir, `SLURM_SUBMIT_DIR` points at it
 (use it for script paths -- the batch script itself is spooled on SLURM too, so
 `$0`-relative paths never work there either), and the submit environment is

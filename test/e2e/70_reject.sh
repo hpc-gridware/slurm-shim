@@ -12,7 +12,6 @@ cat >"$job" <<'EOF'
 #SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 # 1-slot allocation; ask for far more tasks than permitted.
 srun -n 999 hostname 2>&1
 echo "rc=$?"

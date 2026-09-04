@@ -12,7 +12,6 @@ cat >"$job" <<'EOF'
 #SBATCH --partition=batch
 #SBATCH --nodes=3
 #SBATCH --ntasks-per-node=2
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 srun -l -n 6 bash -c 'echo "rank=$SLURM_PROCID node=$SLURM_NODEID host=$(hostname)"'
 EOF
 

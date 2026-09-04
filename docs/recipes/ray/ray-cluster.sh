@@ -10,6 +10,11 @@
 # start one Ray process per node -- the "srun bootstrap" pattern. This is also
 # the path multi-node vLLM (tensor/pipeline parallel) rides on.
 # Submit with: sbatch ray-cluster.sh
+#
+# Where the site wired the shim's queue starter_method the environment is already
+# present and this line is a harmless re-source; on a site without one it is
+# what provides SLURM_JOB_NODELIST to the scontrol call below.
+. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 set -euo pipefail
 
 # Nodelist, master first (scontrol reads $SLURM_JOB_NODELIST).

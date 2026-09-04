@@ -3,7 +3,8 @@
 **JAX is the cleanest fit of any stack in these recipes.** It does not use SLURM's
 launcher, and it does not need PMI/PMIx (the shim's one hard "no"). It runs its own
 gRPC coordination service and asks the scheduler for exactly **five environment
-variables**. Your existing SLURM job script runs unchanged:
+variables**. Your existing SLURM job script runs unchanged on a site that wired the
+shim's queue `starter_method` (see the top-level README):
 
 ```bash
 #SBATCH --nodes=2
@@ -52,8 +53,10 @@ sbatch jax-cpu-check.sh          # CPU-only verification, no GPUs needed
   `jax.distributed.initialize()`, a topology banner, and a `process_allgather`
   that only succeeds if the group really spans the nodes.
 
-The one shim-specific line is the hook (`. /opt/slurm-shim/etc/slurm-shim-source-hook.sh`),
-which supplies the job-level SLURM environment. Everything else is stock SLURM.
+The script sources the shim hook (`. /opt/slurm-shim/etc/slurm-shim-source-hook.sh`),
+which supplies the job-level SLURM environment on a site that has not wired the
+shim's queue `starter_method`; where the site has, the environment is already
+present and the line is a harmless re-source. Everything else is stock SLURM.
 
 ## Pick the right shape (the one thing to get right)
 

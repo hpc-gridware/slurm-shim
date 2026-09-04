@@ -105,7 +105,6 @@ cat >"$gjob" <<'EOF'
 #!/bin/bash
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 echo "JOBGPUS=[$SLURM_JOB_GPUS] ONNODE=[$SLURM_GPUS_ON_NODE]"
 srun bash -c 'echo "rank=$SLURM_PROCID cuda=[$CUDA_VISIBLE_DEVICES]"'
 EOF

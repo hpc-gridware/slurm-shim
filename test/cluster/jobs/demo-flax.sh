@@ -11,7 +11,6 @@
 #SBATCH --nodes=3
 #SBATCH --ntasks-per-node=1
 
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 
 PYTHON="${PYTHON_BIN:-/home/gridware/flaxenv/bin/python}"
 

@@ -1,11 +1,15 @@
 #!/bin/bash
-# Environment diagnosis: shows where the fabricated SLURM_* environment comes
-# from, and -- when it is missing -- which of the two wiring steps failed.
+# Environment diagnosis: shows whether the fabricated SLURM_* environment reached
+# this job and -- when it did not -- which wiring step is missing.
+#
+# With the queue's starter_method wired (docs/install/slurm-shim-starter.sh) the
+# environment is present from the first line, and this script contains nothing
+# shim-specific. On a site without a starter, a job script must source the hook
+# itself:   . /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 #
 # `scontrol show hostnames` with no argument is a pure function of
-# $SLURM_JOB_NODELIST. Empty output therefore never means "scontrol is broken";
-# it means the PE start_proc_args hook did not run, or this script did not
-# source its output. This job prints both sides of that boundary.
+# $SLURM_JOB_NODELIST: empty output never means scontrol is broken, it means the
+# environment never arrived.
 #
 #   test/cluster/demo.sh envcheck     (or: make demo-envcheck)
 #SBATCH --partition=batch
@@ -17,42 +21,30 @@ state="${TMPDIR:-/tmp}/slurm_shim"
 echo "[where] host=$(hostname) TMPDIR=${TMPDIR:-/tmp}"
 echo
 
-# (1) Before the hook. The job inherits the submit environment (sbatch defaults
-# to --export=ALL -> qsub -V), so anything SLURM_* here came from the submitting
-# shell, not from the fabricator.
-echo "[1/4] before sourcing the hook: $(env | grep -c '^SLURM_') SLURM_* variables"
-echo "      scontrol show hostnames -> '$(scontrol show hostnames)'"
-echo
-
-# (2) What the PE start_proc_args hook left behind. The fabricator runs on the
-# master host only and exits 0 even on failure (a non-zero start_proc_args would
-# error the queue instance), so the sentinel is the real failure signal.
-echo "[2/4] fabricator state dir $state"
-if [ -d "$state" ]; then
-  ls -l "$state"
-  [ -e "$state/environment.failed" ] && echo "      !! environment.failed present: fabrication FAILED"
-else
-  echo "      MISSING -- the PE has no start_proc_args hook."
-  echo "      check: qconf -sp make | grep start_proc_args"
+n=$(env | grep -c '^SLURM_')
+echo "[1/3] environment at script start: $n SLURM_* variables"
+if [ "$n" -eq 0 ]; then
+  echo "      NONE -- the queue's starter_method is not wired, or the hook file is missing."
+  echo "      check:    qconf -sq <queue> | grep starter_method"
+  echo "      fallback: add '. /opt/slurm-shim/etc/slurm-shim-source-hook.sh' to the script"
 fi
 echo
 
-# (3) Source it, bare -- the hook enforces its own abort paths, so a failed
-# fabrication ends the job here rather than letting it run degraded. The policy
-# below additionally turns a *missing* environment (the fabricator never ran)
-# into a failure; the default there is "continue".
-echo "[3/4] sourcing the hook (SLURM_SHIM_HOOK_MISSING_ENV=abort)"
-export SLURM_SHIM_HOOK_MISSING_ENV=abort
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
-echo "      ok, $(env | grep -c '^SLURM_') SLURM_* variables now set"
+# What the PE start_proc_args hook left behind. The fabricator runs on the
+# master host only and exits 0 even on failure, leaving a sentinel instead; a
+# sentinel would have made the starter abort this job before it started.
+echo "[2/3] fabricator state dir $state"
+if [ -d "$state" ]; then
+  ls -l "$state"
+else
+  echo "      MISSING -- the PE has no start_proc_args hook."
+  echo "      check: qconf -sp <pe> | grep start_proc_args"
+fi
 echo
 
-# (4) The same call that printed nothing above. The nodelist round-trips through
-# the compressed form, and CompressNodelist preserves input order, so the first
-# line is the master -- which is why the recipes derive MASTER_ADDR from it.
-echo "[4/4] after the hook"
-echo "      SLURM_JOB_NODELIST=$SLURM_JOB_NODELIST"
-echo "      SLURM_NNODES=$SLURM_NNODES SLURM_NTASKS=$SLURM_NTASKS"
-echo "      scontrol show hostnames:"
+# The nodelist round-trips through the compressed form in allocation order, so
+# the first line is the master -- which is why the recipes derive MASTER_ADDR
+# from it.
+echo "[3/3] scontrol show hostnames  (reads SLURM_JOB_NODELIST=${SLURM_JOB_NODELIST:-<unset>})"
 scontrol show hostnames | sed 's/^/        /'
 echo "      head -n1 (= MASTER_ADDR): $(scontrol show hostnames | head -n1)"

@@ -30,7 +30,6 @@ cat >"$job" <<EOF
 #SBATCH --partition=smp
 #SBATCH --array=0-2
 #SBATCH --output=$work/logs/%A_%a/task.out
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 echo "TASK slurm=\$SLURM_ARRAY_TASK_ID ge=\$SGE_TASK_ID count=\$SLURM_ARRAY_TASK_COUNT"
 srun bash -c 'echo "RANK slurm=\$SLURM_ARRAY_TASK_ID procid=\$SLURM_PROCID"'
 EOF
@@ -67,7 +66,16 @@ else
 fi
 
 # sacct reports the SLURM 0-based element ids, which is what submitit/Hydra poll.
-acct="$(gridware "sacct -o JobID,State,NodeList --parsable2 -j '$id' 2>/dev/null")"
+# The elements finish within milliseconds of each other and qacct lands their
+# records a beat later than squeue drops them, so poll until all three rows are
+# there rather than asserting on the first read (see docs/solutions/ on qacct
+# briefly returning a partial set).
+acct=""
+for _ in $(seq 1 15); do
+  acct="$(gridware "sacct -o JobID,State,NodeList --parsable2 -j '$id' 2>/dev/null")"
+  [ "$(printf '%s\n' "$acct" | grep -c "^${id}_")" -ge 3 ] && break
+  sleep 2
+done
 assert_contains "$acct" "${id}_0|" "sacct reports element 0 (0-based)"
 assert_contains "$acct" "${id}_2|" "sacct reports element 2 (0-based)"
 
@@ -80,7 +88,6 @@ cat >"$job2" <<EOF
 #SBATCH --partition=smp
 #SBATCH --array=1-3
 #SBATCH --output=$work/logs/aligned_%a.out
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 echo "ALIGNED slurm=\$SLURM_ARRAY_TASK_ID"
 EOF
 put_job "$job2" "$work/array1.sh"

@@ -35,8 +35,10 @@ sbatch flax-cpu-check.sh         # CPU-only, no GPUs needed
   steps on a small MLP, and three assertions that only hold if the job really is
   one distributed run.
 
-The one shim-specific line is the hook (`. /opt/slurm-shim/etc/slurm-shim-source-hook.sh`),
-which supplies the job-level SLURM environment. Everything else is stock SLURM.
+The script sources the shim hook (`. /opt/slurm-shim/etc/slurm-shim-source-hook.sh`),
+which supplies the job-level SLURM environment on a site that has not wired the
+shim's queue `starter_method`; where the site has, the environment is already
+present and the line is a harmless re-source. Everything else is stock SLURM.
 
 ## What the shim provides
 

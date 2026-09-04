@@ -11,7 +11,6 @@ job="$(mktemp)"
 trap 'rm -f "$job"' EXIT
 cat >"$job" <<'EOF'
 #!/bin/bash
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 echo "GPUSONNODE=$SLURM_GPUS_ON_NODE"
 echo "JOBGPUS=$SLURM_JOB_GPUS"
 # Default binding: SLURM leaves the node's whole grant visible to every task.

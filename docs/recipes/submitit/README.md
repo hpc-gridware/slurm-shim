@@ -44,7 +44,8 @@ docs/recipes/submitit/run.sh
 [`submitit_smoke.py`](submitit_smoke.py), which submits a single function, a
 `map_array`, and a failing function.
 
-The one shim-specific line: submitit writes its own batch script, so -- unlike the
+The one shim-specific line, needed on a site that has not wired the shim's queue
+`starter_method`: submitit writes its own batch script, so -- unlike the
 lightning/ray recipes -- it does not source the shim hook, and `srun` would not be
 on `PATH` in the batch shell. The driver adds it via submitit's own
 `slurm_setup` parameter:
@@ -53,8 +54,9 @@ on `PATH` in the batch shell. The driver adds it via submitit's own
 ex.update_parameters(slurm_setup=[". /opt/slurm-shim/etc/slurm-shim-source-hook.sh"])
 ```
 
-(Override the hook path with `SHIM_HOOK`, or set it cluster-wide so no per-job
-line is needed.)
+(Override the hook path with `SHIM_HOOK`. Where the site wired `starter_method`
+-- see the top-level README -- the environment is already present in the batch
+shell and `slurm_setup` is unnecessary; leaving it in is harmless.)
 
 ## Validated on the OCS test cluster (2026-08-19, re-run 2026-08-28)
 
@@ -135,8 +137,9 @@ Finished training. Final score: 0.8305.
 
 Three things it needs, none of which are shim bugs:
 
-1. **The `slurm_setup` hook line** (above) -- provides `SLURM_JOB_ID`/`SLURM_NTASKS`.
-   Without it the worker aborts with `KeyError: 'SLURM_JOB_ID'`.
+1. **The `slurm_setup` hook line** (above) -- provides `SLURM_JOB_ID`/`SLURM_NTASKS`
+   on a site without a queue `starter_method`. Without either, the worker aborts
+   with `KeyError: 'SLURM_JOB_ID'`.
 2. **A single-node partition, because `mnist.py` is a single-task job** asking for
    `cpus_per_task=4`. Under the round-robin `make` PE those 4 slots scatter across
    nodes, which is not what one task wants; a `$pe_slots` PE keeps them on one host

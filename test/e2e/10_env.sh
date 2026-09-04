@@ -11,6 +11,10 @@ cat >"$job" <<'EOF'
 #SBATCH --partition=batch
 #SBATCH --nodes=3
 #SBATCH --ntasks-per-node=2
+# Deliberately the ONE e2e job that still sources the hook itself. Every other
+# check submits a pristine script and relies on the queue starter_method; this
+# one keeps the explicit line so the no-starter fallback stays covered, and so
+# sourcing twice (starter, then script) is shown to be harmless.
 . /opt/slurm-shim/etc/slurm-shim-source-hook.sh
 echo "NNODES=$SLURM_NNODES"
 echo "NTASKS=$SLURM_NTASKS"
