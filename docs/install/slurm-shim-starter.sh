@@ -47,10 +47,15 @@
 # over srun's control channel and must never be gated on the hook -- on a slave
 # host the fabricator never ran, and a site policy of
 # SLURM_SHIM_HOOK_MISSING_ENV=abort would otherwise kill every multi-node step.
-# Match the binary AND the subcommand, not a bare path: a user's own script
-# could sit at a path ending in slurm-shim.
-case "$1 $2" in
-	*/slurm-shim\ stepper|*/slurm-shim-stepper\ *) exec "$@" ;;
+#
+# Match argv[1] and argv[2] SEPARATELY. Matching a flattened "$1 $2" cannot tell
+# the argv separator from a space inside an argument, so a job argument
+# containing "/slurm-shim-stepper " was enough to skip the hook and run the job
+# with no SLURM_* at all. The launcher's argv is built by buildQrshArgs in
+# internal/launch/qrsh.go, and internal/launch/starter_contract_test.go feeds
+# this file that function's real output so the two cannot drift apart.
+case "$1" in
+*/slurm-shim) [ "$2" = stepper ] && exec "$@" ;;
 esac
 
 # A host without the hook file is a host without the shim: run the job as
