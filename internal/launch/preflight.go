@@ -57,10 +57,12 @@ func Preflight(ctx context.Context, r gedata.Runner, peName string) PreflightRes
 	}
 
 	// Token delivery (SI-51, REQ-CHN-005): the per-step token travels via
-	// `qrsh -v`; on GE that lands in the remote execd env spool file. This must
-	// be confirmed owner-only for the token's lifetime on the target cluster.
-	res.Warnings = append(res.Warnings,
-		"token delivered via qrsh -v: confirm the execd env spool file is owner-only for the step lifetime (SI-51)")
+	// `qrsh -v`, which GE stages in the execd spool. tokenSpoolWarning checks
+	// whether that staging area is reachable by other users and stays silent
+	// when it is not, so this is a finding rather than a standing reminder.
+	if w := tokenSpoolWarning(ctx, r); w != "" {
+		res.Warnings = append(res.Warnings, w)
+	}
 
 	return res
 }

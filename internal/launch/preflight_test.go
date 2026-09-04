@@ -28,6 +28,12 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return &fake.Runner{Responder: func(name string, args []string) fake.Response {
 			Expect(name).To(Equal("qconf"))
+			// The preflight also asks for the global config to locate the execd
+			// spool (SI-51). Refusing it leaves the token check unable to
+			// determine the path, which is the advisory this spec asserts on.
+			if len(args) > 0 && args[0] == "-sconf" {
+				return fake.Response{Exit: 1}
+			}
 			Expect(args).To(Equal([]string{"-sp", "make"}))
 			return fake.Response{Stdout: data}
 		}}
