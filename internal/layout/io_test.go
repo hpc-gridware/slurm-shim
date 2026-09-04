@@ -28,6 +28,21 @@ func sample() *layout.Layout {
 	}
 }
 
+var _ = Describe("StateDirFor [REQ-FAB-010]", func() {
+	It("joins the state dir under a set TMPDIR", func() {
+		dir, err := layout.StateDirFor("/tmp/77.1.all.q")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dir).To(Equal("/tmp/77.1.all.q/slurm_shim"))
+	})
+
+	It("refuses an unset TMPDIR instead of falling back to a shared /tmp path", func() {
+		_, err := layout.StateDirFor("")
+		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(os.ErrNotExist), "callers treat this as not-inside-a-job")
+		Expect(err.Error()).To(ContainSubstring("TMPDIR is not set"))
+	})
+})
+
 var _ = Describe("Layout IO", func() {
 	var dir string
 

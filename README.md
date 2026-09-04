@@ -1,10 +1,10 @@
 # slurm-shim
 
-**Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run unmodified AI workloads.**
+**Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run AI tools that only speak SLURM, unmodified.**
 
 `sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration. That holds once a site has wired two Open Cluster Scheduler attributes (a PE `start_proc_args` and a queue `starter_method`, see [Quickstart](#quickstart)); nothing in the job script changes.
 
-**Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through Grid Engine tight integration — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — JAX, submitit, and the rest of the AI stack.
+**Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — JAX, submitit, and the rest of the AI stack.
 
 > **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.5). GPU paths are validated through a fake RSMAP complex, **not** on real hardware. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
@@ -122,7 +122,7 @@ These already speak Grid Engine — they need no shim, and the native route is t
 | **Nextflow** | the [`sge` executor](https://docs.seqera.io/nextflow/executor) — `process.executor = 'sge'` |
 | **Snakemake** | the [`cluster-generic` executor plugin](https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/cluster-generic.html) (`--executor cluster-generic --cluster "qsub -terse"`), or the [SGE profile](https://github.com/Snakemake-Profiles/sge) |
 | **JupyterHub** | [`batchspawner`](https://github.com/jupyterhub/batchspawner)'s [`GridengineSpawner`](https://github.com/jupyterhub/batchspawner/blob/main/SPAWNERS.md) |
-| **MPI** (OpenMPI, Intel MPI, MVAPICH) | Grid Engine tight integration via the PE's `mpirun` |
+| **MPI** (OpenMPI, Intel MPI, MVAPICH) | Open Cluster Scheduler tight integration via the PE's `mpirun` — see the shipped [MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) (PE templates and start/stop scripts) |
 
 > **TODO:** add runnable `examples/` and a community `tests/` harness so the matrix below can be verified on a real cluster and pass/fail reports filed as issues. Neither exists yet.
 

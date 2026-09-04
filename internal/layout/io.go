@@ -7,6 +7,23 @@ import (
 	"path/filepath"
 )
 
+// StateDirFor returns the per-job state directory under tmpdir, refusing an
+// empty tmpdir rather than falling back to a shared /tmp path.
+//
+// Everything in that directory is allocation truth -- layout.json and the step
+// counter -- and the fallback would read it from /tmp/slurm_shim, a world-known
+// path any local user can create and populate. The write side refuses the same
+// case (fabricator.EnsureStateDir), so this keeps both ends of the contract
+// aligned. Under Grid Engine the queue's tmpdir gives every batch and PE job a
+// TMPDIR, so an empty value means this is not running inside a job at all --
+// which is what callers report.
+func StateDirFor(tmpdir string) (string, error) {
+	if tmpdir == "" {
+		return "", fmt.Errorf("TMPDIR is not set, so there is no per-job state: %w", os.ErrNotExist)
+	}
+	return filepath.Join(tmpdir, StateDir), nil
+}
+
 // ErrSchemaVersion reports a layout file whose schema_version this build does
 // not understand. Callers map it to exit code 7 (REQ-LAY-005).
 type ErrSchemaVersion struct{ Got, Want int }

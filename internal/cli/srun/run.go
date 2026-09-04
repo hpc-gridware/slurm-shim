@@ -75,7 +75,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// A dry run must not consume a step id: the step it describes is the one the
 	// next real srun will create. Both readers surface the same failures, so a
 	// counter that would abort the real step aborts the report too.
-	ctr := filepath.Join(stateDir(), layout.StepCtrFile)
+	// loadLayout above already refused an unset TMPDIR, so this cannot fail in
+	// practice; surface it rather than silently joining a relative path.
+	sdir, err := stateDir()
+	if err != nil {
+		errln(stderr, "srun: error: "+err.Error())
+		return 1
+	}
+	ctr := filepath.Join(sdir, layout.StepCtrFile)
 	dry := dryrun.Enabled() || opt.testOnly
 	var stepID int
 	if dry {
@@ -469,7 +476,13 @@ func resolveKill(flag string, cfg *config.Config) bool {
 }
 
 func loadLayout(cfg *config.Config, stderr io.Writer) (*layout.Layout, error) {
-	path := filepath.Join(stateDir(), layout.LayoutFile)
+	dir, err := stateDir()
+	if err != nil {
+		// No TMPDIR means no allocation to be inside of, which is exactly the
+		// standalone case this function already reports below.
+		return nil, fmt.Errorf("srun: error: not inside a slurm-shim allocation (standalone: %s)", cfg.Standalone)
+	}
+	path := filepath.Join(dir, layout.LayoutFile)
 	lay, err := layout.Read(path)
 	if err == nil {
 		return lay, nil
@@ -484,12 +497,10 @@ func loadLayout(cfg *config.Config, stderr io.Writer) (*layout.Layout, error) {
 	return nil, fmt.Errorf("srun: error: not inside a slurm-shim allocation (standalone: %s)", cfg.Standalone)
 }
 
-func stateDir() string {
-	tmp := os.Getenv("TMPDIR")
-	if tmp == "" {
-		tmp = "/tmp"
-	}
-	return filepath.Join(tmp, layout.StateDir)
+// stateDir resolves the per-job state directory, refusing an unset TMPDIR
+// rather than reading allocation truth from a shared /tmp path (REQ-FAB-010).
+func stateDir() (string, error) {
+	return layout.StateDirFor(os.Getenv("TMPDIR"))
 }
 
 // stepPerNode returns the step-scoped per-node task counts in step order.

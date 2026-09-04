@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -19,6 +20,25 @@ func TestScontrol(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Scontrol Suite")
 }
+
+var _ = Describe("per-job state resolution [REQ-FAB-010]", func() {
+	// scontrol used to read layout.json from a shared /tmp/slurm_shim when
+	// TMPDIR was unset, a path any local user can plant a layout in. It must now
+	// report "not inside a job" and fall through to the qstat lookup instead.
+	It("does not read a layout from a shared /tmp path when TMPDIR is unset", func() {
+		GinkgoT().Setenv("TMPDIR", "")
+		_, err := loadLayout()
+		Expect(err).To(MatchError(os.ErrNotExist))
+	})
+
+	It("reports no-job rather than reading /tmp when asked for its own job", func() {
+		GinkgoT().Setenv("TMPDIR", "")
+		var errBuf bytes.Buffer
+		code := run(&fake.Runner{}, []string{"show", "job"}, io.Discard, &errBuf)
+		Expect(code).To(Equal(1))
+		Expect(errBuf.String()).To(ContainSubstring("not inside a job"))
+	})
+})
 
 var _ = Describe("scontrol show hostnames [REQ-SCT-001]", func() {
 	It("expands a nodelist to one hostname per line (AC4)", func() {

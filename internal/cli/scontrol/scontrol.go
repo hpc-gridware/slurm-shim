@@ -225,10 +225,15 @@ func requeueCmd(runner gedata.Runner, args []string, stderr io.Writer) int {
 	return 0
 }
 
+// loadLayout reads the in-job layout. An unset TMPDIR is reported as
+// os.ErrNotExist -- "not inside a job" -- rather than falling back to a shared
+// /tmp path a co-tenant could have planted a layout in (REQ-FAB-010). The
+// caller already treats that error as the not-in-a-job case and falls through
+// to the qstat lookup.
 func loadLayout() (*layout.Layout, error) {
-	tmp := os.Getenv("TMPDIR")
-	if tmp == "" {
-		tmp = "/tmp"
+	dir, err := layout.StateDirFor(os.Getenv("TMPDIR"))
+	if err != nil {
+		return nil, err
 	}
-	return layout.Read(filepath.Join(tmp, layout.StateDir, layout.LayoutFile))
+	return layout.Read(filepath.Join(dir, layout.LayoutFile))
 }
