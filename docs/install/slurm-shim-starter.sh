@@ -36,7 +36,10 @@
 # hook MUST be root-owned and not group/world-writable, or whoever can edit them
 # runs code inside every other user's jobs.
 #
-# Install slurm-shim on an identical absolute path on every host.
+# Install slurm-shim on an identical absolute path on every host. The hook is
+# located relative to THIS script (../etc/slurm-shim-source-hook.sh), so a site
+# installing under its own prefix cannot end up with a starter that reads the
+# hook from a different one.
 
 # A starter with nothing to start must never report success for work that did
 # not happen: `exec` with no arguments is a no-op that returns 0.
@@ -58,10 +61,29 @@ case "$1" in
 */slurm-shim) [ "$2" = stepper ] && exec "$@" ;;
 esac
 
-# A host without the hook file is a host without the shim: run the job as
-# Open Cluster Scheduler would have, rather than failing every job in the queue.
-if [ -r /opt/slurm-shim/etc/slurm-shim-source-hook.sh ]; then
-	. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
+# Locate the hook next to this script rather than at a fixed path. Grid Engine
+# invokes a starter_method by absolute path, so $0 carries the install prefix
+# (verified on the batch, qrsh-command and stepper paths); the bare-name branch
+# is insurance for a flavour that passes only the basename.
+case "$0" in
+*/*) slurm_shim_hook="${0%/*}/../etc/slurm-shim-source-hook.sh" ;;
+*)   slurm_shim_hook="/opt/slurm-shim/etc/slurm-shim-source-hook.sh" ;;
+esac
+
+# A missing hook is a broken install, not a host without the shim: Grid Engine
+# had to exec THIS script out of the same tree to get here. Saying nothing would
+# run every job in the queue with no SLURM_* environment and no diagnostic --
+# the silent degradation the hook exists to prevent (a 4-node training on 1
+# node). So report it, and honour the same policy knob the hook uses for its own
+# "nothing was fabricated" case.
+if [ -r "$slurm_shim_hook" ]; then
+	. "$slurm_shim_hook"
+else
+	echo "slurm-shim-starter: cannot read $slurm_shim_hook; this job gets no SLURM_* environment" >&2
+	if [ "${SLURM_SHIM_HOOK_MISSING_ENV:-continue}" = abort ]; then
+		echo "slurm-shim-starter: aborting job (SLURM_SHIM_HOOK_MISSING_ENV=abort)" >&2
+		exit 1
+	fi
 fi
 
 # slurm_shim_start_shell <shell> <args...>: exec the shell the scheduler would

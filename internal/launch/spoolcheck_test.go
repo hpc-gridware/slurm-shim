@@ -35,10 +35,10 @@ var _ = Describe("token spool reachability [SI-51]", func() {
 	})
 
 	It("names the spool and its mode when it is world-traversable", func() {
-		// A real world-traversable path: a temp dir cannot be used, because its
-		// ANCESTORS are private on macOS -- which is the function working, and
-		// exactly the case the closed spec above covers.
-		spool := os.TempDir()
+		// A real world-traversable path. os.TempDir() is unusable here: on macOS
+		// it is a per-user /var/folders tree whose ANCESTORS are private, which
+		// is the function working correctly and is what the closed spec covers.
+		spool := "/tmp"
 		fi, err := os.Stat(spool)
 		Expect(err).NotTo(HaveOccurred())
 		if fi.Mode().Perm()&0o001 == 0 {
