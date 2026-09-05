@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	envcmd "github.com/hpc-gridware/slurm-shim/internal/cli/env"
+	"github.com/hpc-gridware/slurm-shim/internal/cli/ports"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/sacct"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/sbatch"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/scancel"
@@ -19,6 +20,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/cli/sinfo"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/squeue"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/srun"
+	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/stepper"
 	"github.com/hpc-gridware/slurm-shim/internal/version"
 )
@@ -47,6 +49,10 @@ var commands = map[string]string{
 
 	// Internal per-rank trampoline; not user-invoked, dispatched by the stepper.
 	"rank-exec": "rank-exec",
+
+	// Site diagnostic: the TCP ranges that must be open between nodes. Subcommand
+	// only -- there is no SLURM command of this name to shadow.
+	"ports": "ports",
 }
 
 func main() {
@@ -112,6 +118,18 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return stepper.Run(args, stderr)
 	case "rank-exec":
 		return stepper.RankExec(args)
+	case "ports":
+		// Site diagnostic, not a SLURM command: prints the TCP ranges that must be
+		// open between nodes and the rules that open them.
+		cfg, warnings, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(stderr, "ports: error: %v\n", err)
+			return 1
+		}
+		for _, w := range warnings {
+			fmt.Fprintln(stderr, "ports: warning: "+w)
+		}
+		return ports.Run(cfg, stdout)
 	}
 
 	// Diagnostics go to stderr with the command-name prefix.

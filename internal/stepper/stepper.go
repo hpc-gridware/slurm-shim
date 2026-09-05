@@ -40,7 +40,14 @@ func Run(args []string, stderr io.Writer) int {
 
 	conn, err := proto.Dial(env.Dial, token, env.Host)
 	if err != nil {
-		errln(stderr, "stepper: error: dialing srun: "+err.Error())
+		// A blocked port is by far the most common cause here and looks nothing
+		// like a firewall from the message the dial returns, so name it. The
+		// stepper runs on a compute node dialling back to the job's master node,
+		// which is exactly the direction a site has to admit.
+		errln(stderr, "stepper: error: dialing srun at "+env.Dial+": "+err.Error())
+		errln(stderr, "stepper: if this cluster filters traffic between nodes, the "+
+			"control-channel port range must be open to the job's master node "+
+			"(run `slurm-shim ports` on a submit host for the exact rules)")
 		return 1
 	}
 	defer func() { _ = conn.Close() }()

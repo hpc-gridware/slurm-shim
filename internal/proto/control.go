@@ -5,9 +5,13 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"math/big"
 	"net"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -67,6 +71,46 @@ func Listen(addr, token string) (*Server, error) {
 	}
 	go s.acceptLoop()
 	return s, nil
+}
+
+// ListenRange opens a control listener on host, binding the first free port in
+// [base, base+count). It exists so a site can admit the control channel with one
+// firewall rule: an ephemeral port is different every step, so no rule can
+// describe it.
+//
+// Ports are tried from a random offset rather than from base, so concurrent srun
+// processes on one host do not all collide on the low end of the range and walk
+// it in lockstep. base <= 0 means "ephemeral", the documented opt-out for
+// networks that do not filter between nodes.
+func ListenRange(host string, base, count int, token string) (*Server, error) {
+	if base <= 0 || count <= 0 {
+		return Listen(net.JoinHostPort(host, "0"), token)
+	}
+	start := 0
+	if n, err := rand.Int(rand.Reader, big.NewInt(int64(count))); err == nil {
+		start = int(n.Int64())
+	}
+	var lastErr error
+	for i := 0; i < count; i++ {
+		port := base + (start+i)%count
+		srv, err := Listen(net.JoinHostPort(host, strconv.Itoa(port)), token)
+		if err == nil {
+			return srv, nil
+		}
+		// Only a busy port is worth trying the next one for. A permission error or
+		// an unassignable bind address repeats identically on all of them, and
+		// reporting it as range exhaustion sends the admin to widen a range when
+		// the actual fault is the port being privileged or the host being wrong.
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, fmt.Errorf("binding control port %d on %s: %w", port, host, err)
+		}
+		lastErr = err
+	}
+	// Naming the range and the knob matters: the alternative is a bare
+	// "address already in use" that says nothing about which range was tried.
+	return nil, fmt.Errorf("no free control port in %d-%d (%d tried); raise "+
+		"control_port_range in config.yaml or check what else binds this range: %w",
+		base, base+count-1, count, lastErr)
 }
 
 // Addr is the listener's address, including the chosen port.

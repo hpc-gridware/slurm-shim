@@ -105,11 +105,17 @@ type Config struct {
 	// Control-channel and launch settings (D-1, SI-37).
 	LaunchRamp    int      `yaml:"launch_ramp"`
 	LaunchTimeout Duration `yaml:"launch_timeout"`
-	ControlPort   string   `yaml:"control_port"`
-	PingInterval  Duration `yaml:"ping_interval"`
-	PingDeadline  Duration `yaml:"ping_deadline"`
-	OrphanGrace   Duration `yaml:"orphan_grace"`
-	QacctDeadline Duration `yaml:"qacct_deadline"`
+	// Control-channel listen range. srun binds a port in [base, base+range) so a
+	// site can write one firewall rule; base 0 falls back to an ephemeral port,
+	// which only works where nothing filters traffic between nodes. Replaces the
+	// never-read `control_port`, which could not have supported concurrent steps
+	// on one host anyway.
+	ControlPortBase  int      `yaml:"control_port_base"`
+	ControlPortRange int      `yaml:"control_port_range"`
+	PingInterval     Duration `yaml:"ping_interval"`
+	PingDeadline     Duration `yaml:"ping_deadline"`
+	OrphanGrace      Duration `yaml:"orphan_grace"`
+	QacctDeadline    Duration `yaml:"qacct_deadline"`
 
 	JobNameSanitize   bool   `yaml:"job_name_sanitize"`
 	HookMissingEnv    string `yaml:"hook_missing_env"`
@@ -161,14 +167,19 @@ func Default() *Config {
 		EmitCPUsPerTask:        false,
 		LaunchRamp:             64,
 		LaunchTimeout:          Duration{60 * time.Second},
-		ControlPort:            "",
-		PingInterval:           Duration{10 * time.Second},
-		PingDeadline:           Duration{30 * time.Second},
-		OrphanGrace:            Duration{3 * time.Minute},
-		QacctDeadline:          Duration{30 * time.Second},
-		JobNameSanitize:        true,
-		HookMissingEnv:         "continue",
-		DefaultTaskPolicy:      "node",
+		// Above the usual Linux ephemeral ceiling (32768-60999) so the listener
+		// cannot race the source port of an outbound connection, clear of Grid
+		// Engine's 6444/6445 and of master_port_base's 20000-29999. SLURM's
+		// SrunPortRange is the analogous setting.
+		ControlPortBase:   63000,
+		ControlPortRange:  2000,
+		PingInterval:      Duration{10 * time.Second},
+		PingDeadline:      Duration{30 * time.Second},
+		OrphanGrace:       Duration{3 * time.Minute},
+		QacctDeadline:     Duration{30 * time.Second},
+		JobNameSanitize:   true,
+		HookMissingEnv:    "continue",
+		DefaultTaskPolicy: "node",
 		GPU: GPU{
 			Discovery:   "qstat-gres",
 			Isolation:   "shim",
@@ -238,6 +249,8 @@ func validate(cfg *Config) []string {
 			"unknown allocation_rule_override %q ignored; using %q", m, OverrideAuto))
 		cfg.AllocationRuleOverride = OverrideAuto
 	}
+	warnings = append(warnings, validatePorts(cfg)...)
+
 	names := make([]string, 0, len(cfg.Partitions))
 	for name := range cfg.Partitions {
 		names = append(names, name)
@@ -319,4 +332,48 @@ func knownKeys() map[string]bool {
 		}
 	}
 	return ks
+}
+
+// maxPort is the highest TCP port number.
+const maxPort = 65535
+
+// validatePorts keeps the control range inside the port space and warns about
+// settings that would silently do nothing.
+//
+// This matters more than a normal config check: `slurm-shim ports` renders these
+// numbers as a firewall rule, so a range running past 65535 does not just waste
+// bind attempts, it prints a rule an admin cannot install.
+func validatePorts(cfg *Config) []string {
+	var warnings []string
+	if cfg.ControlPortBase == 0 {
+		return nil // documented opt-out: ephemeral port, no rule possible
+	}
+	if cfg.ControlPortBase < 0 || cfg.ControlPortBase > maxPort {
+		warnings = append(warnings, fmt.Sprintf(
+			"control_port_base %d is not a valid port; using an ephemeral port, which no "+
+				"firewall rule can describe", cfg.ControlPortBase))
+		cfg.ControlPortBase, cfg.ControlPortRange = 0, 0
+		return warnings
+	}
+	if cfg.ControlPortBase < 1024 {
+		warnings = append(warnings, fmt.Sprintf(
+			"control_port_base %d is a privileged port; srun does not run as root, so "+
+				"binding will fail", cfg.ControlPortBase))
+	}
+	if cfg.ControlPortRange <= 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"control_port_base %d is set but control_port_range is %d, so srun binds an "+
+				"ephemeral port and the base has no effect; set a range (e.g. 2000)",
+			cfg.ControlPortBase, cfg.ControlPortRange))
+		return warnings
+	}
+	if cfg.ControlPortBase+cfg.ControlPortRange-1 > maxPort {
+		clamped := maxPort - cfg.ControlPortBase + 1
+		warnings = append(warnings, fmt.Sprintf(
+			"control_port_base %d + control_port_range %d runs past %d; clamping the range "+
+				"to %d so the ports and the firewall rule are valid",
+			cfg.ControlPortBase, cfg.ControlPortRange, maxPort, clamped))
+		cfg.ControlPortRange = clamped
+	}
+	return warnings
 }

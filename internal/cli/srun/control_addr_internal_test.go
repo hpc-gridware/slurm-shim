@@ -9,16 +9,16 @@ import (
 )
 
 var _ = Describe("srun control-channel address [REQ-RUN-012]", func() {
-	// bindAddr/dialAddr take an explicit remote flag: the caller sets it only when
+	// bindHost/dialAddr take an explicit remote flag: the caller sets it only when
 	// a real tight-integration launcher places a task off the master node.
 	s := &supervisor{lay: &layout.Layout{Rendezvous: layout.Rendezvous{MasterAddr: "master"}}}
 
 	It("binds loopback when steppers stay on-box", func() {
-		Expect(s.bindAddr(false)).To(Equal("127.0.0.1:0"))
+		Expect(s.bindHost(false)).To(Equal("127.0.0.1"))
 	})
 
 	It("binds all interfaces when steppers run off-box", func() {
-		Expect(s.bindAddr(true)).To(Equal("0.0.0.0:0"))
+		Expect(s.bindHost(true)).To(Equal("0.0.0.0"))
 	})
 
 	It("keeps the loopback listener address for a local (non-remote) run", func() {

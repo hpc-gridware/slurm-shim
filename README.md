@@ -345,6 +345,40 @@ succeeds). It enforces nothing.
 - The per-job state lives under the job's `$TMPDIR`. Both the fabricator and the hook refuse a `TMPDIR` or state directory that is not the job's own private directory (a co-tenant can pre-create the predictable `/tmp/<job>.<task>.<queue>` path), and the job owner reclaims its `TMPDIR` by stripping group/world write. Setting the queue's `tmpdir` to a directory only root can create entries in removes that exposure entirely.
 - Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).
 
+### Networking (firewalled clusters)
+
+`srun` opens a TCP control channel that the steppers on the other nodes dial back
+to, and the fabricated environment hands frameworks a rendezvous port. On a
+network that filters between nodes -- a GCP VPC, or firewalld -- **both must be
+open or multi-node jobs hang**, so run this on a submit host and apply what it
+prints:
+
+```bash
+slurm-shim ports
+```
+
+| Range | Default | Direction | Carries |
+|---|---|---|---|
+| `control_port_base` + `control_port_range` | 63000-64999 | compute nodes -> job's master node | steppers dialling back to `srun` |
+| `master_port_base` + `master_port_range` | 20000-29999 | compute nodes -> job's master node | `MASTER_PORT` for `torchrun` and friends |
+
+Both are inbound to the job's **master node**; no rule is needed in the other
+direction. Single-node steps stay on loopback and need no rule at all.
+
+The control range sits above the usual Linux ephemeral ceiling
+(`cat /proc/sys/net/ipv4/ip_local_port_range`, commonly `32768 60999`) so the
+listener cannot race the source port of an outbound connection. If your site
+raises that ceiling, move `control_port_base` above it. It is the analogue of
+SLURM's `SrunPortRange`.
+
+Setting `control_port_base: 0` restores an ephemeral port. That only works where
+nothing filters between nodes, because the port then differs on every step and no
+firewall rule can describe it.
+
+**Scope the rules to the cluster's own subnet or tags, never `0.0.0.0/0`.** The
+control channel is token-authenticated, but a predictable port should not be
+reachable from outside the cluster.
+
 ## Configuration
 
 The shim reads a YAML file at `$SLURM_SHIM_CONFIG`, else `/etc/slurm-shim/config.yaml`. Key settings:

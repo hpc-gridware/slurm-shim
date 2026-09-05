@@ -216,7 +216,7 @@ func (s *supervisor) launch() int {
 	_, slaveIsQrsh := slave.(launch.QrshLauncher)
 	remote := s.stepIsRemote(slaveIsQrsh)
 
-	srv, err := proto.Listen(s.bindAddr(remote), token)
+	srv, err := s.listen(remote, token)
 	if err != nil {
 		errln(s.stderr, "srun: error: opening control channel: "+err.Error())
 		return exitLauncher
@@ -270,6 +270,11 @@ func (s *supervisor) launch() int {
 		c, err := srv.Accept(acceptCtx)
 		if err != nil {
 			errln(s.stderr, "srun: error: stepper did not connect within launch_timeout")
+			if remote {
+				errln(s.stderr, "srun: the control channel is listening on "+srv.Addr()+
+					"; if this cluster filters traffic between nodes, that port range must be "+
+					"open to this host (run `slurm-shim ports` for the exact rules)")
+			}
 			s.killHandles(handles)
 			return exitLauncher
 		}
@@ -436,14 +441,25 @@ func (s *supervisor) stepIsRemote(slaveIsQrsh bool) bool {
 	return slaveIsQrsh && s.hasSlaveNode()
 }
 
-func (s *supervisor) bindAddr(remote bool) string {
+func (s *supervisor) bindHost(remote bool) string {
 	// Loopback unless steppers run off-box: then bind all interfaces so remote
 	// steppers can reach the control channel. It is token-authenticated
 	// (REQ-CHN-002), so exposure past loopback is safe.
 	if remote {
-		return "0.0.0.0:0"
+		return "0.0.0.0"
 	}
-	return "127.0.0.1:0"
+	return "127.0.0.1"
+}
+
+// listen opens the control channel. A remote step binds inside the configured
+// port range so the site can admit it with one firewall rule; a loopback step
+// needs no rule and keeps an ephemeral port, which avoids consuming the range
+// for steps nothing outside the box can reach.
+func (s *supervisor) listen(remote bool, token string) (*proto.Server, error) {
+	if !remote {
+		return proto.Listen(s.bindHost(false)+":0", token)
+	}
+	return proto.ListenRange(s.bindHost(true), s.cfg.ControlPortBase, s.cfg.ControlPortRange, token)
 }
 
 // dialAddr is the address steppers are told to connect back to. Loopback jobs

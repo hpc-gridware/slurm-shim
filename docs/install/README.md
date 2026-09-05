@@ -29,3 +29,26 @@ no bashisms. Any POSIX `/bin/sh` (dash, ksh, or bash-as-sh) satisfies them. The
 suite exercises them under the test cluster's `/bin/sh` (bash); a site whose
 `/bin/sh` is dash is supported but not yet run in CI, so smoke-test one job there
 after install.
+
+## Firewall
+
+Multi-node jobs need two TCP ranges open between the nodes of a job, both
+inbound to the job's master node. On a filtered network (GCP VPC, firewalld)
+nothing works until a rule admits them, and the failure looks like a hung job
+rather than a blocked port.
+
+Run this on a submit host after installing the config, and apply what it prints:
+
+```
+/opt/slurm-shim/bin/slurm-shim ports
+```
+
+It reads the site's own `config.yaml`, so the ranges it prints are the ones the
+shim will actually bind: `control_port_base`/`control_port_range` (default
+63000-64999, the control channel) and `master_port_base`/`master_port_range`
+(default 20000-29999, the framework rendezvous port).
+
+Keep the rules scoped to the cluster's subnet or tags. The control channel is
+token-authenticated, but combined with a spool that leaks the step token to
+co-tenants (the SI-51 warning `srun` prints), a world-reachable port is a
+needlessly larger target.

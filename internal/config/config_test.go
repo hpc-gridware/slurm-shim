@@ -172,3 +172,47 @@ var _ = Describe("allocation rule override and slot-rule validation", func() {
 		Entry("auto when both are silent", "", "", config.OverrideAuto),
 	)
 })
+
+var _ = Describe("control port validation", func() {
+	parse := func(y string) (*config.Config, []string) {
+		cfg, warns, err := config.Parse([]byte(y))
+		Expect(err).NotTo(HaveOccurred())
+		return cfg, warns
+	}
+
+	It("clamps a range that runs past 65535 so the printed firewall rule is valid", func() {
+		cfg, warns := parse("control_port_base: 65000\ncontrol_port_range: 2000\n")
+		Expect(cfg.ControlPortBase + cfg.ControlPortRange - 1).To(Equal(65535))
+		Expect(warns).To(ContainElement(ContainSubstring("runs past 65535")))
+	})
+
+	It("warns when a base is set but the range makes it inert", func() {
+		_, warns := parse("control_port_base: 63000\ncontrol_port_range: 0\n")
+		Expect(warns).To(ContainElement(ContainSubstring("has no effect")))
+	})
+
+	It("warns about a privileged base srun cannot bind", func() {
+		_, warns := parse("control_port_base: 80\ncontrol_port_range: 10\n")
+		Expect(warns).To(ContainElement(ContainSubstring("privileged port")))
+	})
+
+	It("rejects a base outside the port space", func() {
+		cfg, warns := parse("control_port_base: 70000\ncontrol_port_range: 10\n")
+		Expect(cfg.ControlPortBase).To(Equal(0))
+		Expect(warns).To(ContainElement(ContainSubstring("not a valid port")))
+	})
+
+	It("stays quiet for the shipped default and for the ephemeral opt-out", func() {
+		_, warns := parse("control_port_base: 0\n")
+		for _, w := range warns {
+			Expect(w).NotTo(ContainSubstring("control_port"))
+		}
+		Expect(config.Default().ControlPortBase + config.Default().ControlPortRange - 1).
+			To(BeNumerically("<=", 65535))
+	})
+
+	It("warns that the removed control_port key is ignored (migration signal)", func() {
+		_, warns := parse("control_port: 30000\n")
+		Expect(warns).To(ContainElement(ContainSubstring(`unknown config key "control_port"`)))
+	})
+})
