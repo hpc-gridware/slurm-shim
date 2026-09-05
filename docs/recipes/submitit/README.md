@@ -240,7 +240,10 @@ requeue -- the job is cancelled, not resurrected).
   reports). Native 1-based GE arrays are off by one through `scancel` -- cancel
   those by the whole array or with `qdel` directly.
 - **Memory requests.** `--mem`/`slurm_mem` maps to the site's memory complex
-  (`memory_complex`, default `h_vmem`). `h_vmem` is enforced as virtual address
-  space and can kill CUDA/JVM jobs that reserve large virtual memory; on GPU
-  clusters set `memory_complex` to a resident/reservation complex (`mem_free` /
-  `h_rss`).
+  (`memory_complex`, default `mem_free`). Under the default the request is a
+  scheduling filter, not a limit: the job lands where the memory is free but is
+  not killed for exceeding it. Do not switch this to `h_vmem` on a GPU site --
+  it is enforced as virtual address space (`RLIMIT_AS`) and a CUDA context
+  reserves tens of GB of address space at init, so the job dies at start.
+  (`h_rss` is not an alternative: it maps to `RLIMIT_RSS`, which Linux ignores,
+  so it enforces nothing.)

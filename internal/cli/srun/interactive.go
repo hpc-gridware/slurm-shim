@@ -54,6 +54,9 @@ func runInteractive(cfg *config.Config, opt *options, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.QstatTimeout.Duration)
 	defer cancel()
 	rule, warns := submit.AllocationRuleFor(ctx, gedata.ExecRunner{}, cfg, req, part, slots)
+	if w := submit.MemoryComplexWarning(cfg, req); w != "" {
+		warns = append(warns, w)
+	}
 	for _, w := range warns {
 		errln(stderr, "srun: warning: "+w)
 	}
@@ -63,6 +66,7 @@ func runInteractive(cfg *config.Config, opt *options, stderr io.Writer) int {
 		PE:             part.PE,
 		Slots:          slots,
 		AllocationRule: rule.Value,
+		VerifyGeometry: submit.VerifyGeometry(cfg, req),
 		Resources:      submit.ResourceList(cfg, req),
 		Account:        opt.account,
 		JobName:        opt.jobName,

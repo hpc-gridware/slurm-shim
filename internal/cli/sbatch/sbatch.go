@@ -129,6 +129,12 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	if note := memoryNote(cfg, opt, rule, slots); note != "" {
 		fmt.Fprintln(stderr, "sbatch: note: "+note)
 	}
+	// A GPU job under an address-space memory complex dies at CUDA init, before the
+	// script runs, with an error that points at the application rather than the site
+	// config. Say so at submit.
+	if w := memoryComplexWarning(cfg, opt); w != "" {
+		fmt.Fprintln(stderr, "sbatch: warning: "+w)
+	}
 
 	scriptPath, cleanup, discard, err := materializeScript(cfg, self, opt)
 	if err != nil {

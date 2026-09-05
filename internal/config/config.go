@@ -140,18 +140,23 @@ type Config struct {
 // Default returns the built-in configuration (spec section 9 defaults, SI-37).
 func Default() *Config {
 	return &Config{
-		CompatVersion:          "24.05.0",
-		Launcher:               "qrsh-inherit",
-		StrictFlags:            false,
-		Standalone:             "reject",
-		KillOnBadExit:          true,
-		KillWait:               Duration{30 * time.Second},
-		MasterInterface:        "",
-		ExportMasterAddr:       false,
-		MasterPortBase:         20000,
-		MasterPortRange:        10000,
-		QstatTimeout:           Duration{5 * time.Second},
-		MemoryComplex:          "h_vmem",
+		CompatVersion:    "24.05.0",
+		Launcher:         "qrsh-inherit",
+		StrictFlags:      false,
+		Standalone:       "reject",
+		KillOnBadExit:    true,
+		KillWait:         Duration{30 * time.Second},
+		MasterInterface:  "",
+		ExportMasterAddr: false,
+		MasterPortBase:   20000,
+		MasterPortRange:  10000,
+		QstatTimeout:     Duration{5 * time.Second},
+		// mem_free, not h_vmem: h_vmem is enforced as a virtual ADDRESS SPACE cap
+		// (RLIMIT_AS, verified on OCS 9.1.5), and a CUDA context reserves tens of
+		// GB of address space at init, so --mem would fail every GPU job. mem_free
+		// is a reported load value, so the request still filters hosts by free
+		// memory -- but it is advisory, not a limit (see README).
+		MemoryComplex:          "mem_free",
 		AllocationRuleOverride: OverrideAuto,
 		EmitCPUsPerTask:        false,
 		LaunchRamp:             64,

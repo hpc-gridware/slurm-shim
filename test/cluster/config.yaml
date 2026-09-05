@@ -34,5 +34,5 @@ gpu:
   isolation: shim
   gres_complex: gpu
 
-memory_complex: h_vmem
+memory_complex: mem_free
 export_master_addr: true        # publish MASTER_ADDR/MASTER_PORT for the demos

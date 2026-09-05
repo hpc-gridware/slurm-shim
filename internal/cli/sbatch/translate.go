@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
 // resolveGeometry derives the SLURM task geometry from the parsed options,
@@ -109,7 +110,12 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 		// cluster and ignores load, so a merely busy cluster cannot trip it.
 		// Scoping it to jobs that carry -par keeps every other submission's argv
 		// byte-identical to what it was before this feature.
-		args = append(args, "-par", rule.Value, "-w", "e")
+		args = append(args, "-par", rule.Value)
+		// -w e only when it can actually judge the request: it cannot see
+		// load-sensor memory complexes and would refuse a runnable job.
+		if submit.VerifyGeometry(cfg, requestFor(opt)) {
+			args = append(args, "-w", "e")
+		}
 	}
 	if opt.jobName != "" {
 		args = append(args, "-N", opt.jobName)
@@ -570,4 +576,18 @@ func unevenSpreadWarning(layout string, slots int) string {
 			"slots on every node, so the node count is left to the PE's allocation_rule "+
 			"and %d slot(s) may land anywhere. Use a task count that divides by the node "+
 			"count to pin the layout", layout, slots)
+}
+
+// memoryComplexWarning adapts sbatch's options to the shared checker in
+// internal/submit, so sbatch and interactive srun print identical guidance about
+// an address-space memory complex on a GPU job.
+func memoryComplexWarning(cfg *config.Config, opt options) string {
+	return submit.MemoryComplexWarning(cfg, requestFor(opt))
+}
+
+// requestFor adapts sbatch's options to the neutral submit.Request the shared
+// memory-complex helpers take.
+func requestFor(opt options) submit.Request {
+	n, ok := gpuRequest(opt)
+	return submit.Request{Mem: opt.mem, HaveGPUs: ok, GPUs: n}
 }

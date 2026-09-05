@@ -337,8 +337,8 @@ var _ = Describe("sbatch resource/signal/dependency mapping [submitit Phase 4]",
 		var errBuf bytes.Buffer
 		rc := run(fakeQsub("70", &captured), testCfg(), "/shim", []string{script}, io.Discard, &errBuf)
 		Expect(rc).To(Equal(0))
-		// h_rt=3600, s_rt=3600-90=3510, mem via default h_vmem, gpu via default gpu complex.
-		Expect(captured).To(ContainElements("-l", "h_rt=3600,s_rt=3510,h_vmem=4G,gpu=2"))
+		// h_rt=3600, s_rt=3600-90=3510, mem via default mem_free, gpu via default gpu complex.
+		Expect(captured).To(ContainElements("-l", "h_rt=3600,s_rt=3510,mem_free=4G,gpu=2"))
 		// This spec is afterok, so the approximation must reach stderr here rather
 		// than needing a second submission to assert it.
 		Expect(errBuf.String()).To(ContainSubstring("afterok/aftercorr is approximated"))

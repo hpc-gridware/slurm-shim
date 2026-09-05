@@ -294,7 +294,7 @@ var _ = Describe("sbatch emits the allocation rule [REQ-SBT-006]", func() {
 	It("notes the per-node memory ceiling a pinned spread yields", func() {
 		_, errOut, _ := submitWith(cfg, parUsage,
 			"-p", "gpu", "-N", "3", "--ntasks-per-node=2", "--mem=4G")
-		Expect(errOut).To(ContainSubstring("h_vmem=4G x 2 slot(s)/node"))
+		Expect(errOut).To(ContainSubstring("mem_free=4G x 2 slot(s)/node"))
 	})
 })
 

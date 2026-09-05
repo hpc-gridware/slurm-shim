@@ -53,19 +53,22 @@ fi
 # hold. That is not just fewer round trips: a held job's qstat -j window never
 # closes, where a running job's does, and the --mem request MUST never dispatch.
 #
-# Why it must never dispatch: the test cluster's exec hosts define only slots and
-# gpu in complex_values, so h_vmem defaults to 0 and any h_vmem request is
-# unsatisfiable -- and an unsatisfiable request does not sit harmlessly in qw. GE
-# tries it on every host, fails, and marks all.q QERROR cluster-wide, which breaks
-# every check that follows and makes the failure look like their bug.
+# The hold keeps one qstat -j window open long enough to read all four request
+# shapes; a running job's window closes as soon as it finishes.
 #
-# The blocker therefore sleeps far longer than this check can run. A short sleep
-# would be a fuse: when it expires GE releases the hold and dispatches the very
-# request this comment is about. Cleanup kills both, so nothing is left sleeping.
+# It used to serve a second purpose that no longer applies: under the old
+# memory_complex default (h_vmem) the --mem request was UNSATISFIABLE here (the
+# exec hosts define only slots and gpu in complex_values), and an unsatisfiable
+# request does not sit harmlessly in qw -- GE tries every host, fails, and marks
+# all.q QERROR cluster-wide. The default is now mem_free, which the hosts report
+# as a load value, so the request is satisfiable and dispatches normally. Setting
+# memory_complex back to h_vmem at this site would reintroduce that hazard.
 #
-# Request shape only for --mem: asserting enforcement would fail on any site that
-# sets memory_complex to mem_free or h_rss, as the README recommends for GPU
-# clusters.
+# The blocker still sleeps far longer than this check can run, so the hold cannot
+# expire mid-check. Cleanup kills both, so nothing is left sleeping.
+#
+# Request shape only for --mem: under mem_free the request is a scheduling filter,
+# not a limit, so there is no enforcement to assert.
 blocker_id="$(submit "--wrap='sleep 3600'")"
 held_id=""
 if [ -n "$blocker_id" ]; then
@@ -78,7 +81,7 @@ if [ -n "$held_id" ]; then
   assert_eq "$(jstate "$held_id")" "hqw" "the held job never dispatched (queue stays clean)"
 
   res="$(jattr "$held_id" hard_resource_list)"
-  assert_contains "$res" "h_vmem=100M" "--mem reaches GE as the configured memory complex"
+  assert_contains "$res" "mem_free=100M" "--mem reaches GE as the configured memory complex"
   assert_contains "$res" "h_rt=300" "--time reaches GE as h_rt"
   # The one piece of arithmetic in the translation: s_rt = h_rt - signal lead, which
   # is what delivers submitit's SIGUSR2 early enough to checkpoint.
@@ -171,6 +174,44 @@ if [ -n "$time_id" ]; then
   st="$(gridware "sacct -n -j '$time_id' -o State,ExitCode --parsable2 | head -1")"
   assert_eq "${st%%|*}" "CANCELLED" "a --time expiry is terminal in sacct (SLURM would say TIMEOUT)"
   assert_eq "${st#*|}" "0:9" "the kill is reported as a signal, not an exit code"
+fi
+
+# ------------------------------------------------- --mem must not cap ADDRESS SPACE
+# The regression test for the whole bug class: under an address-space enforced
+# complex (h_vmem) a --mem job runs with a finite RLIMIT_AS, and a CUDA context --
+# which reserves tens of GB of address space at init and touches almost none of it
+# -- dies before any user code runs. Measured on OCS 9.1.5: `-l h_vmem=1G` yields
+# ulimit -v 1048576 and a 2 GiB allocation fails with "memory exhausted".
+#
+# No GPU is needed to catch it: the address-space cap either exists or it does not,
+# and a plain allocation proves it. Output goes to the shared home, never /tmp,
+# which is node-local here (a job on a worker would write where we cannot see it).
+memjob="$(mktemp)"
+cat >"$memjob" <<'EOF'
+#!/bin/bash
+#SBATCH --partition=batch
+#SBATCH --nodes=1
+#SBATCH --mem=100M
+echo "ULIMIT_V=$(ulimit -v)"
+dd if=/dev/zero of=/dev/null bs=2G count=1 2>&1 | tail -1
+EOF
+mem_remote=/home/gridware/e2e-31-mem.sh
+mem_out=/home/gridware/e2e-31-mem.out
+put_job "$memjob" "$mem_remote"
+rm -f "$memjob"
+mem_id="$(sbatch_submit "$mem_remote" "$mem_out")"
+if [ -z "$mem_id" ]; then
+  fail "could not submit the address-space check job"
+else
+  mem_res="$(jobout "$mem_id" "$mem_out")"
+  assert_contains "$mem_res" "ULIMIT_V=unlimited" \
+    "--mem does not cap virtual address space (a CUDA context would survive)"
+  case "$mem_res" in
+    *"memory exhausted"*) fail "--mem capped the address space: a 2 GiB allocation was refused" ;;
+    *"copied"*) pass "a 2 GiB allocation succeeds under --mem" ;;
+    *) fail "address-space check produced no allocation result: $mem_res" ;;
+  esac
+  gridware "rm -f '$mem_remote' '$mem_out'"
 fi
 
 finish

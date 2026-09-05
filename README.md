@@ -152,7 +152,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | Flag | Status | Mapped to |
 |---|---|---|
 | `--partition` / `-p` | ✅ | queue + PE + slots, via `partitions` config; falls back to `default_partition` when omitted |
-| `--nodes` / `-N` | ✅ | feeds the slot count **and pins the node count**: on OCS 9.1.5+ the shim emits `qsub -par <slots-per-node> -w e`, so the job gets exactly this many nodes or is refused at submit. Below 9.1.5 it only feeds the slot count and the PE's `allocation_rule` places the nodes (with a warning saying so) |
+| `--nodes` / `-N` | ✅ | feeds the slot count **and pins the node count**: on OCS 9.1.5+ the shim emits `qsub -par <slots-per-node>`, so the job gets exactly this many nodes. `-w e` rides along to refuse an unschedulable layout at submit, except when `--mem` is used with a load-sensor `memory_complex` (the `mem_free` default): `-w e` cannot see load values and would refuse a runnable job, so it is omitted and an unschedulable layout waits in the queue instead. Below 9.1.5 it only feeds the slot count and the PE's `allocation_rule` places the nodes (with a warning saying so) |
 | `--ntasks` / `-n` | ✅ | feeds the slot count |
 | `--ntasks-per-node` | ✅ | feeds the slot count **and pins tasks per node**, through the same `-par` path as `--nodes`. A layout Grid Engine cannot grant evenly (`-N 3 -n 7` -> 3,2,2) pins nothing and warns: a fixed allocation rule puts the same count on every node |
 | `--cpus-per-task` / `-c` | ✅ | feeds the slot count (`per-task` rule). It scales the pinned rule too: `-N 3 --ntasks-per-node=2 -c 4` pins 8 **slots** per node, which is still 2 tasks |
@@ -163,7 +163,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |
 | `--gpus-per-task` | ✅ | scaled to a per-node request (`gpus-per-task x ntasks-per-node`) for the same `-l` path, and binds each task to its own devices (as SLURM's implied `--gpu-bind=per_task`) |
 | `--gpu-bind` | ✅ | `none` (SLURM default: the node's whole grant stays visible to every task) or `per_task[:n]`; also honored as an `#SBATCH` directive via `SLURM_GPU_BIND`. An explicit `none` overrides `--gpus-per-task` binding, as on SLURM |
-| `--mem` / `--mem-per-cpu` | ✅ | `qsub -l <memory_complex>=<n>` (default `h_vmem`; `4GB`->`4G`). Note `h_vmem` is virtual-address-space enforced — set `memory_complex` to `mem_free`/`h_rss` on GPU clusters |
+| `--mem` / `--mem-per-cpu` | ⚠️ | `qsub -l <memory_complex>=<n>` (default `mem_free`; `4GB`->`4G`). **A scheduling filter, not a limit** — the job is placed where the memory is free, but is not killed for exceeding it. Do **not** set `memory_complex: h_vmem`: it caps virtual address space (`RLIMIT_AS`), and a CUDA context reserves tens of GB of it, so every GPU job dies at init. See [Memory requests](#memory-requests) |
 | `--time` / `-t` | ✅ | `qsub -l h_rt=<sec>` (with `-l s_rt` grace when `--signal` gives a lead time) |
 | `--array` | ✅ | `qsub -t 1-<n>` + `-tc` (from `%p`); SLURM 0-based indices are preserved end-to-end (env, filenames, `sacct`) |
 | `--dependency` | ⚠️ | GE has one primitive, `-hold_jid`, which releases when every predecessor **finishes**. Only `afterany` means exactly that. `after` is *start*-gated in SLURM, so it becomes a wait-for-exit here (it will never release on a long-lived predecessor); `afterok`/`aftercorr` are approximated (they run anyway on failure, and `aftercorr` loses its per-element pairing); `afternotok` is inverted outright; `singleton` and the `+time` offset form yield no id, so **nothing is held**. Every one of those warns at submit time |
@@ -280,6 +280,48 @@ differences are worth knowing:
   record cannot distinguish. The job *is* killed at the limit, and the state is
   terminal — only the label differs from SLURM.
 
+### Memory requests
+
+`--mem` / `--mem-per-cpu` become `qsub -l <memory_complex>=<n>`, where
+`memory_complex` defaults to **`mem_free`**. That default is a deliberate
+trade-off, and it is not what a SLURM user expects, so it is worth stating
+plainly:
+
+**Under the default, `--mem` is a scheduling filter, not a limit.** The job is
+placed on a host reporting that much free memory, and is *not* killed for
+exceeding it. SLURM would OOM-kill it at the limit; the shim will not.
+
+The reason is that the obvious enforcing complex is unusable for this shim's
+workloads. `h_vmem` is enforced by Grid Engine as a **virtual address space**
+cap (`RLIMIT_AS`). Measured on OCS 9.1.5, `-l h_vmem=1G` gives the job
+`ulimit -v 1048576`, and any allocation past it fails:
+
+```
+dd: memory exhausted by input buffer of size 2147483648 bytes (2.0 GiB)
+```
+
+A CUDA context reserves tens of GB of address space at initialisation and
+touches almost none of it, so `--mem=16G` with `memory_complex: h_vmem` fails
+every PyTorch/JAX process on real GPU hardware, at start, before any of your code
+runs. The same applies to the JVM. `sbatch`/`srun` warn if you configure it on a
+job that requests GPUs.
+
+`h_rss` is **not** an alternative: it maps to `RLIMIT_RSS`, which Linux has
+ignored for two decades (measured: the limit is set, a larger allocation still
+succeeds). It enforces nothing.
+
+**If your site wants enforcement**, the options are:
+
+- Make `mem_free` consumable (`qconf -mc`) so requests actually reserve capacity
+  instead of only filtering on an instantaneous load value. This is the usual
+  fix and costs nothing at the shim level.
+- Set `memory_complex: h_vmem` on **CPU-only** sites, where no CUDA context
+  exists to be capped. Ensure `h_vmem` is in the hosts' `complex_values`, or
+  every `--mem` job becomes unsatisfiable (Grid Engine tries each host, fails,
+  and can mark the queue `E` cluster-wide).
+- Enforce with cgroups outside the shim. Stock OCS 9.1.5 has no `m_mem_free`
+  consumable.
+
 ### Known limitations
 
 - No `salloc` / `sattach`; no job-step overlap or heterogeneous steps. Interactive shells use `srun --pty` (above), not `salloc`.
@@ -324,7 +366,9 @@ gpu:
   gres_complex: gpu
   bind: none                      # none (SLURM default: whole grant visible to every
                                   # task) | per-task (split the grant among tasks)
-memory_complex: h_vmem            # source for SLURM_MEM_PER_NODE ("" disables)
+memory_complex: mem_free          # scheduling filter + source for SLURM_MEM_PER_NODE
+                                  # ("" disables). See the --mem row: mem_free is
+                                  # advisory; h_vmem caps ADDRESS SPACE and breaks CUDA
 export_master_addr: false         # set true to publish MASTER_ADDR/MASTER_PORT
 launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)
 # Fallback when the site cannot wire a queue starter_method: sbatch submits a

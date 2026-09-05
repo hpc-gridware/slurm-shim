@@ -47,6 +47,7 @@ var _ = Describe("interactive SessionArgs [srun --pty]", func() {
 		s := base
 		s.Resources = "h_rt=1800,gpu=1"
 		s.AllocationRule = "$pe_slots"
+		s.VerifyGeometry = true // -w e rides along only when it can judge the request
 		Expect(joined(s)).To(ContainSubstring("-l h_rt=1800,gpu=1"))
 		Expect(joined(s)).To(ContainSubstring("-par $pe_slots -w e"))
 	})
@@ -62,5 +63,15 @@ var _ = Describe("interactive SessionArgs [srun --pty]", func() {
 		for _, flag := range []string{"-wd", "-par", "-w e", "-l ", "-A ", "-N "} {
 			Expect(out).NotTo(ContainSubstring(flag), flag)
 		}
+	})
+})
+
+var _ = Describe("SessionArgs geometry verification", func() {
+	It("pins -par but omits -w e when the caller says it cannot be judged", func() {
+		s := launch.SessionSpec{Queue: "all.q", PE: "make", Slots: 2,
+			AllocationRule: "1", VerifyGeometry: false, Command: []string{"bash"}}
+		joined := strings.Join(launch.SessionArgs(s), " ")
+		Expect(joined).To(ContainSubstring("-par 1"), "the layout is still pinned")
+		Expect(joined).NotTo(ContainSubstring("-w e"), "-w e would refuse a runnable job")
 	})
 })

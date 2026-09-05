@@ -19,6 +19,10 @@ type SessionSpec struct {
 	Slots int
 	// AllocationRule is the -par value pinning the layout, or "" for none.
 	AllocationRule string
+	// VerifyGeometry adds -w e alongside -par. False when the request names a
+	// load-sensor memory complex, which -w e cannot see and would refuse
+	// (submit.VerifyGeometry decides).
+	VerifyGeometry bool
 	// Resources is the -l list (h_rt, memory complex, GPU complex), or "".
 	Resources string
 	Account   string
@@ -62,7 +66,10 @@ func SessionArgs(s SessionSpec) []string {
 		// layout into a submit-time refusal instead of a job wedged in qw. On qrsh
 		// the refusal is "error: no suitable queues" (verified), NOT a rejection to
 		// retry -- do not feed it to the stepper's classifyRejection.
-		args = append(args, "-par", s.AllocationRule, "-w", "e")
+		args = append(args, "-par", s.AllocationRule)
+		if s.VerifyGeometry {
+			args = append(args, "-w", "e")
+		}
 	}
 	if s.Resources != "" {
 		args = append(args, "-l", s.Resources)

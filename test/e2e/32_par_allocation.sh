@@ -74,7 +74,11 @@ fi
 # ------------------------------------- an impossible layout is refused at submit
 # The regression this guards: without -w e, qsub ACCEPTS this and the job sits in
 # qw forever. Assert the refusal, never that a qw job eventually clears.
-before="$(gridware "qstat -u gridware 2>/dev/null | wc -l")"
+# Compare job IDs, not a count: a count also moves when an unrelated job from an
+# earlier check finishes mid-window, which made this fail spuriously (6 -> 5) with
+# nothing wrong. Only a NEW id means the refused job was queued.
+jobids() { gridware "qstat -u gridware 2>/dev/null | tail -n +3 | awk '{print \$1}'" | sort; }
+before_ids="$(jobids)"
 out="$(gridware "cd && sbatch -p batch -N 99 $SLEEPER" 2>&1 || true)"
 assert_contains "$out" "Requested node configuration is not available" \
   "a layout no host set can satisfy is refused at submit"
@@ -82,7 +86,7 @@ case "$out" in
   *"Submitted batch job"*) fail "nothing must be submitted for a refused layout" ;;
   *) pass "and nothing is submitted" ;;
 esac
-assert_eq "$(gridware "qstat -u gridware 2>/dev/null | wc -l")" "$before" \
-  "the refused job was never queued"
+new_ids="$(comm -13 <(printf '%s\n' "$before_ids") <(jobids) | grep -c . || true)"
+assert_eq "$new_ids" "0" "the refused job was never queued"
 
 finish

@@ -16,6 +16,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
 // maxPredictedNodes bounds the modelled allocation. sbatch runs on a shared login
@@ -77,11 +78,24 @@ func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, 
 	w.kv("requested geometry", fmt.Sprintf("ntasks %d, cpus-per-task %d, nodes %s",
 		ntasks, cpusPerTask, nodesText(opt.nodes)))
 	if par.emit() {
-		w.kv("allocation rule", fmt.Sprintf("-par %s (overrides PE %s's %s); -w e rejects the "+
-			"job at submit if the layout is not schedulable", par.Value, part.PE, peRuleText(pe)))
+		// The -w e clause is only true when the request can actually carry it: a
+		// load-sensor memory complex suppresses it (submit.VerifyGeometry), and a
+		// report promising a submit-time refusal that cannot happen is the same
+		// class of defect as a report contradicting the job environment.
+		verdict := "; -w e rejects the job at submit if the layout is not schedulable"
+		if !submit.VerifyGeometry(cfg, requestFor(opt)) {
+			verdict = fmt.Sprintf("; -w e is omitted because memory_complex %q is a load-sensor "+
+				"value that -w e cannot see, so an unschedulable layout waits in the queue "+
+				"instead of being refused at submit", cfg.MemoryComplex)
+		}
+		w.kv("allocation rule", fmt.Sprintf("-par %s (overrides PE %s's %s)%s",
+			par.Value, part.PE, peRuleText(pe), verdict))
 	}
 	if note := memoryNote(cfg, opt, par, slots); note != "" {
 		w.kv("memory", note)
+	}
+	if warn := memoryComplexWarning(cfg, opt); warn != "" {
+		w.kv("warning", dryrun.Escape(warn))
 	}
 	if n, ok := gpuRequest(opt); ok {
 		w.kv("gpus per node", strconv.Itoa(n))

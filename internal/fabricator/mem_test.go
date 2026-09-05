@@ -21,15 +21,20 @@ var _ = Describe("SLURM_MEM_PER_NODE discovery [A27]", func() {
 	}
 
 	It("emits per-slot h_vmem x slots floored to MB", func() {
-		// 2 GiB per slot = 2048 MB; 4 slots -> 8192 MB.
+		// 2 GiB per slot = 2048 MB; 4 slots -> 8192 MB. The complex is pinned to the
+		// one the fixture records; the shipped default is mem_free.
+		cfg := testConfig()
+		cfg.MemoryComplex = "h_vmem"
 		r := hostfileFab("node001 4 all.q@node001 0-3\n", map[string]string{"JOB_ID": "268", "PE": "smp.pe"},
-			memRunner(), testConfig())
+			memRunner(), cfg)
 		Expect(exportMap(r)["SLURM_MEM_PER_NODE"]).To(Equal("8192"))
 	})
 
 	It("scales with the master node's slot count", func() {
+		cfg := testConfig()
+		cfg.MemoryComplex = "h_vmem"
 		r := hostfileFab("node001 1 all.q@node001 0\n", map[string]string{"JOB_ID": "268", "PE": "smp.pe"},
-			memRunner(), testConfig())
+			memRunner(), cfg)
 		Expect(exportMap(r)["SLURM_MEM_PER_NODE"]).To(Equal("2048"))
 	})
 
@@ -76,7 +81,7 @@ var _ = Describe("SLURM_MEM_PER_NODE discovery [A27]", func() {
 })
 
 var _ = Describe("config default for memory discovery", func() {
-	It("defaults memory_complex to h_vmem", func() {
-		Expect(config.Default().MemoryComplex).To(Equal("h_vmem"))
+	It("defaults memory_complex to mem_free (h_vmem caps RLIMIT_AS and kills CUDA)", func() {
+		Expect(config.Default().MemoryComplex).To(Equal("mem_free"))
 	})
 })
