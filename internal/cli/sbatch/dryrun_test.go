@@ -420,6 +420,8 @@ func splitLines(s string) []string {
 func parQconfPE(lines string) *fake.Runner {
 	return &fake.Runner{Responder: func(name string, args []string) fake.Response {
 		switch {
+		case name == "qconf" && len(args) > 0 && args[0] == "-sc":
+			return fake.Response{Stdout: []byte(scTable)}
 		case name == "qconf":
 			return fake.Response{Stdout: []byte(lines)}
 		case name == "qsub" && len(args) == 1 && args[0] == "-help":
@@ -477,9 +479,10 @@ var _ = Describe("the dry run reports a pinned allocation rule [REQ-SBT-006] [RE
 		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
 			"-p", "gpu", "-N", "3", "--ntasks-per-node=2", "--mem=4G", script)
 
-		Expect(strings.Count(r.stderr, "slot(s)/node")).To(Equal(1))
+		// A marker unique to the note: "mem_free=4G" also appears in the qsub argv.
+		Expect(strings.Count(r.stderr, "not per slot")).To(Equal(1))
 		Expect(strings.Index(r.stderr, "dry run")).To(BeNumerically("<",
-			strings.Index(r.stderr, "slot(s)/node")), "the banner must come first")
+			strings.Index(r.stderr, "not per slot")), "the banner must come first")
 	})
 
 	// -par counts slots, devices count tasks: the reported per-node device count and

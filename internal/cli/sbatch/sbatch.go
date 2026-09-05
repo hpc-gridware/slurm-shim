@@ -126,7 +126,7 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	}
 	// The one thing a pinned spread changes that the user did not ask for: a smaller
 	// per-node memory ceiling, enforced at run time and otherwise silent.
-	if note := memoryNote(cfg, opt, rule, slots); note != "" {
+	if note := memoryNote(cfg, opt, rule, slots, memoryScope(runner, cfg, opt, rule)); note != "" {
 		fmt.Fprintln(stderr, "sbatch: note: "+note)
 	}
 	// A GPU job under an address-space memory complex dies at CUDA init, before the

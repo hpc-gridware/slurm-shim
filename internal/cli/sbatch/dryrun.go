@@ -91,7 +91,7 @@ func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, 
 		w.kv("allocation rule", fmt.Sprintf("-par %s (overrides PE %s's %s)%s",
 			par.Value, part.PE, peRuleText(pe), verdict))
 	}
-	if note := memoryNote(cfg, opt, par, slots); note != "" {
+	if note := memoryNote(cfg, opt, par, slots, memoryScope(runner, cfg, opt, par)); note != "" {
 		w.kv("memory", note)
 	}
 	if warn := memoryComplexWarning(cfg, opt); warn != "" {
@@ -476,12 +476,42 @@ func spreadCaveat(par allocationRule) string {
 // three under -par 2. The multiplication is only right for a per-slot consumable,
 // which is a site setting the shim does not read, so the note says so rather than
 // asserting a number it cannot verify.
-func memoryNote(cfg *config.Config, opt options, par allocationRule, slots int) string {
+func memoryNote(cfg *config.Config, opt options, par allocationRule, slots int, scope string) string {
 	if !par.emit() || opt.mem == "" || cfg.MemoryComplex == "" {
 		return ""
 	}
 	perNode := slots / par.Nodes
-	return fmt.Sprintf("%s=%s x %d slot(s)/node (the per-node ceiling, if %s is a "+
-		"per-slot consumable at your site; pinning the spread changes it)",
-		cfg.MemoryComplex, opt.mem, perNode, cfg.MemoryComplex)
+	switch {
+	case strings.EqualFold(scope, gedata.ConsumablePerSlot):
+		// The only scope where the slot count multiplies the request, and so the
+		// only one where pinning the spread changes the per-node ceiling.
+		return fmt.Sprintf("%s=%s x %d slot(s)/node (%s is a per-slot consumable here, "+
+			"so pinning the spread changes the per-node ceiling)",
+			cfg.MemoryComplex, opt.mem, perNode, cfg.MemoryComplex)
+	case scope != "":
+		return fmt.Sprintf("%s=%s per node (%s is consumable %s here, not per slot, so the "+
+			"request is not multiplied by the %d slot(s) on each node)",
+			cfg.MemoryComplex, opt.mem, cfg.MemoryComplex, strings.ToUpper(scope), perNode)
+	default:
+		return fmt.Sprintf("%s=%s per node (could not read whether %s is a per-slot "+
+			"consumable; if it is, each node's ceiling is that x %d slot(s))",
+			cfg.MemoryComplex, opt.mem, cfg.MemoryComplex, perNode)
+	}
+}
+
+// memoryScope reads the memory complex's consumable scope, but only when a note
+// will actually use it -- an unpinned layout or a job with no --mem costs no
+// extra Grid Engine call. "" means unknown, which the note states rather than
+// guessing.
+func memoryScope(runner gedata.Runner, cfg *config.Config, opt options, par allocationRule) string {
+	if !par.emit() || opt.mem == "" || cfg.MemoryComplex == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.QstatTimeout.Duration)
+	defer cancel()
+	scope, err := gedata.ConsumableScope(ctx, runner, cfg.MemoryComplex)
+	if err != nil {
+		return ""
+	}
+	return scope
 }

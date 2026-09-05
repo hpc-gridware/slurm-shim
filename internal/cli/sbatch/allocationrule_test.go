@@ -147,8 +147,17 @@ const parUsage = "OCS 9.1.5 (250826-0734)\nusage: qsub [options]\n" +
 	"   [-par allocation_rule]                   set the parallel job allocation rule\n"
 
 // parRunner answers the capability probe and captures the submission argv.
+// scTable is the `qconf -sc` layout the memory note consults: mem_free is not
+// consumable (the stock OCS value), m_mem_free is per-slot.
+const scTable = "#name shortcut type relop requestable consumable default urgency\n" +
+	"mem_free            mf         MEMORY      <=    YES         NO         0        0\n" +
+	"m_mem_free          mfr        MEMORY      <=    YES         YES        0        0\n"
+
 func parRunner(usage string, capture *[]string) *fake.Runner {
 	return &fake.Runner{Responder: func(name string, args []string) fake.Response {
+		if name == "qconf" {
+			return fake.Response{Stdout: []byte(scTable)}
+		}
 		Expect(name).To(Equal("qsub"))
 		if len(args) == 1 && args[0] == "-help" {
 			return fake.Response{Stdout: []byte(usage)}
@@ -291,10 +300,23 @@ var _ = Describe("sbatch emits the allocation rule [REQ-SBT-006]", func() {
 		Expect(errOut.String()).NotTo(ContainSubstring("has no -par"))
 	})
 
-	It("notes the per-node memory ceiling a pinned spread yields", func() {
+	It("states the per-node memory without multiplying a non-consumable complex", func() {
+		// mem_free is consumable NO, so GE does no per-slot multiplication and the
+		// note must not imply one (todos/045).
 		_, errOut, _ := submitWith(cfg, parUsage,
 			"-p", "gpu", "-N", "3", "--ntasks-per-node=2", "--mem=4G")
-		Expect(errOut).To(ContainSubstring("mem_free=4G x 2 slot(s)/node"))
+		Expect(errOut).To(ContainSubstring("mem_free=4G per node"))
+		Expect(errOut).To(ContainSubstring("consumable NO"))
+		Expect(errOut).NotTo(ContainSubstring("x 2 slot(s)/node"))
+	})
+
+	It("multiplies by slots for a per-slot consumable complex", func() {
+		perSlot := *cfg
+		perSlot.MemoryComplex = "m_mem_free"
+		_, errOut, _ := submitWith(&perSlot, parUsage,
+			"-p", "gpu", "-N", "3", "--ntasks-per-node=2", "--mem=4G")
+		Expect(errOut).To(ContainSubstring("m_mem_free=4G x 2 slot(s)/node"))
+		Expect(errOut).To(ContainSubstring("per-slot consumable"))
 	})
 })
 

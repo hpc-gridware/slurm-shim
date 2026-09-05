@@ -11,14 +11,25 @@ import (
 )
 
 var _ = Describe("SLURM_MEM_PER_NODE discovery [A27]", func() {
-	// memRunner replays the captured h_vmem=2G request for `qstat -xml -j`.
-	memRunner := func() *fake.Runner {
+	// memRunner replays the captured h_vmem=2G request for `qstat -xml -j`, and
+	// answers `qconf -sc` with the given consumable scope for h_vmem. The scope
+	// decides whether the request is multiplied by the node's slots, so it must be
+	// answered separately rather than replaying the XML for every command.
+	memRunnerScope := func(consumable string) *fake.Runner {
 		xml, err := os.ReadFile("../gedata/testdata/qstat_j_mem.xml")
 		Expect(err).NotTo(HaveOccurred())
+		sc := []byte("#name shortcut type relop requestable consumable default urgency\n" +
+			"h_vmem              h_vmem     MEMORY      <=    YES         " + consumable + "         0        0\n")
 		return &fake.Runner{Responder: func(name string, args []string) fake.Response {
+			if name == "qconf" && len(args) > 0 && args[0] == "-sc" {
+				return fake.Response{Stdout: sc}
+			}
 			return fake.Response{Stdout: xml}
 		}}
 	}
+	// The default in these specs is a per-slot consumable, which is the only scope
+	// where the slot multiplication applies.
+	memRunner := func() *fake.Runner { return memRunnerScope("YES") }
 
 	It("emits per-slot h_vmem x slots floored to MB", func() {
 		// 2 GiB per slot = 2048 MB; 4 slots -> 8192 MB. The complex is pinned to the
@@ -36,6 +47,18 @@ var _ = Describe("SLURM_MEM_PER_NODE discovery [A27]", func() {
 		r := hostfileFab("node001 1 all.q@node001 0\n", map[string]string{"JOB_ID": "268", "PE": "smp.pe"},
 			memRunner(), cfg)
 		Expect(exportMap(r)["SLURM_MEM_PER_NODE"]).To(Equal("2048"))
+	})
+
+	It("does NOT multiply by slots when the complex is not a per-slot consumable", func() {
+		// The todos/045 bug: mem_free (and h_vmem) are `consumable NO` on stock OCS,
+		// so Grid Engine performs no per-slot multiplication. Multiplying anyway told
+		// a 4-task job it had 4x the memory it asked for (verified live: --mem=100M
+		// announced SLURM_MEM_PER_NODE=400).
+		cfg := testConfig()
+		cfg.MemoryComplex = "h_vmem"
+		r := hostfileFab("node001 4 all.q@node001 0-3\n", map[string]string{"JOB_ID": "268", "PE": "smp.pe"},
+			memRunnerScope("NO"), cfg)
+		Expect(exportMap(r)["SLURM_MEM_PER_NODE"]).To(Equal("2048"), "2 GiB requested, 2 GiB reported")
 	})
 
 	It("omits SLURM_MEM_PER_NODE when memory_complex is disabled", func() {
