@@ -1,0 +1,59 @@
+# The binary is static; what varies by distro is /bin/sh (dash on Ubuntu), the
+# package format, the firewall tool and where modulefiles live. This matrix
+# installs the payload on each target OS and exercises exactly those parts. The
+# full OCS end-to-end suite stays on the quickinstall cluster (make e2e).
+name: os-matrix
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  payload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: GOOS=linux GOARCH=amd64 make tarball
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: dist/slurm-shim_linux_amd64.tar.gz
+  smoke:
+    needs: payload
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["rockylinux:8", "rockylinux:9", "ubuntu:22.04", "ubuntu:24.04"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball
+      - name: install payload the way a site would (tarball unpacked in place)
+        run: |
+          mkdir -p /opt/ocs/slurm-shim && tar -xzf slurm-shim_linux_amd64.tar.gz -C /opt/ocs/slurm-shim
+          ls -l /opt/ocs/slurm-shim/bin | head -12
+      - name: the shim's own diagnostics run without a scheduler
+        run: |
+          /opt/ocs/slurm-shim/bin/slurm-shim --version
+          /opt/ocs/slurm-shim/bin/slurm-shim ports
+          # --offline: no qmaster here; the tree check must still pass on a fresh unpack.
+          /opt/ocs/slurm-shim/bin/slurm-shim doctor --offline || true
+      - name: the starter and hook run under THIS distro's /bin/sh
+        # Ubuntu's /bin/sh is dash. The hook uses `return` in a sourced file and a
+        # case on "$0"; the starter execs through. Both must be POSIX, and this is
+        # where that claim is actually tested (docs/install/README.md).
+        run: |
+          readlink -f /bin/sh
+          sh -n /opt/ocs/slurm-shim/bin/slurm-shim-starter
+          sh -n /opt/ocs/slurm-shim/etc/slurm-shim-source-hook.sh
+          # No fabricated environment: the hook must continue (default policy)
+          # and the starter must exec the job command.
+          TMPDIR=$(mktemp -d) sh /opt/ocs/slurm-shim/bin/slurm-shim-starter /bin/sh -c 'echo STARTED-UNDER-$0' | grep -q STARTED-UNDER
+          # A stepper launch is passed through before the hook is consulted.
+          d=$(mktemp -d); mkdir -p "$d/slurm_shim"; : > "$d/slurm_shim/environment.failed"
+          printf '#!/bin/sh\necho STEPPER-RAN\n' > "$d/slurm-shim"; chmod +x "$d/slurm-shim"
+          TMPDIR="$d" SLURM_SHIM_HOOK_MISSING_ENV=abort sh /opt/ocs/slurm-shim/bin/slurm-shim-starter "$d/slurm-shim" stepper --envelope X | grep -q STEPPER-RAN

@@ -24,12 +24,16 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cmds=(srun sbatch sacct squeue scancel scontrol sinfo slurm-shim-env slurm-shim-stepper)
 for node in "${NODES[@]}"; do
   log "installing shim on $node -> $SHIM_PREFIX"
-  docker exec "$node" mkdir -p "$SHIM_PREFIX/bin" "$SHIM_PREFIX/etc" /etc/slurm-shim
+  docker exec "$node" mkdir -p "$SHIM_PREFIX/bin" "$SHIM_PREFIX/etc" "$CELL_DIR/slurm-shim"
   docker cp "$tmp/slurm-shim" "$node:$SHIM_PREFIX/bin/slurm-shim"
   docker exec "$node" bash -c "chmod +x '$SHIM_PREFIX/bin/slurm-shim'; cd '$SHIM_PREFIX/bin'; for c in ${cmds[*]}; do ln -sf slurm-shim \"\$c\"; done"
   docker cp "$REPO_ROOT/docs/install/slurm-shim-source-hook.sh" "$node:$SHIM_PREFIX/etc/slurm-shim-source-hook.sh"
   docker cp "$REPO_ROOT/docs/install/slurm-shim-starter.sh" "$node:$SHIM_PREFIX/bin/slurm-shim-starter"
-  docker cp "$CLUSTER_DIR/config.yaml" "$node:/etc/slurm-shim/config.yaml"
+  # Cell-scoped config, where every other cluster-wide OCS setting lives and
+  # where config.Load searches first. A legacy /etc copy would be shadowed, so
+  # remove it rather than leave two sources of truth.
+  docker cp "$CLUSTER_DIR/config.yaml" "$node:$CELL_DIR/slurm-shim/config.yaml"
+  docker exec "$node" rm -f /etc/slurm-shim/config.yaml
   # The starter runs AS THE JOB USER for every job in the queue, so the install
   # tree must be root-owned and not writable by anyone else -- otherwise a user
   # who can edit it runs code in every other user's jobs. docker cp keeps the
@@ -37,7 +41,7 @@ for node in "${NODES[@]}"; do
   # && so a failed chown/chmod aborts the install rather than being swallowed --
   # the starter runs as the job user for every job, so a user-writable tree is
   # arbitrary code in every other user's job. Verify the result rather than assume.
-  docker exec "$node" bash -c "chown -R root:root '$SHIM_PREFIX' /etc/slurm-shim && chmod -R go-w '$SHIM_PREFIX' /etc/slurm-shim && chmod 755 '$SHIM_PREFIX/bin/slurm-shim-starter' && chmod 644 '$SHIM_PREFIX/etc/slurm-shim-source-hook.sh'"
+  docker exec "$node" bash -c "chown -R root:root '$SHIM_PREFIX' '$CELL_DIR/slurm-shim' && chmod -R go-w '$SHIM_PREFIX' '$CELL_DIR/slurm-shim' && chmod 755 '$SHIM_PREFIX/bin/slurm-shim-starter' && chmod 644 '$SHIM_PREFIX/etc/slurm-shim-source-hook.sh'"
   owner="$(docker exec "$node" stat -c '%U' "$SHIM_PREFIX/bin/slurm-shim-starter")"
   [ "$owner" = root ] || die "install: $SHIM_PREFIX not root-owned on $node (got $owner)"
   # Put the shim commands on PATH for interactive shells. Login shells read
@@ -53,6 +57,12 @@ done
 # PE mode: the 'make' PE runs slurm-shim-env on the master before the job script,
 # which fabricates layout.json + the SLURM_* environment file into $TMPDIR. The
 # queue's starter_method (below) then sources that file into the job.
+# The real installer wires the dedicated slurm-shim PE, merges the test config
+# (never rewriting its partitions) and verifies the tree. Run it as a manager.
+manager "source $CELL_DIR/settings.sh && $SHIM_PREFIX/bin/slurm-shim install --apply --prefix '$SHIM_PREFIX' >/dev/null"
+
+# The test config also maps partitions onto the STOCK PEs (make, smp, ...), which
+# the installer deliberately never touches; wire those explicitly.
 # qconf mutations require a GE manager (root on this cluster).
 log "wiring PE 'make' start_proc_args -> slurm-shim-env"
 manager "qconf -mattr pe start_proc_args '$SHIM_PREFIX/bin/slurm-shim-env' make"

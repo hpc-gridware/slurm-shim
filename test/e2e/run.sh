@@ -12,6 +12,7 @@ checks=(
   05_hook
   06_starter
   07_interactive
+  08_install
   10_env
   20_srun
   30_sbatch

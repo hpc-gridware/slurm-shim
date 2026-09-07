@@ -105,3 +105,28 @@ e2e-matrix:
 	  OCS_VERSION=$$v $(E2E)/run.sh || exit 1; \
 	  OCS_VERSION=$$v $(E2E)/capture.sh || exit 1; \
 	done
+
+# ---- packaging ---------------------------------------------------------------
+# The payload is the static binary, the queue starter, the hook, and the command
+# links. The tarball IS the payload -- the same delivery model as OCS itself,
+# which unpacks into $SGE_ROOT. `slurm-shim install` places it at the site.
+# No rpm/deb: see docs/install/README.md ("Why no rpm or deb yet").
+PAYLOAD  := dist/payload
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
+ARCH     ?= $(shell go env GOARCH)
+
+.PHONY: payload tarball checksums
+payload: build
+	rm -rf $(PAYLOAD)
+	install -d $(PAYLOAD)/bin $(PAYLOAD)/etc
+	install -m 0755 $(BINDIR)/slurm-shim $(PAYLOAD)/bin/slurm-shim
+	install -m 0755 docs/install/slurm-shim-starter.sh $(PAYLOAD)/bin/slurm-shim-starter
+	install -m 0644 docs/install/slurm-shim-source-hook.sh $(PAYLOAD)/etc/slurm-shim-source-hook.sh
+	@for l in $(LINKS); do ln -sf slurm-shim $(PAYLOAD)/bin/$$l; done
+	install -m 0755 scripts/install.sh dist/install.sh
+
+tarball: payload
+	tar -C $(PAYLOAD) -czf dist/slurm-shim_linux_$(ARCH).tar.gz bin etc
+
+checksums:
+	cd dist && (command -v sha256sum >/dev/null && sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz 2>/dev/null) > SHA256SUMS && cat SHA256SUMS

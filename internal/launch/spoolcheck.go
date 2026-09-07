@@ -89,3 +89,9 @@ func othersCanTraverse(dir string) (open bool, why string) {
 	}
 	return true, fmt.Sprintf("mode %04o", self.Mode().Perm())
 }
+
+// TokenSpoolWarning is the SI-51 check as one string for diagnostics such as
+// `slurm-shim doctor`: "" when the execd spool is not traversable by others.
+func TokenSpoolWarning(ctx context.Context, r gedata.Runner) string {
+	return tokenSpoolWarning(ctx, r)
+}

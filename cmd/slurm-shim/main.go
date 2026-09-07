@@ -6,12 +6,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/hpc-gridware/slurm-shim/internal/cli/doctor"
 	envcmd "github.com/hpc-gridware/slurm-shim/internal/cli/env"
+	"github.com/hpc-gridware/slurm-shim/internal/cli/installcmd"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/ports"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/sacct"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/sbatch"
@@ -50,9 +55,10 @@ var commands = map[string]string{
 	// Internal per-rank trampoline; not user-invoked, dispatched by the stepper.
 	"rank-exec": "rank-exec",
 
-	// Site diagnostic: the TCP ranges that must be open between nodes. Subcommand
-	// only -- there is no SLURM command of this name to shadow.
-	"ports": "ports",
+	// Site tooling, subcommand only -- no SLURM command of these names to shadow.
+	"ports":   "ports",
+	"install": "install",
+	"doctor":  "doctor",
 }
 
 func main() {
@@ -70,7 +76,12 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 	// the shift so it reports the top-level version.
 	if name == "slurm-shim" {
 		if hasVersionFlag(args) {
+			// The base binary may say more than the shimmed commands: their -V is
+			// parsed by submitit and friends and must stay byte-identical, but
+			// nothing parses `slurm-shim --version`, so it names the OCS build and
+			// what an old one cannot do.
 			fmt.Fprintln(stdout, version.String(version.DefaultCompat))
+			printOCSCompat(stdout)
 			return 0
 		}
 		if len(args) == 0 {
@@ -118,6 +129,10 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return stepper.Run(args, stderr)
 	case "rank-exec":
 		return stepper.RankExec(args)
+	case "install":
+		return installcmd.Run(args, stdout, stderr)
+	case "doctor":
+		return doctor.Run(args, stdout, stderr)
 	case "ports":
 		// Site diagnostic, not a SLURM command: prints the TCP ranges that must be
 		// open between nodes and the rules that open them.
@@ -147,4 +162,20 @@ func hasVersionFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+// printOCSCompat appends the scheduler build and compatibility notes to the
+// base binary's --version. Best-effort: with no OCS clients on PATH it prints
+// nothing extra rather than failing a version query.
+func printOCSCompat(stdout io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	b, err := gedata.OCSVersion(ctx, gedata.ExecRunner{})
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(stdout, "Open Cluster Scheduler %s\n", b)
+	for _, n := range doctor.CompatNotes(b) {
+		fmt.Fprintf(stdout, "  note: %s\n", n)
+	}
 }

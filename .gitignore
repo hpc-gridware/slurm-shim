@@ -19,3 +19,6 @@ coverage.txt
 
 # quickinstall clone (test cluster; fetched on demand)
 /test/cluster/.quickinstall/
+
+# Build output: the payload tree, release tarballs and their checksums.
+/dist/

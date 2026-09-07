@@ -1,10 +1,10 @@
 # slurm-shim
 
-**Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run AI tools that only speak SLURM, unmodified.**
+**Drop-in SLURM command compatibility for [Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler) — run tools that only speak SLURM, unmodified.**
 
 `sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration. That holds once a site has wired two Open Cluster Scheduler attributes (a PE `start_proc_args` and a queue `starter_method`, see [Quickstart](#quickstart)); nothing in the job script changes.
 
-**Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — JAX, submitit, and the rest of the AI stack.
+**Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — `submitit`, JAX, and anything else that shells out to `sbatch`.
 
 > **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.5). GPU paths are validated through a fake RSMAP complex, **not** on real hardware. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
@@ -16,55 +16,62 @@ https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
 Among open-source schedulers, SLURM has become the default integration target for many tooling — tutorials, `submitit`, `jax.distributed`, and Hugging Face `accelerate` assume it out of the box. That's a fact about tool defaults, not about scheduling: production clusters run on a range of schedulers, and the Grid Engine lineage in particular still drives fleets in EDA, life sciences, and engineering — under active development today as Open Cluster Scheduler, with first-class GPU handling via RSMAP.
 
-This shim bridges the two worlds: keep your SLURM-native tooling, run it on OCS. It is a single static Go binary (busybox-style symlink dispatch) that shells out to the GE clients (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`) and fabricates the SLURM environment inside GE PE jobs.
+The deeper reason this works at all: Open Cluster Scheduler (fka Sun Grid Engine) is a general-purpose workload runner, not a runner of one blessed workload shape. It has always been indifferent to what a job actually is — a binary, a script, an interactive shell, a container, a service, even another scheduler. Running Grid Engine *on* Grid Engine, a whole cluster submitted as a job, was demonstrated years ago. Against that, a job script that happens to be written in SLURM's dialect is an unremarkable thing to ask it to run.
+
+So the shim is not a special case bolted on; it is that flexibility applied to the most common dialect. Keep your SLURM-native tooling, run it on OCS. It is a single static Go binary (busybox-style symlink dispatch) that shells out to the GE clients (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`) and fabricates the SLURM environment inside GE PE jobs.
 
 ## Quickstart
-
-> **TODO:** there is no installer or package yet. The steps below are done by hand; [`test/cluster/install-shim.sh`](test/cluster/install-shim.sh) performs exactly this sequence against the Docker test cluster and is the scripted reference until one exists.
 
 Two parts: a one-time site install by an Open Cluster Scheduler (fka Sun Grid Engine) manager, then users submit.
 
 ```bash
 # ---- one-time site install (an Open Cluster Scheduler manager does this) ----
-git clone https://github.com/hpc-gridware/slurm-shim
-cd slurm-shim
-make build install-links   # bin/slurm-shim + the command symlinks: srun sbatch sacct
-                           # squeue scancel scontrol sinfo slurm-shim-env slurm-shim-stepper
-                           # (relative links, so bin/ copies as a unit)
+# 1. Get the payload onto the manager host. The bootstrap downloads the release,
+#    verifies its checksum, and goes straight on to step 2:
+curl -fsSL https://github.com/hpc-gridware/slurm-shim/releases/latest/download/install.sh | sh
 
-# 1. Files. The SAME absolute path on EVERY node -- the qrsh envelope carries it as
-#    the remote argv0. Root-owned and writable by nobody else: the starter runs as
-#    the job user for every job in the queue, so whoever can edit it runs code in
-#    every other user's jobs.
-sudo install -d -o root -g root -m 755 /opt/slurm-shim/bin /opt/slurm-shim/etc /etc/slurm-shim
-sudo cp -a bin/. /opt/slurm-shim/bin/                                                   # binary + symlinks
-sudo install -o root -g root -m 755 docs/install/slurm-shim-starter.sh     /opt/slurm-shim/bin/slurm-shim-starter
-sudo install -o root -g root -m 644 docs/install/slurm-shim-source-hook.sh /opt/slurm-shim/etc/slurm-shim-source-hook.sh
-sudo tee /etc/slurm-shim/config.yaml >/dev/null <<'EOF'      # minimal; full key set under Configuration
-default_partition: batch
-partitions:
-  batch: {queue: all.q, pe: make, slots: "per-task"}
-pes:
-  make: {task_policy: slot}
-EOF
-sudo chmod 644 /etc/slurm-shim/config.yaml
-sudo chown -R root:root /opt/slurm-shim && sudo chmod -R go-w /opt/slurm-shim
+#    Or unpack the tarball yourself -- the same delivery model as OCS:
+tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
 
-# 2. Open Cluster Scheduler, once per PE and queue that config.yaml's partitions map to:
-qconf -mattr pe    start_proc_args /opt/slurm-shim/bin/slurm-shim-env     <pe>     # fabricates SLURM_* per job
-qconf -mattr queue starter_method  /opt/slurm-shim/bin/slurm-shim-starter <queue>  # injects it into every job
+# 2. Configure the cluster. Source the cell first; run as a manager.
+source $SGE_ROOT/default/common/settings.sh
+slurm-shim install            # prints the plan, changes NOTHING
+slurm-shim install --apply    # creates the slurm-shim PE, wires every queue's
+                              # starter_method, writes the cell config, prints the
+                              # firewall rules. Idempotent: run it again, 0 changes.
 
-# 3. Verify, as a normal user, with no hook line anywhere:
-export PATH=/opt/slurm-shim/bin:$PATH
-sbatch -p <partition> -N 2 --wrap 'scontrol show hostnames; env | grep -c ^SLURM_'
-cat slurm-<jobid>.out      # one hostname per line, then a count well above 0.
-                           # Empty? The starter is not wired on that queue: qconf -sq <queue> | grep starter_method
+# 3. Put the commands on users' PATH -- YOUR choice, never /usr/bin (sites with
+#    real SLURM clients must not collide):
+slurm-shim install --apply --expose=module      # Tcl modulefile under $SGE_ROOT/slurm-shim/share
+slurm-shim install --apply --expose=profile.d   # /etc/profile.d/slurm-shim.sh for everyone
+
+# 4. Check it, and keep this for support tickets:
+slurm-shim doctor
 
 # ---- users ----
-export PATH=/opt/slurm-shim/bin:$PATH
+module load slurm-shim        # or whatever step 3 chose
 sbatch train.sh
 squeue
 ```
+
+The runtime tree lands at **`$SGE_ROOT/slurm-shim/`** -- the one path guaranteed
+identical on every node, which the `qrsh` envelope requires -- and the config at
+**`$SGE_ROOT/$SGE_CELL/common/slurm-shim/config.yaml`**, next to every other
+cluster-wide setting. On a per-node `$SGE_ROOT`, run step 2 on each node (or copy
+the tree); `slurm-shim doctor` lists the exec hosts that must match.
+
+**What `install --apply` refuses to do**, deliberately: overwrite an existing
+PE's `start_proc_args` (sites use it for MPI tight integration) or a queue's
+existing `starter_method`. It creates a dedicated `slurm-shim` PE instead and
+prints `REFUSED` with the reason; `--force` overrides, `--pe`/`--queue` narrow.
+
+**Needs OCS 9.1.5 (250826-0734) or newer for full fidelity.** On 9.0.x the shim
+runs, but `sacct` reports every parallel job's ExitCode as 0 and `--nodes` is not
+enforced; `slurm-shim --version` and `doctor` say so.
+
+The scripted reference for all of the above is
+[`test/cluster/install-shim.sh`](test/cluster/install-shim.sh), which runs the
+real installer against the Docker test cluster.
 
 `train.sh` — a stock SLURM script with nothing shim-specific in it. Note the honest caveats inline:
 
@@ -81,7 +88,7 @@ squeue
 srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 ```
 
-`sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE hook fabricates the `SLURM_*` variables and the queue's `starter_method` sources them before the script's first line. **The script needs no edit only because the site wired `starter_method`.** On a site that has not, a job script must source `/opt/slurm-shim/etc/slurm-shim-source-hook.sh` itself, or the site enables `wrapper_mode` (see [Configuration](#configuration)); the recipes under [`docs/recipes/`](docs/recipes/) carry that line so they run either way.
+`sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE hook fabricates the `SLURM_*` variables and the queue's `starter_method` sources them before the script's first line. **The script needs no edit only because `slurm-shim install` wired `starter_method`.** On a site that has not, a job script must source `$SGE_ROOT/slurm-shim/etc/slurm-shim-source-hook.sh` itself, or the site enables `wrapper_mode` (see [Configuration](#configuration)); the recipes under [`docs/recipes/`](docs/recipes/) carry that line so they run either way.
 
 *(TODO: record an asciinema/GIF of sbatch -> squeue -> job output.)*
 

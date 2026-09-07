@@ -25,10 +25,35 @@ fabrication (covers only jobs submitted through the shim's `sbatch`).
 
 `slurm-shim-starter.sh` and `slurm-shim-source-hook.sh` are `#!/bin/sh` scripts
 that use `return` inside a sourced file and a `case` on `"$0"` -- POSIX features,
-no bashisms. Any POSIX `/bin/sh` (dash, ksh, or bash-as-sh) satisfies them. The
-suite exercises them under the test cluster's `/bin/sh` (bash); a site whose
-`/bin/sh` is dash is supported but not yet run in CI, so smoke-test one job there
-after install.
+no bashisms. Any POSIX `/bin/sh` satisfies them. **Verified under dash**
+(Ubuntu 22.04, `/bin/sh -> /usr/bin/dash`): syntax, the job exec, the stepper
+short-circuit and the abort policy all behave identically to bash-as-sh. The
+`os-matrix` CI job repeats that on Rocky 8/9 and Ubuntu 22.04/24.04.
+
+## Installing
+
+Use the bootstrap or the tarball; both end in `slurm-shim install`, which is
+where the cluster is actually configured (PE, queue wiring, cell config,
+firewall rules), idempotently and without prompts. See the README Quickstart.
+
+## Why no rpm or deb yet
+
+The payload is one static binary plus two POSIX shell scripts, and the runtime
+tree has to live at `$SGE_ROOT/slurm-shim` -- the one path guaranteed identical
+on every node, which the `qrsh` envelope requires. A package cannot put it there
+(package paths are fixed; `$SGE_ROOT` varies by site), so it would only stage a
+payload somewhere else for `slurm-shim install` to copy: a second location to
+explain, for no gain over `tar -xzf`.
+
+This is also how OCS itself arrives -- a tarball unpacked into `$SGE_ROOT` -- so
+the shim follows the scheduler it extends rather than introducing a package
+manager the scheduler does not use.
+
+**What would change this:** a site that requires signed distro packages, plus
+somewhere to publish them and an owner for the core package's weak dependency.
+At that point the payload is unchanged and only the wrapper is new; `nfpm` over
+`dist/payload` is a small file. Until then, packaging would be four untested
+artifacts (rpm x deb x amd64 x arm64) for a project that changes weekly.
 
 ## Firewall
 

@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -19,12 +20,53 @@ import (
 // EnvVar names the environment variable that overrides the config search path.
 const EnvVar = "SLURM_SHIM_CONFIG"
 
-// DefaultPath is the fixed location searched when EnvVar is unset.
+// DefaultPath is the fixed fallback location, searched last.
 const DefaultPath = "/etc/slurm-shim/config.yaml"
+
+// CellRelPath is where the config lives inside the cell, next to every other
+// cluster-wide OCS setting: $SGE_ROOT/$SGE_CELL/common/slurm-shim/config.yaml.
+// One copy on a shared root; on a per-node root, the same place the site already
+// distributes.
+const CellRelPath = "common/slurm-shim/config.yaml"
+
+// SearchPaths returns the config locations in the order Load tries them:
+// $SLURM_SHIM_CONFIG if set (alone -- an explicit path is not a search), then
+// the cell path when $SGE_ROOT is set, then DefaultPath.
+func SearchPaths() []string {
+	if p := os.Getenv(EnvVar); p != "" {
+		return []string{p}
+	}
+	var paths []string
+	if root := os.Getenv("SGE_ROOT"); root != "" {
+		cell := os.Getenv("SGE_CELL")
+		if cell == "" {
+			cell = "default"
+		}
+		paths = append(paths, filepath.Join(root, cell, CellRelPath))
+	}
+	return append(paths, DefaultPath)
+}
+
+// CellPath is where the installer writes: the cell path when $SGE_ROOT is set,
+// else DefaultPath.
+func CellPath() string {
+	return SearchPaths()[0]
+}
+
+// Render serialises a config as YAML that Parse reads back identically.
+func Render(cfg *Config) ([]byte, error) {
+	return yaml.Marshal(cfg)
+}
 
 // Duration wraps time.Duration so YAML scalars like "30s" parse via
 // time.ParseDuration (REQ-CFG-002).
 type Duration struct{ time.Duration }
+
+// MarshalYAML renders the duration as the same scalar form UnmarshalYAML
+// accepts, so a config the installer writes reads back identically.
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return d.String(), nil
+}
 
 // UnmarshalYAML parses a Go duration string.
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
@@ -193,18 +235,26 @@ func Default() *Config {
 // and parses it. A missing file at either location yields defaults with no
 // warnings (REQ-CFG-001).
 func Load() (*Config, []string, error) {
-	path := os.Getenv(EnvVar)
-	if path == "" {
-		path = DefaultPath
+	cfg, _, warns, err := LoadFrom(SearchPaths())
+	return cfg, warns, err
+}
+
+// LoadFrom tries each path in order and parses the first that exists,
+// returning it so callers (doctor) can say which one was used. "" means none
+// existed and the compiled-in defaults apply.
+func LoadFrom(paths []string) (*Config, string, []string, error) {
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, path, nil, err
+		}
+		cfg, warns, err := Parse(data)
+		return cfg, path, warns, err
 	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return Default(), nil, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	return Parse(data)
+	return Default(), "", nil, nil
 }
 
 // Parse overlays a YAML document onto the defaults. It returns warnings for

@@ -22,6 +22,7 @@ OCS_VERSION="${OCS_VERSION:-9.1.5}"        # default OCS package version
 READY_TIMEOUT="${READY_TIMEOUT:-360}"
 
 SHIM_PREFIX=/opt/slurm-shim               # identical absolute path on every node
+CELL_DIR=/opt/ocs/default/common         # the cell; config.yaml lives in $CELL_DIR/slurm-shim (per-node $SGE_ROOT here)
 COMPOSE_SUBDIR=containers/openSUSE/15.6
 NODES=(ocs-master ocs-worker1 ocs-worker2)
 MASTER=ocs-master
