@@ -1,0 +1,90 @@
+# Publishes the assets the documented install path depends on:
+#
+#   curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | sh
+#
+# That URL resolves to the newest release that is NOT a draft and NOT a
+# prerelease, so this workflow publishes a full release. Marking one as a
+# prerelease in the GitHub UI silently breaks the documented command.
+#
+# Asset names are load-bearing: scripts/install.sh downloads
+# slurm-shim_linux_${ARCH}.tar.gz and SHA256SUMS from the same release and
+# verifies the tarball against it before unpacking anything.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to (re)publish"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tag history, so `git describe` stamps the real version into the binary.
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: build both cluster architectures
+        run: |
+          make tarball ARCH=amd64
+          make tarball ARCH=arm64
+          make checksums
+
+      # The tarball name promises an OS and an architecture. Verify the binary
+      # inside actually is that, rather than trusting the filename: building the
+      # payload from the host toolchain once produced a macOS binary in a file
+      # called ...linux_arm64.tar.gz.
+      - name: verify each tarball contains the Linux binary it claims
+        run: |
+          set -eu
+          for arch in amd64 arm64; do
+            case "$arch" in
+              amd64) want="x86-64" ;;
+              arm64) want="aarch64" ;;
+            esac
+            rm -rf /tmp/verify && mkdir -p /tmp/verify
+            tar -xzf "dist/slurm-shim_linux_${arch}.tar.gz" -C /tmp/verify
+            got="$(file -b /tmp/verify/bin/slurm-shim)"
+            echo "$arch: $got"
+            case "$got" in
+              ELF*"$want"*) ;;
+              *) echo "::error::slurm-shim_linux_${arch}.tar.gz does not contain a Linux $want binary"; exit 1 ;;
+            esac
+            test -x /tmp/verify/bin/slurm-shim-starter
+            test -f /tmp/verify/etc/slurm-shim-source-hook.sh
+            test "$(readlink /tmp/verify/bin/srun)" = slurm-shim
+          done
+
+      # The bootstrap is what the curl command actually fetches; a syntax error
+      # here breaks every install, and it is plain sh so this is free.
+      - name: check the bootstrap parses
+        run: sh -n dist/install.sh
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          # --latest keeps /releases/latest/download/ pointing here. Do NOT pass
+          # --prerelease: that URL skips prereleases and the docs would 404.
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --latest \
+            dist/install.sh \
+            dist/slurm-shim_linux_amd64.tar.gz \
+            dist/slurm-shim_linux_arm64.tar.gz \
+            dist/SHA256SUMS

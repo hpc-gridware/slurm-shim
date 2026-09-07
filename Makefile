@@ -112,14 +112,17 @@ e2e-matrix:
 # which unpacks into $SGE_ROOT. `slurm-shim install` places it at the site.
 # No rpm/deb: see docs/install/README.md ("Why no rpm or deb yet").
 PAYLOAD  := dist/payload
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 ARCH     ?= $(shell go env GOARCH)
 
 .PHONY: payload tarball checksums
-payload: build
+# GOOS is pinned: the payload runs on cluster nodes, never on the build host, and
+# ARCH must name what the binary actually is. Building from the host `build`
+# target once produced a macOS binary inside a file called ...linux_arm64.tar.gz.
+payload:
 	rm -rf $(PAYLOAD)
 	install -d $(PAYLOAD)/bin $(PAYLOAD)/etc
-	install -m 0755 $(BINDIR)/slurm-shim $(PAYLOAD)/bin/slurm-shim
+	GOOS=linux GOARCH=$(ARCH) CGO_ENABLED=0 go build -tags osusergo,netgo -trimpath \
+	  -ldflags "$(LDFLAGS)" -o $(PAYLOAD)/bin/slurm-shim ./cmd/slurm-shim
 	install -m 0755 docs/install/slurm-shim-starter.sh $(PAYLOAD)/bin/slurm-shim-starter
 	install -m 0644 docs/install/slurm-shim-source-hook.sh $(PAYLOAD)/etc/slurm-shim-source-hook.sh
 	@for l in $(LINKS); do ln -sf slurm-shim $(PAYLOAD)/bin/$$l; done
