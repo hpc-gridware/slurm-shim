@@ -131,47 +131,90 @@ type Problem struct {
 // as any job user (root, or the OCS admin user) and writable by nobody else.
 // adminUser is "" when the cell's bootstrap says none (then only root qualifies).
 func CheckTree(prefix, adminUser string) []Problem {
-	var out []Problem
 	allowed := map[string]bool{"root": true}
 	if adminUser != "" {
 		allowed[adminUser] = true
 	}
-	// Files that are executed or sourced, then the directories up to the root.
-	paths := []string{
-		filepath.Join(prefix, BinaryRel),
-		filepath.Join(prefix, StarterRel),
-		filepath.Join(prefix, HookRel),
+
+	// Resolve the prefix before walking its ancestors. A component may legitimately
+	// be a symlink -- macOS has /var -> private/var, and a site may point
+	// /opt/ocs at shared storage -- and walking the lexical path would inspect
+	// directories that are not on the real chain while missing the ones that are.
+	root, err := filepath.EvalSymlinks(prefix)
+	if err != nil {
+		return []Problem{{prefix, "cannot resolve: " + err.Error()}}
 	}
-	for d := filepath.Clean(prefix); ; d = filepath.Dir(d) {
-		paths = append(paths, d)
+
+	var out []Problem
+	check := func(path string, fi os.FileInfo) {
+		if fi.Mode().Perm()&0o022 != 0 && !stickyDir(fi) {
+			out = append(out, Problem{path, "group- or world-writable (mode " + modeText(fi) + ")"})
+		}
+		if owner := ownerName(fi); !allowed[owner] {
+			out = append(out, Problem{path, "owned by " + owner + "; must be root" + orAdmin(adminUser)})
+		}
+	}
+
+	// The files the starter executes or sources. A symlink here would extend the
+	// trust chain somewhere this walk cannot see, and InstallTree never creates
+	// one, so treat it as a problem rather than following it.
+	for _, rel := range []string{BinaryRel, StarterRel, HookRel} {
+		path := filepath.Join(root, rel)
+		fi, err := os.Lstat(path)
+		if err != nil {
+			out = append(out, Problem{path, "missing: " + err.Error()})
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			out = append(out, Problem{path, "is a symlink; the trust chain must be a real file"})
+			continue
+		}
+		check(path, fi)
+	}
+
+	// Every directory from the tree up to the filesystem root. These are real
+	// directories by construction now, so ownership and mode are the whole test.
+	for d := root; ; d = filepath.Dir(d) {
+		fi, err := os.Lstat(d)
+		if err != nil {
+			out = append(out, Problem{d, "missing: " + err.Error()})
+		} else {
+			check(d, fi)
+		}
 		if d == filepath.Dir(d) {
 			break
 		}
 	}
-	for _, p := range paths {
-		fi, err := os.Lstat(p)
-		if err != nil {
-			out = append(out, Problem{p, "missing: " + err.Error()})
-			continue
-		}
-		if fi.Mode()&os.ModeSymlink != 0 && !strings.HasPrefix(p, filepath.Join(prefix, "bin")+"/") {
-			out = append(out, Problem{p, "is a symlink; the trust chain must be real directories"})
-		}
-		if fi.Mode().Perm()&0o022 != 0 {
-			out = append(out, Problem{p, fmt.Sprintf("group- or world-writable (mode %04o)", fi.Mode().Perm())})
-		}
-		if owner := ownerName(fi); !allowed[owner] {
-			out = append(out, Problem{p, "owned by " + owner + "; must be root" + orAdmin(adminUser)})
-		}
-	}
+
+	// The command names are relative symlinks to the binary, by design.
 	for _, c := range Commands {
-		link := filepath.Join(prefix, "bin", c)
-		target, err := os.Readlink(link)
-		if err != nil || target != "slurm-shim" {
+		link := filepath.Join(root, "bin", c)
+		if target, err := os.Readlink(link); err != nil || target != "slurm-shim" {
 			out = append(out, Problem{link, "missing or not a link to slurm-shim"})
 		}
 	}
 	return out
+}
+
+// stickyDir reports whether a world-writable DIRECTORY is nonetheless safe to
+// have on the path to the starter. The sticky bit stops anyone but a file's
+// owner renaming or removing it, which is exactly the substitution this check
+// exists to prevent -- /tmp is 1777 for that reason. An attacker can still
+// create their own entries beside ours, but cannot replace ours, so the chain
+// holds. Meaningless for files: writable is writable.
+func stickyDir(fi os.FileInfo) bool {
+	return fi.IsDir() && fi.Mode()&os.ModeSticky != 0
+}
+
+// modeText renders the permission bits including the sticky bit, which
+// os.FileMode.Perm() drops -- without it a report cannot tell 0777 (a real
+// hazard) from 1777 (not one).
+func modeText(fi os.FileInfo) string {
+	perm := uint32(fi.Mode().Perm())
+	if fi.Mode()&os.ModeSticky != 0 {
+		perm |= 0o1000
+	}
+	return fmt.Sprintf("%04o", perm)
 }
 
 func orAdmin(adminUser string) string {

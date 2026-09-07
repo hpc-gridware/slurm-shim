@@ -70,12 +70,65 @@ var _ = Describe("CheckTree [starter trust boundary]", func() {
 		payload(src)
 		prefix := filepath.Join(GinkgoT().TempDir(), "p")
 		Expect(install.InstallTree(src, prefix)).To(Succeed())
-		// The temp dir is 0700 and ours; the check walks to /, where ancestors
-		// are root-owned 0755. Allow the current user as the admin user.
-		probs := install.CheckTree(prefix, me())
-		for _, p := range probs {
-			Expect(p.Why).NotTo(ContainSubstring("writable"), p.Path)
+		// The check walks every ancestor to /. On Linux the temp dir sits under
+		// /tmp (1777) and on macOS under /var/folders; both must come back clean,
+		// so this also pins that a sticky /tmp is not reported as a hazard.
+		Expect(install.CheckTree(prefix, me())).To(BeEmpty())
+	})
+
+	It("flags a world-writable directory on the path that is NOT sticky", func() {
+		// The hazard the check exists for: anyone can replace the tree's parent,
+		// and with it the starter that runs as every job user.
+		open := filepath.Join(GinkgoT().TempDir(), "open")
+		Expect(os.MkdirAll(open, 0o755)).To(Succeed())
+		src := GinkgoT().TempDir()
+		payload(src)
+		prefix := filepath.Join(open, "p")
+		Expect(install.InstallTree(src, prefix)).To(Succeed())
+		Expect(os.Chmod(open, 0o777)).To(Succeed())
+
+		// Problems name the resolved path -- the one an admin has to chmod --
+		// which on macOS differs from the lexical one (/var -> private/var).
+		openReal, err := filepath.EvalSymlinks(open)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(install.CheckTree(prefix, me())).To(ContainElement(And(
+			HaveField("Path", openReal),
+			HaveField("Why", ContainSubstring("mode 0777")),
+		)))
+	})
+
+	It("does not flag the same directory once it is sticky", func() {
+		// Same 0777 bits plus the sticky bit: entries can no longer be replaced by
+		// other users, so the trust chain holds. The reported mode must say 1777,
+		// or a reader cannot tell the two cases apart.
+		sticky := filepath.Join(GinkgoT().TempDir(), "sticky")
+		Expect(os.MkdirAll(sticky, 0o755)).To(Succeed())
+		src := GinkgoT().TempDir()
+		payload(src)
+		prefix := filepath.Join(sticky, "p")
+		Expect(install.InstallTree(src, prefix)).To(Succeed())
+		Expect(os.Chmod(sticky, 0o777|os.ModeSticky)).To(Succeed())
+
+		stickyReal, err := filepath.EvalSymlinks(sticky)
+		Expect(err).NotTo(HaveOccurred())
+		for _, p := range install.CheckTree(prefix, me()) {
+			Expect(p.Path).NotTo(Equal(stickyReal), "a sticky world-writable dir is not a substitution hazard")
 		}
+	})
+
+	It("still flags a world-writable FILE even under a sticky directory", func() {
+		// Sticky says nothing about a file's own contents.
+		sticky := filepath.Join(GinkgoT().TempDir(), "sticky")
+		Expect(os.MkdirAll(sticky, 0o755)).To(Succeed())
+		src := GinkgoT().TempDir()
+		payload(src)
+		prefix := filepath.Join(sticky, "p")
+		Expect(install.InstallTree(src, prefix)).To(Succeed())
+		Expect(os.Chmod(sticky, 0o777|os.ModeSticky)).To(Succeed())
+		Expect(os.Chmod(filepath.Join(prefix, install.StarterRel), 0o777|os.ModeSticky)).To(Succeed())
+
+		Expect(install.CheckTree(prefix, me())).To(ContainElement(
+			HaveField("Path", HaveSuffix("slurm-shim-starter"))))
 	})
 
 	It("flags a group- or world-writable starter", func() {
