@@ -106,7 +106,8 @@ the nastiest failure -- auto-detection not firing and every rank training alone.
   recipe is verified against as well.
 - Each node's own `hostname` must resolve to a routable, non-loopback address --
   CPU/gloo binds to `gethostname()`.
-- TCP 61440-65535 reachable node-to-node.
+- TCP 61440-65535 reachable node-to-node. The shim's control channel defaults to
+  61000-61439, immediately below, so one rule for 61000-65535 covers both.
 
 ## Troubleshooting
 

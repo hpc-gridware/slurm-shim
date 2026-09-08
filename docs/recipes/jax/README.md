@@ -150,6 +150,7 @@ unbound ranks each see `cuda=[0,1]` (the node's whole grant), while
 | Silent hang, fails after 300s | coordinator port unreachable between nodes | open TCP 61440-65535 node-to-node; raise `initialization_timeout` |
 | Hang with a proxy configured | gRPC routes the rendezvous through the proxy | `unset http_proxy https_proxy` (the recipe does this) |
 | Two concurrent jobs fight over the coordinator socket | job ids differ by a multiple of 4096 | `export JAX_COORDINATOR_PORT=<free port>` (JAX >= 0.8.1) |
+| `Address already in use` on rank 0 only, other ranks time out | the site moved `control_port_base` into 61440-65535, so `srun` bound the coordinator's port first | move the control range below 61440 (the 61000-61439 default), or set `JAX_COORDINATOR_PORT` outside it |
 | JAX ignores the SLURM env entirely | something in the job env sets `OMPI_MCA_orte_hnp_uri` -- **JAX checks Open MPI before SLURM** and silently wins | do not launch JAX under `mpirun`; or force `jax.distributed.initialize(cluster_detection_method="slurm")` |
 | `Unable to initialize backend 'cpu' ... Unable to find address for: <host>` | CPU/gloo binds to the node's **own** `gethostname()`, which must resolve to a routable address | fix `/etc/hosts`/DNS on the node (a hostname mapped only to `127.0.0.1` fails) |
 | Array tasks join each other's group | all array tasks share one `SLURM_JOB_ID`, so all derive the same port | give each task its own port (the recipe does this from `SLURM_ARRAY_TASK_ID`) |
@@ -175,7 +176,9 @@ unbound ranks each see `cuda=[0,1]` (the node's whole grant), while
   the nodelist must resolve *from every node* (the coordinator), and (2) each
   node's **own** `hostname` must resolve locally to a routable, non-loopback
   address -- CPU/gloo binds to `gethostname()` and there is no JAX-level override.
-- TCP 61440-65535 reachable node-to-node.
+- TCP 61440-65535 reachable node-to-node. The shim's control channel defaults to
+  61000-61439, immediately below, so one rule for 61000-65535 covers both (run
+  `slurm-shim ports` for the site's actual ranges).
 - **JAX version**: >= 0.5.1 for zero-config CPU collectives (gloo became the
   default), and >= 0.8.1 recommended -- from that release auto-detection requires
   all five variables (so a partial environment is ignored cleanly instead of

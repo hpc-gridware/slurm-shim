@@ -30,7 +30,7 @@ var _ = Describe("slurm-shim ports", func() {
 		})
 		Expect(out).To(ContainSubstring("51000-51099"))
 		Expect(out).To(ContainSubstring("41000-41499"))
-		Expect(out).NotTo(ContainSubstring("63000"), "must not print the default when overridden")
+		Expect(out).NotTo(ContainSubstring("61000"), "must not print the default when overridden")
 	})
 
 	It("emits rules for firewalld, GCP and nftables", func() {

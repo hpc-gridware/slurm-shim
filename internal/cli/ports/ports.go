@@ -32,7 +32,7 @@ func Run(cfg *config.Config, stdout io.Writer) int {
 	if cfg.ControlPortBase <= 0 || cfg.ControlPortRange <= 0 {
 		fmt.Fprintln(stdout, "WARNING: control_port_base/control_port_range are disabled, so srun binds an")
 		fmt.Fprintln(stdout, "ephemeral port that differs on every step. No firewall rule can describe it.")
-		fmt.Fprintln(stdout, "Set control_port_base (e.g. 63000) unless this network is unfiltered.")
+		fmt.Fprintln(stdout, "Set control_port_base (e.g. 61000) unless this network is unfiltered.")
 		fmt.Fprintln(stdout)
 	}
 

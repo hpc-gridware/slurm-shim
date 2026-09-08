@@ -22,7 +22,7 @@ var _ = Describe("GenerateConfig", func() {
 	It("starts from the compiled defaults, so the safe memory complex and port range come along", func() {
 		cfg := install.GenerateConfig(planFor(bare()), nil)
 		Expect(cfg.MemoryComplex).To(Equal("mem_free"))
-		Expect(cfg.ControlPortBase).To(Equal(63000))
+		Expect(cfg.ControlPortBase).To(Equal(61000))
 		Expect(cfg.DefaultPartition).To(Equal("all"))
 		Expect(cfg.Partitions["all"]).To(Equal(config.Partition{Queue: "all.q", PE: "slurm-shim", Slots: "per-task"}))
 		Expect(cfg.PEs["slurm-shim"].TaskPolicy).To(Equal("slot"))

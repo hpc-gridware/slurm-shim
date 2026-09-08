@@ -366,17 +366,27 @@ slurm-shim ports
 
 | Range | Default | Direction | Carries |
 |---|---|---|---|
-| `control_port_base` + `control_port_range` | 63000-64999 | compute nodes -> job's master node | steppers dialling back to `srun` |
+| `control_port_base` + `control_port_range` | 61000-61439 | compute nodes -> job's master node | steppers dialling back to `srun` |
 | `master_port_base` + `master_port_range` | 20000-29999 | compute nodes -> job's master node | `MASTER_PORT` for `torchrun` and friends |
 
 Both are inbound to the job's **master node**; no rule is needed in the other
 direction. Single-node steps stay on loopback and need no rule at all.
 
-The control range sits above the usual Linux ephemeral ceiling
-(`cat /proc/sys/net/ipv4/ip_local_port_range`, commonly `32768 60999`) so the
-listener cannot race the source port of an outbound connection. If your site
-raises that ceiling, move `control_port_base` above it. It is the analogue of
-SLURM's `SrunPortRange`.
+The control range is bounded on both sides. It sits above the usual Linux
+ephemeral ceiling (`cat /proc/sys/net/ipv4/ip_local_port_range`, commonly
+`32768 60999`) so the listener cannot race the source port of an outbound
+connection, and it stops below 61440, where JAX's SLURM auto-detect places its
+coordinator (`SLURM_JOB_ID % 4096 + 61440`, so anywhere in 61440-65535). `srun`
+binds the control channel before it launches rank 0, so a control port inside
+that window would occasionally take the coordinator's port and hang the step
+until JAX's 300s initialization timeout. It is the analogue of SLURM's
+`SrunPortRange`.
+
+If your site raises the ephemeral ceiling, move `control_port_base` above it --
+but if you run JAX, keep the range clear of 61440-65535, or set
+`JAX_COORDINATOR_PORT` in the job script to a port outside the control range.
+One firewall rule for 61000-65535 covers the shim's control channel and every
+JAX coordinator, since the two spans are adjacent.
 
 Setting `control_port_base: 0` restores an ephemeral port. That only works where
 nothing filters between nodes, because the port then differs on every step and no

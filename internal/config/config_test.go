@@ -211,6 +211,25 @@ var _ = Describe("control port validation", func() {
 			To(BeNumerically("<=", 65535))
 	})
 
+	// The shipped range has to clear two neighbours that would otherwise steal or
+	// be stolen from. Below: the Linux ephemeral range (commonly 32768-60999),
+	// whose source ports would race the listener. Above: 61440-65535, where JAX's
+	// SLURM auto-detect puts its coordinator (SLURM_JOB_ID % 4096 + 61440). srun
+	// binds the control channel on the master node before it launches rank 0, so a
+	// default reaching into JAX's window would occasionally take the coordinator's
+	// port and hang the step until JAX's 300s initialization timeout.
+	It("ships a default clear of the ephemeral range and of JAX's coordinator window", func() {
+		const ephemeralCeiling = 60999
+		const jaxCoordinatorFloor = 61440
+
+		def := config.Default()
+		last := def.ControlPortBase + def.ControlPortRange - 1
+		Expect(def.ControlPortBase).To(BeNumerically(">", ephemeralCeiling))
+		Expect(last).To(BeNumerically("<", jaxCoordinatorFloor),
+			"control range %d-%d overlaps JAX coordinator ports %d-65535",
+			def.ControlPortBase, last, jaxCoordinatorFloor)
+	})
+
 	It("warns that the removed control_port key is ignored (migration signal)", func() {
 		_, warns := parse("control_port: 30000\n")
 		Expect(warns).To(ContainElement(ContainSubstring(`unknown config key "control_port"`)))

@@ -209,12 +209,18 @@ func Default() *Config {
 		EmitCPUsPerTask:        false,
 		LaunchRamp:             64,
 		LaunchTimeout:          Duration{60 * time.Second},
-		// Above the usual Linux ephemeral ceiling (32768-60999) so the listener
-		// cannot race the source port of an outbound connection, clear of Grid
-		// Engine's 6444/6445 and of master_port_base's 20000-29999. SLURM's
-		// SrunPortRange is the analogous setting.
-		ControlPortBase:   63000,
-		ControlPortRange:  2000,
+		// 61000-61439: above the usual Linux ephemeral ceiling (32768-60999) so
+		// the listener cannot race the source port of an outbound connection,
+		// clear of Grid Engine's 6444/6445 and of master_port_base's
+		// 20000-29999, and below 61440 -- where JAX's Slurm auto-detect puts its
+		// coordinator (SLURM_JOB_ID % 4096 + 61440, i.e. anywhere in
+		// 61440-65535). srun binds before it launches rank 0, so an overlap
+		// would take the coordinator's port and hang the step until JAX's
+		// 300s initialization timeout. That leaves exactly this span, and 440
+		// concurrent remote steps on one host is far more than a node runs.
+		// SLURM's SrunPortRange is the analogous setting.
+		ControlPortBase:   61000,
+		ControlPortRange:  440,
 		PingInterval:      Duration{10 * time.Second},
 		PingDeadline:      Duration{30 * time.Second},
 		OrphanGrace:       Duration{3 * time.Minute},
