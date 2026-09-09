@@ -49,7 +49,11 @@ collision-free port; note PyTorch Lightning ignores it and derives its own.)
 ### 2. Pick the right GPU-visibility model
 
 The shim assigns GPUs per `srun` rank, so how many GPUs a process sees depends on
-how you shape the step:
+how you shape the step. These recipes name `CUDA_VISIBLE_DEVICES` throughout; on a
+site configured with `gpu.vendor: amd` the same per-rank mask is written as
+`ROCR_VISIBLE_DEVICES` instead -- exactly one of the two is ever set, and the other
+vendor's variables are removed from the rank environment so an inherited value
+cannot layer on top. Nothing else below changes.
 
 - **One task per node (recommended for torchrun).** `srun --ntasks-per-node=1`
   gives that single task the node's **whole** granted GPU set

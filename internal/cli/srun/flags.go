@@ -245,7 +245,7 @@ func applyGPUBind(opt *options, cfg *config.Config, envBind string) {
 
 // warnCgroupCannotBind reports a binding request the shim is about to drop:
 // under gpu.isolation: cgroup, GE's devices_allow masks per JOB and
-// gpuAssignment publishes no per-rank CUDA_VISIBLE_DEVICES (REQ-GPU-003), so
+// gpuAssignment publishes no per-rank device variable (REQ-GPU-003), so
 // every task sees the whole grant. Call after applyGPUBind and before the
 // warnings are drained.
 //

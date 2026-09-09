@@ -14,9 +14,9 @@ cat >"$job" <<'EOF'
 echo "GPUSONNODE=$SLURM_GPUS_ON_NODE"
 echo "JOBGPUS=$SLURM_JOB_GPUS"
 # Default binding: SLURM leaves the node's whole grant visible to every task.
-srun -n 2 bash -c 'echo "default localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES]"'
+srun -n 2 bash -c 'echo "default localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES] rocr=[${ROCR_VISIBLE_DEVICES-UNSET}]"'
 # Explicit per-task binding still gives each rank its own device.
-srun -n 2 --gpus-per-task=1 bash -c 'echo "pertask localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES]"'
+srun -n 2 --gpus-per-task=1 bash -c 'echo "pertask localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES] rocr=[${ROCR_VISIBLE_DEVICES-UNSET}]"'
 EOF
 
 remote=/home/gridware/e2e-60-gpu.sh
@@ -34,10 +34,14 @@ assert_contains "$res" "JOBGPUS=0,1" "SLURM_JOB_GPUS lists both devices"
 
 # Delimited exact matches: a substring test cannot tell "0" from "0,1", which is
 # precisely the distinction between the two binding models.
-assert_contains "$res" "default localid=0 cuda=[0,1]" "unbound rank 0 sees the whole grant"
-assert_contains "$res" "default localid=1 cuda=[0,1]" "unbound rank 1 sees the whole grant"
-assert_contains "$res" "pertask localid=0 cuda=[0]" "--gpus-per-task binds rank 0 to one device"
-assert_contains "$res" "pertask localid=1 cuda=[1]" "--gpus-per-task binds rank 1 to one device"
+# Whole lines, including rocr: a bare "rocr=[UNSET]" would pass while one of the
+# two ranks leaked, and a bare "cuda=[0]" prefix-matches "cuda=[0,1]". Exactly one
+# device variable reaches a rank -- on ROCm a second mask holding the same
+# absolute ids indexes into the already-filtered list and selects wrong devices.
+assert_contains "$res" "default localid=0 cuda=[0,1] rocr=[UNSET]" "unbound rank 0 sees the whole grant, and only that variable"
+assert_contains "$res" "default localid=1 cuda=[0,1] rocr=[UNSET]" "unbound rank 1 sees the whole grant, and only that variable"
+assert_contains "$res" "pertask localid=0 cuda=[0] rocr=[UNSET]" "--gpus-per-task binds rank 0 to one device, and only that variable"
+assert_contains "$res" "pertask localid=1 cuda=[1] rocr=[UNSET]" "--gpus-per-task binds rank 1 to one device, and only that variable"
 
 # The invariant JAX (local_device_ids=[SLURM_LOCALID]) and torch (LOCAL_RANK) need:
 # every local rank must be a valid index into its own visible device list.

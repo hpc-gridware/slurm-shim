@@ -9,12 +9,25 @@ import (
 	"strings"
 )
 
-// HostGPUs is the set of GPU device indices granted to a job on one exec host.
-// Indices are physical device numbers (REQ-GPU-002): the shim partitions them
-// among the node's local ranks to build each rank's visible-device set.
+// HostGPUs is the set of GPU device ids granted to a job on one exec host.
+// Ids are the tokens the device-visibility variable consumes (REQ-GPU-002): the
+// shim partitions them among the node's local ranks to build each rank's visible
+// device set.
+//
+// They are strings, not ints, because both ends of the pipeline are strings. GE
+// RSMAP ids are strings, and CUDA_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES accept
+// either a numeric index or a "GPU-<hex>" UUID. Coercing to int in between
+// destroyed the UUID form, which is the only device identity that survives a
+// reboot, a driver reload, or an AMD compute-partition change.
 type HostGPUs struct {
 	Host    string
-	Devices []int
+	Devices []string
+	// Unrecognized holds granted ids that matched no known form and were given
+	// their position in the grant instead. That keeps the job runnable, but the
+	// id is a guess, so callers warn rather than passing it on silently: an id
+	// the shim did not understand is how a device identity turns into the wrong
+	// device.
+	Unrecognized []string
 }
 
 // GrantedGPUs returns the GPUs granted to a job, keyed by exec host, using
@@ -70,13 +83,16 @@ func ParseGrantedGPUsXML(data []byte, complexName string) ([]HostGPUs, error) {
 				if gru.Name != complexName {
 					continue
 				}
-				devices := make([]int, 0, len(gru.Map))
-				for ordinal, m := range gru.Map {
-					// One RESL element is one granted device id (RESL_amount is 1
-					// for RSMAP GPU ids).
-					devices = append(devices, deviceIndex(m.Value, ordinal))
+				// One RESL element is one granted device id (RESL_amount is 1
+				// for RSMAP GPU ids).
+				raw := make([]string, 0, len(gru.Map))
+				for _, m := range gru.Map {
+					raw = append(raw, m.Value)
 				}
-				out = append(out, HostGPUs{Host: gru.Host, Devices: devices})
+				devices, unknown := DeviceTokens(raw)
+				out = append(out, HostGPUs{
+					Host: gru.Host, Devices: devices, Unrecognized: unknown,
+				})
 			}
 		}
 	}
@@ -100,9 +116,11 @@ func ParseResourceMapPlain(text, complexName string) []HostGPUs {
 		if m == nil || strings.TrimSpace(m[1]) != complexName {
 			continue
 		}
+		devices, unknown := parseIDList(m[3])
 		out = append(out, HostGPUs{
-			Host:    strings.TrimSpace(m[2]),
-			Devices: parseIDList(m[3]),
+			Host:         strings.TrimSpace(m[2]),
+			Devices:      devices,
+			Unrecognized: unknown,
 		})
 	}
 	return out
@@ -123,39 +141,78 @@ func GrantedGPUsPlain(ctx context.Context, r Runner, jobID, complexName string) 
 }
 
 // ParseSGEHGR parses the value of SGE_HGR_<complex> (e.g. "0 1") into device
-// indices. This is the local exec host's view only; do not use it to build a
+// ids. This is the local exec host's view only; do not use it to build a
 // multi-host layout (SI-19).
-func ParseSGEHGR(value string) []int {
+func ParseSGEHGR(value string) (ids, unrecognized []string) {
 	return parseIDList(value)
 }
 
-// parseIDList turns a space-separated id list ("0 1 gpu2") into physical
-// indices, applying the same numeric/ordinal rule as the XML path.
-func parseIDList(s string) []int {
-	fields := strings.Fields(s)
-	ids := make([]int, 0, len(fields))
-	for ordinal, f := range fields {
-		ids = append(ids, deviceIndex(f, ordinal))
-	}
-	return ids
+// parseIDList turns a space-separated id list ("0 1 gpu2") into device tokens,
+// applying the same rule as the XML path.
+func parseIDList(s string) (ids, unrecognized []string) {
+	return DeviceTokens(strings.Fields(s))
 }
 
-var trailingDigits = regexp.MustCompile(`(\d+)$`)
+// namedDevice matches the long-standing "named id" form: an alphabetic prefix,
+// an optional hyphen or underscore, then digits ("gpu0", "gpu-1"). It is much
+// narrower than the old rule, which coerced ANY token ending in digits and so
+// silently mapped an id like "0000:c1:00.0" or "MIG-GPU-<uuid>/13/0" onto a
+// device number having nothing to do with it.
+//
+// It cannot separate a deliberate name from a coincidence: "renderD128" has the
+// same shape as "gpu128" and yields 128. That matches the behaviour these ids
+// have always had, so the rule stays rather than breaking working sites, and the
+// case is documented instead.
+var namedDevice = regexp.MustCompile(`^[A-Za-z_]+[-_]?([0-9]+)$`)
 
-// deviceIndex maps an RSMAP id token to a physical device index. RSMAP ids are
-// usually the numeric device index ("0", "1"); some sites name them ("gpu0"),
-// in which case the trailing number is used. Anything else falls back to the
-// token's ordinal position in the host's granted list so callers always get a
-// usable contiguous-partitionable index.
-func deviceIndex(token string, ordinal int) int {
+// deviceUUID matches the device-UUID form both CUDA_VISIBLE_DEVICES and
+// ROCR_VISIBLE_DEVICES accept. ROCr wants "GPU-" plus 16 hex digits and rejects a
+// token longer than 20 characters; NVIDIA's form is longer and dashed. Require at
+// least 8 hex digits so a hyphenated NAME such as "gpu-0" or "gpu-1" is not
+// mistaken for a UUID -- those must keep falling through to the named-id rule, or
+// an existing site's working ids would start reaching the runtime verbatim and
+// match no device at all.
+var deviceUUID = regexp.MustCompile(`^(?i:GPU)-[0-9a-fA-F]{8,}[0-9a-fA-F-]*$`)
+
+// DeviceToken normalises one RSMAP id into the token the device-visibility
+// variable will carry, and reports whether the id was understood.
+//
+// A numeric id is canonicalised ("007" -> "7"): the old int-based parser did this
+// implicitly, and ROCr rejects a token that is not the canonical rendering of its
+// index, discarding every id to its right, so passing "007" through would hand
+// the job zero devices. A UUID is kept verbatim, because it is the only device
+// identity stable across a reboot, a driver reload, or a partition-mode change.
+// A named id such as "gpu0" keeps its historical coercion to the trailing digits.
+//
+// Anything else falls back to the token's ordinal position in the host's granted
+// list, which keeps the grant usable but is a guess, and ok is false so callers
+// warn rather than passing a guess on silently.
+func DeviceToken(token string, ordinal int) (id string, ok bool) {
 	token = strings.TrimSpace(token)
 	if n, err := strconv.Atoi(token); err == nil {
-		return n
+		return strconv.Itoa(n), true
 	}
-	if m := trailingDigits.FindString(token); m != "" {
-		if n, err := strconv.Atoi(m); err == nil {
-			return n
+	if deviceUUID.MatchString(token) {
+		return token, true
+	}
+	if m := namedDevice.FindStringSubmatch(token); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return strconv.Itoa(n), true
 		}
 	}
-	return ordinal
+	return strconv.Itoa(ordinal), false
+}
+
+// DeviceTokens normalises one host's granted ids, returning the tokens to publish
+// and the raw ids that had to be guessed at.
+func DeviceTokens(raw []string) (ids, unrecognized []string) {
+	ids = make([]string, 0, len(raw))
+	for ordinal, r := range raw {
+		id, ok := DeviceToken(r, ordinal)
+		ids = append(ids, id)
+		if !ok {
+			unrecognized = append(unrecognized, r)
+		}
+	}
+	return ids, unrecognized
 }

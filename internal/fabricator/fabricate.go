@@ -140,7 +140,7 @@ type nodeSet struct {
 type nodeInfo struct {
 	gedata.Host
 	ip   string
-	gpus []int
+	gpus []string
 }
 
 // resolveNodes parses PE_HOSTFILE (or fabricates a single-node layout when it is

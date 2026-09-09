@@ -99,7 +99,7 @@ One command stands up a real 3-node Open Cluster Scheduler cluster (in Docker) w
 ```bash
 make cluster-up          # clone quickinstall, boot OCS 9.1.5, install the shim
 make demo                # multi-node srun fan-out (per-rank SLURM_PROCID/nodelist)
-make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
+make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES (nvidia default) from a fake RSMAP grant
 make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
 ```
 
@@ -112,7 +112,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - Multi-node PyTorch **DDP/FSDP** via `sbatch` + `srun torchrun` — the core path.
 - Hugging Face **`accelerate launch`** and **torchrun** multi-node (env + `scontrol show hostnames`).
 - **DeepSpeed** and **Ray** (and multi-node vLLM) via the [`docs/recipes/`](docs/recipes/) launch patterns.
-- The full per-rank `SLURM_*` environment, including compressed nodelists and per-rank `CUDA_VISIBLE_DEVICES` from GE RSMAP grants.
+- The full per-rank `SLURM_*` environment, including compressed nodelists and the per-rank device mask from GE RSMAP grants -- `CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`.
 
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
 - **Hydra** (`--multirun` parameter sweeps) via [`docs/recipes/hydra/`](docs/recipes/hydra/) — `hydra/launcher: submitit_slurm` turns each sweep config into a cluster job; verified live fanning a sweep across 3 nodes.
@@ -142,7 +142,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | Command | Status | Notes |
 |---|---|---|
 | `sbatch` | ✅ | `#SBATCH` directives -> `qsub -terse`; prints `Submitted batch job <id>`. Flag coverage is limited (below). `--test-only` / `SLURM_SHIM_DRY_RUN` report without submitting ([dry run](#dry-run)). |
-| `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + `CUDA_VISIBLE_DEVICES`. See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
+| `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + the vendor device mask (`CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`). See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
 | `srun --pty` (interactive) | ✅ | Outside an allocation, `srun --pty [flags] <cmd>` becomes an interactive `qrsh -now no -pty y` session on a compute node, with the full `SLURM_*` environment; `srun` inside it launches steps. See [Interactive sessions](#interactive-sessions). |
 | `srun` (standalone, no `--pty`) | ❌ | A non-interactive `srun` outside an allocation exits 1 (`standalone: reject`). Run it inside an interactive session, or via `sbatch`. |
 | `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
@@ -208,7 +208,7 @@ This is the strongest area — the fabricated environment is the whole point, an
 | `SLURM_PROCID` / `SLURM_LOCALID` / `SLURM_NODEID` | ✅ (per-rank, via `srun`) |
 | `SLURM_ARRAY_TASK_ID` / `_TASK_COUNT` / `_JOB_ID` (+ min/max/step) | ✅ (from GE `SGE_TASK_ID`) |
 | `SLURM_CPUS_PER_TASK` / `SLURM_CPUS_ON_NODE` | ✅ |
-| `SLURM_GPUS_ON_NODE` / `SLURM_JOB_GPUS` (+ per-rank `CUDA_VISIBLE_DEVICES`) | ✅ (from GE RSMAP grant; `gpu.isolation: cgroup` passes GE's masking through instead) |
+| `SLURM_GPUS_ON_NODE` / `SLURM_JOB_GPUS` (+ the per-rank device mask) | ✅ (from GE RSMAP grant. The mask is `CUDA_VISIBLE_DEVICES` under `gpu.vendor: nvidia` and `ROCR_VISIBLE_DEVICES` under `amd` -- exactly one is written, and the other vendor's variables are removed from the rank environment rather than left to layer on top; `gpu.isolation: cgroup` passes GE's masking through instead) |
 | `SLURM_MEM_PER_NODE` | ✅ (from the job's requested memory complex) |
 | `SLURM_SUBMIT_DIR` / `SLURM_SUBMIT_HOST` / `SLURM_JOB_PARTITION` | ✅ |
 | `MASTER_ADDR` / `MASTER_PORT` | ⚠️ off by default (`export_master_addr: false`) — derive in your job script, or enable in config |
@@ -259,7 +259,7 @@ Notes and limits:
   Grid Engine analogue worth emulating. A non-`--pty` `srun` outside an allocation
   still exits 1.
 - GPU sessions see every device on the node under `gpu.isolation: shim`
-  (`CUDA_VISIBLE_DEVICES` is set per rank by `srun`, not at the session level);
+  (the device mask is set per rank by `srun`, not at the session level);
   run the workload through `srun` inside the session, or use `gpu.isolation: cgroup`.
 - On a site whose queue uses a non-builtin interactive daemon (e.g. `sshd -i`) the
   environment still arrives but the session may have no terminal; `srun` warns.
@@ -412,7 +412,10 @@ pes:
   gpu.pe: {task_policy: gpu}      # gpu | node | slot -> how SLURM_NTASKS is derived
   smp.pe: {task_policy: slot}     # one task per slot (MPI-style)
 gpu:
-  discovery: qstat-gres           # RSMAP grant -> CUDA_VISIBLE_DEVICES
+  vendor: nvidia                  # nvidia -> CUDA_VISIBLE_DEVICES | amd -> ROCR_VISIBLE_DEVICES
+                                  # (exactly one is written; the other vendor's variables
+                                  # are removed from the rank env, never blanked)
+  discovery: qstat-gres           # RSMAP grant -> the vendor device mask
   isolation: shim                 # shim (per-rank masking) | cgroup (GE devices_allow)
   gres_complex: gpu
   bind: none                      # none (SLURM default: whole grant visible to every
@@ -430,6 +433,45 @@ launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)
 wrapper_mode: false               # true -> sbatch injects fabrication itself
 wrapper_spool_dir: ""             # where the original + wrapper are stored ("" = next to the script)
 ```
+
+**AMD sites (`gpu.vendor: amd`).** Populate the RSMAP with one id per **ROCr
+device**, not per physical card: that is one per GCD on MI250/MI250X, and one per
+compute partition on MI300 (an 8-GPU MI300X node in CPX mode presents 64). Ids may
+be numeric ROCr indices or `GPU-<hex>` UUIDs; prefer UUIDs, since an index is not
+stable across a reboot, a driver reload, or a partition-mode change
+([why](docs/solutions/integration-issues/rocr-visible-devices-id-space.md)).
+Use **PyTorch 2.6 or newer**: earlier ROCm builds read only `HIP_VISIBLE_DEVICES`
+and raise `IndexError` in distributed runs when just `ROCR_VISIBLE_DEVICES` is
+set. AMD support is verified against a live Grid Engine RSMAP grant, including
+UUID ids, but **not yet on real ROCm hardware**.
+
+**Device ordering on NVIDIA.** The shim's numeric ids are `nvidia-smi` indices,
+which follow PCI bus order, while CUDA's own default (`CUDA_DEVICE_ORDER`
+unset, meaning `FASTEST_FIRST`) ranks by capability. On the identical-GPU nodes
+that dominate HPC the two orders coincide. Where they do not, set
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` so an id means the device the RSMAP named. The shim
+warns if the variable is set to something else and never removes it: it cannot
+know which ordering a site's ids were derived from, and clearing it would break a
+site that set it deliberately.
+
+**Mixed NVIDIA and AMD clusters.** `gpu.vendor` is resolved once, on the job's
+master host, and travels to every rank, so a single config cannot describe a job
+that spans both vendors -- and no framework can run such a job anyway. Give each
+vendor its own queue and its own config instead, and point the queue at it with
+`SLURM_SHIM_CONFIG`, which takes precedence over the cluster-wide file and is
+forwarded into the job:
+
+```bash
+# in the AMD queue's environment (qconf -mq amd.q), or a prolog:
+SLURM_SHIM_CONFIG=/opt/ocs/default/common/slurm-shim/config-amd.yaml
+```
+
+Verified on the test cluster: a job pointed at an AMD config gets
+`ROCR_VISIBLE_DEVICES` per rank while the cluster default stays `nvidia`. A
+node-local `/etc/slurm-shim/config.yaml` also works, but only where no
+cluster-wide file exists, so it is the more fragile option. Do **not** run a mixed
+cluster from one config: the vendor that loses will have its device variable
+cleared on hosts whose runtime needs it.
 
 🚧 A full configuration reference is planned; the authoritative source today is [`internal/config`](internal/config/config.go).
 

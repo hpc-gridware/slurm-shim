@@ -11,8 +11,8 @@ import (
 func alloc() *layout.Layout {
 	return &layout.Layout{
 		Nodes: []layout.Node{
-			{Index: 0, Host: "node001", Slots: 8, GPUs: []int{0, 1}},
-			{Index: 1, Host: "node002", Slots: 8, GPUs: []int{0, 1}},
+			{Index: 0, Host: "node001", Slots: 8, GPUs: []string{"0", "1"}},
+			{Index: 1, Host: "node002", Slots: 8, GPUs: []string{"0", "1"}},
 		},
 		Tasks: layout.Tasks{NTasks: 16, CPUsPerTask: 1, PerNode: []int{8, 8}},
 	}
@@ -80,8 +80,8 @@ var _ = Describe("Step placement", func() {
 	It("partitions GPUs per rank and rejects over-subscription [REQ-RUN-008]", func() {
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2, GPUsPerTask: 1})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(p.Ranks[0].GPUs).To(Equal([]int{0}))
-		Expect(p.Ranks[1].GPUs).To(Equal([]int{1}))
+		Expect(p.Ranks[0].GPUs).To(Equal([]string{"0"}))
+		Expect(p.Ranks[1].GPUs).To(Equal([]string{"1"}))
 
 		_, err = plan.Place(alloc(), plan.StepRequest{TasksPerNode: 1, GPUsPerTask: 4})
 		Expect(err).To(MatchError(ContainSubstring("exceeds")))
@@ -93,10 +93,10 @@ var _ = Describe("Step placement", func() {
 		// the visible list, so every rank must see all of it.
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
-		Expect(p.Ranks[1].GPUs).To(Equal([]int{0, 1}))
-		Expect(p.Ranks[2].GPUs).To(Equal([]int{0, 1})) // node002, local 0
-		Expect(p.Ranks[3].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Ranks[0].GPUs).To(Equal([]string{"0", "1"}))
+		Expect(p.Ranks[1].GPUs).To(Equal([]string{"0", "1"}))
+		Expect(p.Ranks[2].GPUs).To(Equal([]string{"0", "1"})) // node002, local 0
+		Expect(p.Ranks[3].GPUs).To(Equal([]string{"0", "1"}))
 		// The one notice marks where this differs from earlier shim releases.
 		Expect(p.Warnings).To(HaveLen(1))
 		Expect(p.Warnings[0]).To(ContainSubstring("SLURM default"))
@@ -106,10 +106,10 @@ var _ = Describe("Step placement", func() {
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2, AutoDivideGPUs: true})
 		Expect(err).NotTo(HaveOccurred())
 		// 2 GPUs, 2 tasks per node -> one device per rank on each node.
-		Expect(p.Ranks[0].GPUs).To(Equal([]int{0}))
-		Expect(p.Ranks[1].GPUs).To(Equal([]int{1}))
-		Expect(p.Ranks[2].GPUs).To(Equal([]int{0})) // node002, local 0
-		Expect(p.Ranks[3].GPUs).To(Equal([]int{1}))
+		Expect(p.Ranks[0].GPUs).To(Equal([]string{"0"}))
+		Expect(p.Ranks[1].GPUs).To(Equal([]string{"1"}))
+		Expect(p.Ranks[2].GPUs).To(Equal([]string{"0"})) // node002, local 0
+		Expect(p.Ranks[3].GPUs).To(Equal([]string{"1"}))
 		Expect(p.Warnings).To(BeEmpty())
 	})
 
@@ -117,8 +117,8 @@ var _ = Describe("Step placement", func() {
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 4, AutoDivideGPUs: true})
 		Expect(err).NotTo(HaveOccurred())
 		// 2 GPUs, 4 tasks per node -> every rank sees both devices.
-		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
-		Expect(p.Ranks[3].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Ranks[0].GPUs).To(Equal([]string{"0", "1"}))
+		Expect(p.Ranks[3].GPUs).To(Equal([]string{"0", "1"}))
 		Expect(p.Warnings).To(HaveLen(1))
 		Expect(p.Warnings[0]).To(ContainSubstring("all ranks share"))
 	})
@@ -128,14 +128,14 @@ var _ = Describe("Step placement", func() {
 		// already declined that advice.
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 2, GPUBindExplicit: true})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Ranks[0].GPUs).To(Equal([]string{"0", "1"}))
 		Expect(p.Warnings).To(BeEmpty())
 	})
 
 	It("emits no notice when fewer GPUs than ranks (behavior unchanged there)", func() {
 		p, err := plan.Place(alloc(), plan.StepRequest{TasksPerNode: 4})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(p.Ranks[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(p.Ranks[0].GPUs).To(Equal([]string{"0", "1"}))
 		Expect(p.Warnings).To(BeEmpty())
 	})
 

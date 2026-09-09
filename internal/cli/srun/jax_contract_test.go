@@ -129,7 +129,7 @@ var _ = Describe("JAX multi-process contract", func() {
 		// list, so a rank whose LOCALID is past its own device count fails with
 		// CUDA_ERROR_INVALID_DEVICE. Guards the SLURM-parity visibility default.
 		tmp := writeAlloc([]layout.Node{
-			{Index: 0, Host: "node001", Slots: 4, IsMaster: true, GPUs: []int{0, 1, 2, 3}},
+			{Index: 0, Host: "node001", Slots: 4, IsMaster: true, GPUs: []string{"0", "1", "2", "3"}},
 		}, []int{4})
 		sess := runSrun(tmp, "-n", "4", "sh", "-c",
 			`echo "GPU localid=$SLURM_LOCALID devices=$CUDA_VISIBLE_DEVICES"`)
@@ -152,7 +152,7 @@ var _ = Describe("JAX multi-process contract", func() {
 
 	It("binds each task to its own device when --gpus-per-task is given", func() {
 		tmp := writeAlloc([]layout.Node{
-			{Index: 0, Host: "node001", Slots: 4, IsMaster: true, GPUs: []int{0, 1, 2, 3}},
+			{Index: 0, Host: "node001", Slots: 4, IsMaster: true, GPUs: []string{"0", "1", "2", "3"}},
 		}, []int{4})
 		sess := runSrun(tmp, "-n", "4", "--gpus-per-task", "1", "sh", "-c",
 			`echo "GPU localid=$SLURM_LOCALID devices=$CUDA_VISIBLE_DEVICES"`)
@@ -171,7 +171,7 @@ var _ = Describe("JAX multi-process contract", func() {
 
 	It("restores the legacy even split under --gpu-bind=per_task", func() {
 		tmp := writeAlloc([]layout.Node{
-			{Index: 0, Host: "node001", Slots: 2, IsMaster: true, GPUs: []int{0, 1}},
+			{Index: 0, Host: "node001", Slots: 2, IsMaster: true, GPUs: []string{"0", "1"}},
 		}, []int{2})
 		sess := runSrun(tmp, "-n", "2", "--gpu-bind", "per_task", "sh", "-c",
 			`echo "GPU devices=$CUDA_VISIBLE_DEVICES"`)

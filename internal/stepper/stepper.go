@@ -8,10 +8,11 @@ import (
 	"bufio"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -147,8 +148,12 @@ func (s *stepper) spawn(r proto.RankSpec, outFile *outputFiles, exits chan<- ran
 	rargs = append(rargs, "--")
 	rargs = append(rargs, s.spec.Command...)
 
+	env, err := rankEnv(s.spec, r, s.host)
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command(s.self, rargs...)
-	cmd.Env = rankEnv(s.spec, r, s.host)
+	cmd.Env = env
 	cmd.SysProcAttr = rankSysProcAttr()
 
 	// Status pipe on fd 3 for pre-exec failure reporting.
@@ -314,22 +319,51 @@ func (s *stepper) killAll(sig syscall.Signal) { s.forwardSignal(sig) }
 // rankEnv layers the per-rank Table B delta and the host-local variables over
 // the step base environment, deduplicating by key so a Table B value shadows
 // the Table A value of the same name (B shadows A, REQ-ENV-041).
-func rankEnv(spec proto.StepSpec, r proto.RankSpec, host string) []string {
-	return dedupEnv(spec.Env, RankOverlay(r, host))
+func rankEnv(spec proto.StepSpec, r proto.RankSpec, host string) ([]string, error) {
+	overlay, err := RankOverlay(r, host, spec.GPUEnvVar)
+	if err != nil {
+		return nil, err
+	}
+	return dedupEnv(spec.Env, overlay), nil
 }
 
 // RankOverlay is everything the stepper adds on top of the step environment for
 // one rank: its Table B delta plus the host-local variables. Exported so the srun
 // dry run reports the same set a rank actually receives instead of re-deriving it
-// -- SLURMD_NODENAME and CUDA_VISIBLE_DEVICES are added here, not by the planner,
+// -- SLURMD_NODENAME and the device variable are added here, not by the planner,
 // so a report built from RankSpec alone silently omits them.
-func RankOverlay(r proto.RankSpec, host string) []string {
+//
+// gpuEnvVar is the resolved device-visibility variable name (REQ-GPU-004). Empty
+// means CUDA_VISIBLE_DEVICES, which keeps an older srun's behaviour unchanged.
+// An unrecognised name is refused rather than guessed: it can only come from a
+// newer srun this stepper does not understand, and writing the wrong variable
+// there would hand the rank a silently wrong device set.
+func RankOverlay(r proto.RankSpec, host, gpuEnvVar string) ([]string, error) {
 	overlay := append([]string(nil), r.EnvDelta...)
 	overlay = append(overlay, "SLURMD_NODENAME="+host)
-	if len(r.GPUs) > 0 {
-		overlay = append(overlay, "CUDA_VISIBLE_DEVICES="+joinInts(r.GPUs))
+	if len(r.GPUs) == 0 {
+		return overlay, nil
 	}
-	return overlay
+	name, err := deviceEnvName(gpuEnvVar)
+	if err != nil {
+		return nil, err
+	}
+	return append(overlay, name+"="+strings.Join(r.GPUs, ",")), nil
+}
+
+// deviceEnvName validates the device-variable name that arrived in the StepSpec.
+// The check is for correctness, not security: srun and the stepper run as the
+// same user in the same job, so a caller able to forge a spec already controls
+// StepSpec.Env outright. It exists because dedupEnv keys on the first "=", so a
+// name containing "=" would shadow an unrelated variable.
+func deviceEnvName(name string) (string, error) {
+	switch name {
+	case "":
+		return proto.EnvCUDADevices, nil
+	case proto.EnvCUDADevices, proto.EnvROCRDevices:
+		return name, nil
+	}
+	return "", fmt.Errorf("unsupported device environment variable %q", name)
 }
 
 // dedupEnv merges base then overlay, keeping the last value for each key while
@@ -365,17 +399,6 @@ func indexByte(s string, b byte) int {
 		}
 	}
 	return -1
-}
-
-func joinInts(xs []int) string {
-	var b []byte
-	for i, x := range xs {
-		if i > 0 {
-			b = append(b, ',')
-		}
-		b = append(b, []byte(strconv.Itoa(x))...)
-	}
-	return string(b)
 }
 
 func exitCode(err error) int {

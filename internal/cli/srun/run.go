@@ -143,6 +143,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		arrayTaskID: arrayTask,
 		user:        user,
 	}
+	// Refuse an unrecognised gpu.vendor once, before either path runs, so the dry
+	// run cannot report a device variable the real step would refuse to write
+	// (REQ-GPU-004). Scoped to steps that publish devices: config.validate only
+	// warns because config.Load runs in the PE start_proc_args hook, where a fatal
+	// return would reach every job on the host.
+	if err := sup.resolveDeviceVars(); err != nil {
+		errln(stderr, "srun: error: "+err.Error())
+		return 1
+	}
+	for _, w := range sup.gpuRequestWarnings(opt) {
+		errln(stderr, "srun: warning: "+w)
+	}
 	if dry {
 		if v := dryrun.Unrecognized(); v != "" {
 			errln(stderr, fmt.Sprintf("srun: warning: %s=%q is not a recognized on/off value; treating as off",
@@ -158,11 +170,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 type supervisor struct {
-	cfg    *config.Config
-	opt    *options
-	lay    *layout.Layout
-	plan   *plan.StepPlan
-	stepID int
+	cfg *config.Config
+	opt *options
+	// gpuWrite is the device-visibility variable this step publishes, and gpuDrop
+	// the variables removed from the rank environment. Resolved once at dispatch
+	// (resolveDeviceVars) so no later caller has to re-derive them or decide what
+	// to do about an error some other caller was assumed to have handled.
+	gpuWrite string
+	gpuDrop  []string
+	lay      *layout.Layout
+	plan     *plan.StepPlan
+	stepID   int
 	// self is the absolute shim path used as the stepper's argv[0] on every host.
 	self   string
 	stdout io.Writer

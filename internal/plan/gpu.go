@@ -1,7 +1,7 @@
 package plan
 
 // AssignDevices decides which of a node's granted devices each local rank sees
-// as CUDA_VISIBLE_DEVICES (REQ-GPU-002).
+// in the vendor device variable (REQ-GPU-004, REQ-GPU-002).
 //
 // The default follows SLURM: without an explicit per-task binding request, tasks
 // are NOT bound to a subset, so every local rank sees the node's whole granted
@@ -18,11 +18,11 @@ package plan
 // and shared is true so the caller can warn once. An empty device list yields
 // empty per-rank sets and shared false (a GPU-less node is not "sharing").
 // Returned slices are views into devices; callers that mutate must copy.
-func AssignDevices(devices []int, localTasks, gpusPerTask int, autoDivide bool) (perRank [][]int, shared bool) {
+func AssignDevices(devices []string, localTasks, gpusPerTask int, autoDivide bool) (perRank [][]string, shared bool) {
 	if localTasks < 1 {
 		localTasks = 1
 	}
-	perRank = make([][]int, localTasks)
+	perRank = make([][]string, localTasks)
 
 	g := gpusPerTask
 	if g <= 0 {
@@ -52,7 +52,7 @@ func AssignDevices(devices []int, localTasks, gpusPerTask int, autoDivide bool) 
 		hi := lo + g
 		switch {
 		case lo >= len(devices):
-			perRank[i] = []int{}
+			perRank[i] = []string{}
 		case hi > len(devices):
 			perRank[i] = devices[lo:]
 		default:
