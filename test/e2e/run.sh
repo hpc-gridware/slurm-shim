@@ -7,6 +7,9 @@ E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$E2E_DIR/e2e-lib.sh"
 
 require_cluster
+# Fail fast on a wedged scheduler: several checks block rather than fail when
+# nothing dispatches (07_interactive waits on qrsh -now no forever).
+require_scheduler
 
 checks=(
   05_hook

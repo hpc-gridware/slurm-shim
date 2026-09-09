@@ -13,20 +13,19 @@ log "07_interactive: srun --pty outside an allocation -> qrsh session"
 
 # ptyrun <script-body> -- run a body as gridware under a real pty, return stdout.
 ptyrun() {
-  local body="$1" f=/home/gridware/e2e-07.sh
+  local body="$1" f="/home/$JOB_USER/e2e-07.sh"
   printf '#!/bin/bash\n%s\n' "$body" > /tmp/e2e-07.sh
-  docker cp /tmp/e2e-07.sh "$MASTER:$f" >/dev/null
-  docker exec "$MASTER" chown gridware:gridware "$f"
+  put_job /tmp/e2e-07.sh "$f"
   # Invoke via bash so the copied file needs no execute bit, under script(1) so
   # the session gets a real pty.
-  docker exec "$MASTER" bash -lc "script -qec 'su - gridware -c \"bash $f\"' /dev/null" 2>&1 | tr -d '\r'
+  node_sh "$MASTER" "script -qec 'su - $JOB_USER -c \"bash $f\"' /dev/null" 2>&1 | tr -d '\r'
 }
 
 # (1) A real session: pty, the SLURM_* environment, and the invocation dir.
-out="$(ptyrun 'cd /home/gridware && srun --pty -p batch -c 2 bash -c "echo GOT tty=\$(tty) JOB=\$SLURM_JOB_ID NN=\$SLURM_NNODES PART=\$SLURM_JOB_PARTITION pwd=\$(pwd)"')"
+out="$(ptyrun 'cd "$HOME" && srun --pty -p batch -c 2 bash -c "echo GOT tty=\$(tty) JOB=\$SLURM_JOB_ID NN=\$SLURM_NNODES PART=\$SLURM_JOB_PARTITION pwd=\$(pwd)"')"
 assert_contains "$out" "tty=/dev/pts/" "the session runs on a real pty"
 assert_contains "$out" "JOB=" "SLURM_JOB_ID is set in the session"
-assert_contains "$out" "pwd=/home/gridware" "the session starts in the invocation dir (-cwd)"
+assert_contains "$out" "pwd=/home/$JOB_USER" "the session starts in the invocation dir (-cwd)"
 
 # (2) Exit status propagates through qrsh.
 out="$(ptyrun 'srun --pty -p batch bash -c "exit 7"; echo "RC=$?"')"
@@ -64,5 +63,5 @@ assert_contains "$out" "REAL JOB=" "QRSH_WRAPPER is scrubbed; the real command r
 out="$(gridware 'srun hostname 2>&1 || true')"
 assert_contains "$out" "not inside a slurm-shim allocation" "non-pty standalone srun still rejects"
 
-gridware "rm -f /home/gridware/e2e-07.sh"
+gridware "rm -f /home/$JOB_USER/e2e-07.sh"
 finish

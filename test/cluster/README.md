@@ -38,10 +38,63 @@ make cluster-install            # or: ARGS=--gpu to also add the fake RSMAP comp
 | `QUICKINSTALL_REF` | `main` | which quickinstall commit/branch to run (pin for reproducibility) |
 | `QUICKINSTALL_DIR` | *(unset)* | use an existing quickinstall checkout instead of cloning |
 | `GPU_PER_WORKER` | `2` | fake RSMAP devices per worker (with `--gpu`) |
+| `GPU_CONSUMABLE` | `YES` | consumable scope of the RSMAP complex; real hardware wants `HOST` (see below) |
 | `FLAX_VENV` | `/home/gridware/flaxenv` | shared venv `make demo-flax` creates |
 | `FLAX_PIP_SPEC` | `jax flax optax` | what goes in that venv; pin versions here to work around a breaking release |
 
 To switch OCS version: `make cluster-down ARGS=-v` then `OCS_VERSION=... make cluster-up`.
+
+## Running against a remote cluster (`BACKEND=ssh`)
+
+Everything the **e2e suite** does to a cluster goes through three primitives in
+`lib.sh` -- `node_sh` (as root), `node_sh_as` (as another user) and `node_put`
+(copy a file in) -- so `make e2e` runs against the local containers or a real
+cluster without forking the suite. The command travels on **stdin**, so no
+shell, ssh or sudo quoting layer ever re-parses it.
+
+**Scope: `make e2e` only.** `cluster-up`, `cluster-down`, `cluster-install` and
+the `demo-*` targets still call `docker` directly and are container-only by
+design -- provisioning a real cluster is not this harness's job.
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `BACKEND` | `docker` | `docker` (local containers) or `ssh` (any real cluster) |
+| `NODES` | `ocs-master ocs-worker1 ocs-worker2` | space-separated node list (env cannot carry an array) |
+| `MASTER` | `ocs-master` | the submit/admin node |
+| `JOB_USER` | `gridware` | unprivileged user that submits jobs |
+| `SSH_CMD` | `ssh` | invoked as `$SSH_CMD [user@]<host> "<cmd>"`; a wrapper must take the host first |
+| `SCP_CMD` | `scp` | file transfer for `node_put` |
+| `SSH_USER` | *(unset)* | login user; empty lets ssh config/agent decide |
+| `SHIM_PREFIX` | `/opt/slurm-shim` | install tree (same absolute path on every node) |
+| `CELL_DIR` | `/opt/ocs/default/common` | the cell whose `slurm-shim/config.yaml` is read |
+| `READY_QUEUE` | `all.q` | queue whose instances signal readiness |
+| `READY_INSTANCES` | one per node | set to the exec-host count when the manager runs no execd |
+
+```bash
+BACKEND=ssh NODES="mgr g1 g2 g3 g4" MASTER=mgr READY_INSTANCES=4 make e2e
+```
+
+Keep `SSH_CMD=ssh` and put the transport details in `~/.ssh/config`. Do **not**
+use `gcloud compute ssh --tunnel-through-iap --`: it wants the instance name
+*before* `--`, so it would not even parse here, and it rebuilds the tunnel on
+every call. The suite makes ~400 round-trips, so a per-call tunnel turns a
+2-minute run into ~20. A `ProxyCommand` plus `ControlMaster`/`ControlPersist`
+in `~/.ssh/config` gives one multiplexed connection per host instead.
+
+The `ssh` backend needs passwordless `sudo` on every node. `node_put` stages
+into `/tmp` as the login user and moves the file into place as root, because the
+login user usually cannot write the destination directly.
+
+**`JOB_USER` is only partly honoured.** The transport, `put_job` and
+`07_interactive` respect it, but most checks still hardcode `/home/gridware`
+for their scratch scripts. So a remote cluster should provision a **`gridware`**
+user (with the same uid on every node, since `/home` is shared); full
+parameterisation is a follow-up.
+
+**GPU consumable scope.** The container cluster fakes a per-slot (`YES`) RSMAP
+complex. Real hardware wants `GPU_CONSUMABLE=HOST`: the shim's `-l gpu=N` means
+*per node*, and a per-slot complex multiplies that by the node's slot count, so a
+4-task node asking for 4 GPUs debits 16 and never dispatches.
 
 ## How the shim is installed
 

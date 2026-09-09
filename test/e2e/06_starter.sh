@@ -12,8 +12,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
 log "06_starter: unmodified SLURM scripts get SLURM_* via starter_method"
 
-STARTER=/opt/slurm-shim/bin/slurm-shim-starter
-HOOK=/opt/slurm-shim/etc/slurm-shim-source-hook.sh
+STARTER="$SHIM_PREFIX/bin/slurm-shim-starter"
+HOOK="$SHIM_PREFIX/etc/slurm-shim-source-hook.sh"
 
 wired="$(manager "qconf -sq all.q | awk '/^starter_method/{print \$2}'")"
 assert_eq "$wired" "$STARTER" "all.q starter_method is the shim starter"
@@ -22,13 +22,16 @@ assert_eq "$wired" "$STARTER" "all.q starter_method is the shim starter"
 # executes -- nor any directory on the path to it -- may be writable by that user.
 # Checked on EVERY node (the starter runs on all of them), over the binary, the
 # hook, the shim binary, and the containing directories (todos/035).
-SHIM_BIN=/opt/slurm-shim/bin/slurm-shim
+SHIM_BIN="$SHIM_PREFIX/bin/slurm-shim"
 for n in "${NODES[@]}"; do
   for f in "$STARTER" "$HOOK" "$SHIM_BIN" \
-           /opt/slurm-shim /opt/slurm-shim/bin /opt/slurm-shim/etc; do
-    owner="$(docker exec "$n" stat -c %U "$f" 2>/dev/null)"
+           "$SHIM_PREFIX" "$SHIM_PREFIX/bin" "$SHIM_PREFIX/etc"; do
+    owner="$(node_sh "$n" "stat -c %U '$f'" 2>/dev/null | tr -d '[:space:]')"
     assert_eq "$owner" "root" "$n: $f is root-owned"
-    if docker exec "$n" find "$f" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) 2>/dev/null | grep -q .; then
+    # Match find's actual output, not "any output": this now runs through a
+    # login shell, and one MOTD/module banner line from /etc/profile.d would
+    # otherwise report every path on every node as world-writable.
+    if node_sh "$n" "find '$f' -maxdepth 0 \\( -perm -0020 -o -perm -0002 \\) -print" 2>/dev/null | grep -qxF "$f"; then
       fail "$n: $f is group- or world-writable"
     else
       pass "$n: $f is not group/world-writable"

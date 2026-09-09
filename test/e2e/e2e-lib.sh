@@ -59,10 +59,12 @@ finish() {
 }
 
 # put_job <local-script> <remote-path> copies a job script to the master owned by
-# the gridware user.
+# the job user.
 put_job() {
-  docker cp "$1" "$MASTER:$2" >/dev/null
-  docker exec "$MASTER" chown gridware:gridware "$2"
+  node_put "$1" "$MASTER" "$2"
+  # Owner only, no group: on a real cluster the submit user's primary group is
+  # commonly `users` or a directory group, not one named after the user.
+  node_sh "$MASTER" "chown $JOB_USER '$2'"
 }
 
 # jobout <jobid> <outfile> waits (bounded) for the job to leave the queue, then
