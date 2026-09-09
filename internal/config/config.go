@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/hpc-gridware/slurm-shim/internal/proto"
 )
 
 // EnvVar names the environment variable that overrides the config search path.
@@ -121,6 +123,76 @@ type GPU struct {
 	// every task, which frameworks selecting by local rank (JAX, torchrun)
 	// require. "per-task" restores the shim's legacy even split.
 	Bind string `yaml:"bind"`
+	// Vendor selects which device-visibility variable a rank receives:
+	// VendorNVIDIA writes CUDA_VISIBLE_DEVICES, VendorAMD writes
+	// ROCR_VISIBLE_DEVICES (REQ-GPU-004). Empty means VendorNVIDIA.
+	Vendor string `yaml:"vendor"`
+}
+
+// GPU vendors, selecting the per-rank device-visibility variable. Exactly one
+// variable is ever written, and the other vendor's is removed from the rank
+// environment: on ROCm the HIP-level masks index into the list
+// ROCR_VISIBLE_DEVICES already filtered, so two masks holding the same absolute
+// ids leave the job with a wrong, truncated or empty device set.
+const (
+	VendorNVIDIA = "nvidia"
+	VendorAMD    = "amd"
+)
+
+// ValidVendor reports whether v names a supported GPU vendor. Empty is valid and
+// means VendorNVIDIA. Matching is case-insensitive: "AMD" is how the brand is
+// written everywhere, and refusing every GPU step over the capitalisation would
+// be a trap rather than strictness.
+func ValidVendor(v string) bool {
+	_, _, err := GPU{Vendor: v}.DeviceVars()
+	return err == nil
+}
+
+// NormalizeVendor trims and lowercases a configured vendor so every consumer can
+// compare it directly. An unrecognised value is returned normalised, not blanked,
+// so warnings can still name what the site actually wrote.
+func NormalizeVendor(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// deviceVars are every device-visibility variable the shim knows about. The
+// selected vendor's is written per rank; the rest are removed so an inherited
+// value cannot layer on top of it.
+var deviceVars = []string{
+	proto.EnvCUDADevices, proto.EnvROCRDevices,
+	proto.EnvHIPDevices, proto.EnvGPUDeviceOrdinal,
+}
+
+// DeviceVars returns the device-visibility variable a rank receives under this
+// GPU config and the variables removed from the rank environment (REQ-GPU-004).
+//
+// This is the single authority. It previously lived in srun, was hand-copied into
+// the doctor report and half-restated in ValidVendor, so a vendor added or a drop
+// entry changed in one place was silently wrong in the others -- and the report
+// could tell an admin something the ranks did not do.
+//
+// The written variable is itself in the drop set: the per-rank overlay restores it
+// for a rank that holds a device and adds nothing to a rank that does not, so
+// leaving it would let a device-less rank inherit a mask naming devices the job
+// was never granted. The exception is cgroup isolation, where the shim writes
+// nothing and that variable is GE's to set.
+func (g GPU) DeviceVars() (write string, drop []string, err error) {
+	switch NormalizeVendor(g.Vendor) {
+	case "", VendorNVIDIA:
+		write = proto.EnvCUDADevices
+	case VendorAMD:
+		write = proto.EnvROCRDevices
+	default:
+		return "", nil, fmt.Errorf("unknown gpu.vendor %q; expected %q or %q",
+			g.Vendor, VendorNVIDIA, VendorAMD)
+	}
+	for _, name := range deviceVars {
+		if name == write && g.Isolation == "cgroup" {
+			continue
+		}
+		drop = append(drop, name)
+	}
+	return write, drop, nil
 }
 
 // Config is the full shim configuration.
@@ -233,6 +305,7 @@ func Default() *Config {
 			Isolation:   "shim",
 			GresComplex: "gpu",
 			Bind:        "none",
+			Vendor:      VendorNVIDIA,
 		},
 	}
 }
@@ -276,10 +349,12 @@ func Parse(data []byte) (*Config, []string, error) {
 	var raw map[string]yaml.Node
 	if err := yaml.Unmarshal(data, &raw); err == nil {
 		known := knownKeys()
-		for k := range raw {
+		for _, k := range sortedKeys(raw) {
 			if !known[k] {
 				warnings = append(warnings, fmt.Sprintf("unknown config key %q ignored", k))
+				continue
 			}
+			warnings = append(warnings, nestedKeyWarnings(k, raw[k])...)
 		}
 	}
 	warnings = append(warnings, validate(cfg)...)
@@ -304,6 +379,27 @@ func validate(cfg *Config) []string {
 		warnings = append(warnings, fmt.Sprintf(
 			"unknown allocation_rule_override %q ignored; using %q", m, OverrideAuto))
 		cfg.AllocationRuleOverride = OverrideAuto
+	}
+	// Normalise once here so no consumer has to trim or fold case again.
+	cfg.GPU.Vendor = NormalizeVendor(cfg.GPU.Vendor)
+	if v := cfg.GPU.Vendor; !ValidVendor(v) {
+		// Warn only, never a hard error: config.Load runs in slurm-shim-env, the
+		// PE start_proc_args hook, so a fatal return here would reach every job
+		// on the host. The value is refused at the point of use instead, where
+		// only a GPU step is affected (see srun gpuEnvVar).
+		warnings = append(warnings, fmt.Sprintf(
+			"unknown gpu.vendor %q; expected %q or %q; GPU steps will be refused",
+			v, VendorNVIDIA, VendorAMD))
+	}
+	// A non-positive qstat_timeout is not a slower shim, it is one where every
+	// qstat call expires before it starts: discovery finds nothing and the job
+	// runs without a GPU environment. Warn and fall back rather than accepting a
+	// value that disables the thing it configures.
+	if cfg.QstatTimeout.Duration <= 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"qstat_timeout %s is not positive; using %s",
+			cfg.QstatTimeout.Duration, Default().QstatTimeout.Duration))
+		cfg.QstatTimeout = Default().QstatTimeout
 	}
 	warnings = append(warnings, validatePorts(cfg)...)
 
@@ -382,12 +478,105 @@ func knownKeys() map[string]bool {
 	ks := map[string]bool{}
 	t := reflect.TypeOf(Config{})
 	for i := 0; i < t.NumField(); i++ {
-		name := strings.Split(t.Field(i).Tag.Get("yaml"), ",")[0]
-		if name != "" && name != "-" {
+		if name := yamlName(t.Field(i)); name != "" {
 			ks[name] = true
 		}
 	}
 	return ks
+}
+
+// nestedKeyWarnings reports misspelled keys INSIDE a known block.
+//
+// knownKeys reflects over top-level Config fields only, so before this a typo one
+// level down was accepted in silence: "gpu: {vendr: amd}" left gpu.vendor at its
+// default and warned about nothing, which on an AMD site is the wrong device
+// variable on every rank from a one-character mistake. That is the failure this
+// whole feature exists to prevent, arriving through the config layer.
+//
+// Two shapes are checked: a block that is a struct (gpu, defaults), and a block
+// that is a map of named structs (partitions, pes), where the names are the
+// site's own and only the fields inside each are known.
+func nestedKeyWarnings(block string, node yaml.Node) []string {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	f, ok := configField(block)
+	if !ok {
+		return nil
+	}
+	switch f.Kind() {
+	case reflect.Struct:
+		return unknownFieldWarnings(block, node, f)
+	case reflect.Map:
+		var out []string
+		elem := f.Elem()
+		if elem.Kind() != reflect.Struct {
+			return nil
+		}
+		var sub map[string]yaml.Node
+		if node.Decode(&sub) != nil {
+			return nil
+		}
+		for _, name := range sortedKeys(sub) {
+			n := sub[name]
+			if n.Kind != yaml.MappingNode {
+				continue
+			}
+			out = append(out, unknownFieldWarnings(block+"."+name, n, elem)...)
+		}
+		return out
+	}
+	return nil
+}
+
+// unknownFieldWarnings names sub-keys of one mapping that t has no field for.
+func unknownFieldWarnings(path string, node yaml.Node, t reflect.Type) []string {
+	fields := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		if name := yamlName(t.Field(i)); name != "" {
+			fields[name] = true
+		}
+	}
+	var sub map[string]yaml.Node
+	if node.Decode(&sub) != nil {
+		return nil
+	}
+	var out []string
+	for _, k := range sortedKeys(sub) {
+		if !fields[k] {
+			out = append(out, fmt.Sprintf("unknown config key %q ignored", path+"."+k))
+		}
+	}
+	return out
+}
+
+// configField is the type of the Config field with the given yaml name.
+func configField(name string) (reflect.Type, bool) {
+	t := reflect.TypeOf(Config{})
+	for i := 0; i < t.NumField(); i++ {
+		if yamlName(t.Field(i)) == name {
+			return t.Field(i).Type, true
+		}
+	}
+	return nil, false
+}
+
+func yamlName(f reflect.StructField) string {
+	name := strings.Split(f.Tag.Get("yaml"), ",")[0]
+	if name == "-" {
+		return ""
+	}
+	return name
+}
+
+// sortedKeys keeps warning order stable across runs, since map iteration is not.
+func sortedKeys(m map[string]yaml.Node) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // maxPort is the highest TCP port number.

@@ -2,6 +2,7 @@ package fabricator
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -41,7 +42,14 @@ func discoverQstatGres(ctx context.Context, r gedata.Runner, cfg *config.Config,
 	if r == nil || jobID == "" || jobID == "0" {
 		if len(hosts) == 1 {
 			if v := e.get("SGE_HGR_" + complexName); v != "" {
-				hosts[0].gpus = gedata.ParseSGEHGR(v)
+				ids, unknown := gedata.ParseSGEHGR(v)
+				hosts[0].gpus = ids
+				// Warn here too. This is the wrapper-mode path, where an admin has
+				// the least visibility into what the shim decided, so a guessed
+				// device id must not be the one thing that stays silent.
+				if len(unknown) > 0 {
+					return []string{unrecognizedIDWarning(complexName, hosts[0].Name, unknown)}
+				}
 			}
 		}
 		return nil
@@ -58,6 +66,9 @@ func discoverQstatGres(ctx context.Context, r gedata.Runner, cfg *config.Config,
 	}
 	var warns []string
 	for _, g := range granted {
+		if len(g.Unrecognized) > 0 {
+			warns = append(warns, unrecognizedIDWarning(complexName, g.Host, g.Unrecognized))
+		}
 		matched := false
 		for i := range hosts {
 			if matchHost(g.Host, hosts[i]) {
@@ -70,6 +81,17 @@ func discoverQstatGres(ctx context.Context, r gedata.Runner, cfg *config.Config,
 		}
 	}
 	return warns
+}
+
+// unrecognizedIDWarning reports granted ids the shim could not classify. It is
+// loud on purpose: such an id was given its position in the grant, which keeps
+// the job running but is a guess, and a guess is how a device identity turns into
+// the wrong device. Values are quoted so a stray control byte in an admin-written
+// RSMAP cannot rewrite the operator's terminal.
+func unrecognizedIDWarning(complexName, host string, ids []string) string {
+	return fmt.Sprintf(
+		"unrecognized %s device id(s) on host %s: %q; using grant position instead, "+
+			"which may select the wrong device", complexName, host, ids)
 }
 
 // discoverNvidiaSMI queries physical GPUs on the local host. nvidia-smi reports
@@ -92,15 +114,16 @@ func discoverNvidiaSMI(ctx context.Context, r gedata.Runner, hosts []nodeInfo) [
 	return warns
 }
 
-func parseNvidiaIndices(out string) []int {
-	var ids []int
+func parseNvidiaIndices(out string) []string {
+	var ids []string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if n, err := strconv.Atoi(line); err == nil {
-			ids = append(ids, n)
+		// Keep the index verbatim; validate only that it is one.
+		if _, err := strconv.Atoi(line); err == nil {
+			ids = append(ids, line)
 		}
 	}
 	return ids

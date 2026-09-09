@@ -24,6 +24,7 @@ checks=(
   40_squeue_scancel
   50_scontrol
   60_gpu
+  61_gpu_vendor
   70_reject
   80_sinfo
   90_array

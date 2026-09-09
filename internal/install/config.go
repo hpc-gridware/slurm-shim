@@ -41,5 +41,10 @@ func GenerateConfig(p Plan, existing *config.Config) *config.Config {
 	if p.GPUComplex != "" && cfg.GPU.GresComplex == config.Default().GPU.GresComplex {
 		cfg.GPU.GresComplex = p.GPUComplex
 	}
+	// gpu.vendor is deliberately never written here. It cannot be discovered from
+	// GE (the RSMAP says nothing about the hardware behind it), and guessing wrong
+	// is silent at submit time and wrong at run time. A site that has set it keeps
+	// it, because cfg starts from the existing config; a new config gets the
+	// compiled default of nvidia from config.Default().
 	return cfg
 }

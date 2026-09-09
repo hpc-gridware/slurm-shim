@@ -145,6 +145,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// -- gpu -------------------------------------------------------------------
+	r.section("gpu")
+	// Which device variable a rank will actually receive. An admin reading a
+	// config cannot tell a typo from a default, and a wrong vendor is silent at
+	// submit time but wrong at run time (REQ-GPU-004). This is pure config logic,
+	// so it runs before the qmaster-dependent checks and stays visible under
+	// --offline, which is where an admin auditing a config will look.
+	if write, drop, err := cfg.GPU.DeviceVars(); err != nil {
+		r.fail("%v; GPU steps will be refused", err)
+	} else if cfg.GPU.Isolation == "cgroup" {
+		r.pass("gpu.vendor %s, but gpu.isolation is cgroup: GE masks the devices, so the shim writes no device variable and removes only %s",
+			vendorOrDefault(cfg.GPU.Vendor), strings.Join(drop, ", "))
+	} else {
+		// Report the inherited variables that are cleared, not the full drop set:
+		// the one this site writes is in that set too (so a device-less rank cannot
+		// keep an inherited value), but naming it as "removed" beside "ranks get"
+		// reads as a contradiction.
+		r.pass("gpu.vendor %s: ranks get %s per rank; any inherited %s is cleared",
+			vendorOrDefault(cfg.GPU.Vendor), write,
+			strings.Join(without(drop, write), ", "))
+	}
+
 	if *offline {
 		r.section("skipped (--offline)")
 		r.info("wiring, memory, spool, IJS, scheduler health need qmaster")
@@ -323,4 +345,24 @@ func orAdmin(u string) string {
 		return ""
 	}
 	return " or " + u
+}
+
+// vendorOrDefault names the vendor a config resolves to, since empty means the
+// NVIDIA default rather than "unset".
+func vendorOrDefault(v string) string {
+	if n := config.NormalizeVendor(v); n != "" {
+		return n
+	}
+	return config.VendorNVIDIA
+}
+
+// without returns names with one entry removed.
+func without(names []string, drop string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != drop {
+			out = append(out, n)
+		}
+	}
+	return out
 }

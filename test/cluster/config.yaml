@@ -30,9 +30,12 @@ pes:
   smp:  {task_policy: node}     # one task per node (single submitit worker per node)
 
 gpu:
-  discovery: qstat-gres         # RSMAP grant -> per-rank CUDA_VISIBLE_DEVICES
+  discovery: qstat-gres         # RSMAP grant -> the per-rank device variable
   isolation: shim
   gres_complex: gpu
+  vendor: nvidia                # nvidia -> CUDA_VISIBLE_DEVICES
+                                # amd    -> ROCR_VISIBLE_DEVICES (the other
+                                # vendor's variables are removed, not blanked)
 
 memory_complex: mem_free
 export_master_addr: true        # publish MASTER_ADDR/MASTER_PORT for the demos

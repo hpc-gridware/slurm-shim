@@ -3,9 +3,18 @@
 // file rather than re-parsing PE_HOSTFILE (REQ-LAY-001).
 package layout
 
-// SchemaVersion is the layout schema this build writes and accepts. Readers
-// reject any other value (REQ-LAY-005).
-const SchemaVersion = 1
+// SchemaVersion is the layout schema this build writes. Readers accept this and
+// any older version they can migrate (REQ-LAY-005); see Read.
+//
+// v2 widened GPU device ids from numbers to strings so a device can be named by
+// its stable UUID rather than an enumeration index that moves on reboot, driver
+// reload, or an AMD compute-partition change.
+const SchemaVersion = 2
+
+// MinReadableSchemaVersion is the oldest layout this build can still read. A v1
+// layout is migrated in memory by rendering its numeric device ids as strings,
+// so upgrading the binary mid-job does not strand an in-flight allocation.
+const MinReadableSchemaVersion = 1
 
 // State directory and file names under the per-job $TMPDIR (spec section 11.1).
 const (
@@ -49,14 +58,14 @@ type Job struct {
 // Node is one allocation host. nodes[0] is the master and index equals array
 // position (REQ-LAY-002). ProcessorRange is an opaque GE token (SI-25).
 type Node struct {
-	Index          int    `json:"index"`
-	Host           string `json:"host"`
-	FQDN           string `json:"fqdn"`
-	IP             string `json:"ip"`
-	Slots          int    `json:"slots"`
-	ProcessorRange string `json:"processor_range"`
-	GPUs           []int  `json:"gpus"`
-	IsMaster       bool   `json:"is_master"`
+	Index          int      `json:"index"`
+	Host           string   `json:"host"`
+	FQDN           string   `json:"fqdn"`
+	IP             string   `json:"ip"`
+	Slots          int      `json:"slots"`
+	ProcessorRange string   `json:"processor_range"`
+	GPUs           []string `json:"gpus"`
+	IsMaster       bool     `json:"is_master"`
 }
 
 // Tasks is the job-level task geometry and default block rank map.
@@ -69,11 +78,11 @@ type Tasks struct {
 
 // Rank is one entry in the default block-distribution rank map.
 type Rank struct {
-	Rank   int    `json:"rank"`
-	Node   int    `json:"node"`
-	Local  int    `json:"local"`
-	GPUs   []int  `json:"gpus"`
-	Cpuset string `json:"cpuset"`
+	Rank   int      `json:"rank"`
+	Node   int      `json:"node"`
+	Local  int      `json:"local"`
+	GPUs   []string `json:"gpus"`
+	Cpuset string   `json:"cpuset"`
 }
 
 // Rendezvous holds the derived master address and port (Table A28).

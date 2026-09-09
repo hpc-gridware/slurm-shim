@@ -304,7 +304,7 @@ func buildTableA(e envReader, cfg *config.Config, ns nodeSet, geom plan.TaskGeom
 
 	if len(master.GPUs) > 0 {
 		add("SLURM_GPUS_ON_NODE", strconv.Itoa(len(master.GPUs)))
-		add("SLURM_JOB_GPUS", joinInts(master.GPUs))
+		add("SLURM_JOB_GPUS", jobGPUsValue(master.GPUs))
 		if per, ok := uniformGPUCount(lay); ok {
 			add("SLURM_GPUS_PER_NODE", strconv.Itoa(per))
 		}
@@ -366,10 +366,24 @@ func uniformGPUCount(lay *layout.Layout) (int, bool) {
 	return first, true
 }
 
-func joinInts(xs []int) string {
-	parts := make([]string, len(xs))
-	for i, x := range xs {
-		parts[i] = strconv.Itoa(x)
+// jobGPUsValue renders SLURM_JOB_GPUS, which SLURM documents as the job's global
+// GPU ids. Numeric RSMAP ids are the global ids and pass through unchanged, so
+// this is a no-op for every site that predates UUID device ids.
+//
+// A UUID map has no numeric global id to report, so the device's position in the
+// host's grant is used instead. SLURM makes the same split: its env_uuid flag
+// switches CUDA_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES to UUIDs and leaves
+// SLURM_JOB_GPUS numeric.
+func jobGPUsValue(devices []string) string {
+	parts := make([]string, len(devices))
+	for i, d := range devices {
+		if !isNumeric(d) {
+			for j := range parts {
+				parts[j] = strconv.Itoa(j)
+			}
+			return strings.Join(parts, ",")
+		}
+		parts[i] = d
 	}
 	return strings.Join(parts, ",")
 }

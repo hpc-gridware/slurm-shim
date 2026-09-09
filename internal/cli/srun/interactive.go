@@ -57,6 +57,9 @@ func runInteractive(cfg *config.Config, opt *options, stderr io.Writer) int {
 	if w := submit.MemoryComplexWarning(cfg, req); w != "" {
 		warns = append(warns, w)
 	}
+	if w := interactiveDeviceMaskWarning(cfg, req.HaveGPUs); w != "" {
+		warns = append(warns, w)
+	}
 	for _, w := range warns {
 		errln(stderr, "srun: warning: "+w)
 	}

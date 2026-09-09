@@ -56,7 +56,7 @@ var _ = Describe("GPU discovery end-to-end [REQ-GPU-001]", func() {
 		r := hostfileFab("ocs-worker2 2 all.q@ocs-worker2 0-1\n", nil,
 			xmlResponder("qstat_j_gpu2.xml", []string{"-xml", "-j", "267"}), testConfig())
 
-		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0", "1"}))
 		m := exportMap(r)
 		Expect(m["SLURM_GPUS_ON_NODE"]).To(Equal("2"))
 		Expect(m["SLURM_JOB_GPUS"]).To(Equal("0,1"))
@@ -66,7 +66,7 @@ var _ = Describe("GPU discovery end-to-end [REQ-GPU-001]", func() {
 		// The fixture grants on "ocs-worker2"; the hostfile lists its FQDN.
 		r := hostfileFab("ocs-worker2.hpc.example 2 all.q@ocs-worker2.hpc.example 0-1\n", nil,
 			xmlResponder("qstat_j_gpu2.xml", nil), testConfig())
-		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0", "1"}))
 	})
 
 	It("warns and leaves GPUs empty when the granted host is not in the allocation", func() {
@@ -88,7 +88,7 @@ var _ = Describe("GPU discovery end-to-end [REQ-GPU-001]", func() {
 			return fake.Response{Stdout: plain} // qstat -j
 		}}
 		r := hostfileFab("ocs-worker2 2 all.q@ocs-worker2 0-1\n", nil, runner, testConfig())
-		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0", "1"}))
 	})
 
 	It("continues without GPU env when both qstat views fail", func() {
@@ -104,7 +104,7 @@ var _ = Describe("GPU discovery end-to-end [REQ-GPU-001]", func() {
 	It("uses SGE_HGR for a single node when no Runner is available", func() {
 		r := hostfileFab("node001 2 all.q@node001 0-1\n",
 			map[string]string{"JOB_ID": "42", "SGE_HGR_gpu": "0 1"}, nil, testConfig())
-		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0", "1"}))
 	})
 
 	It("does not use SGE_HGR for a multi-node job (not multi-host safe)", func() {
@@ -137,7 +137,7 @@ var _ = Describe("nvidia-smi discovery [REQ-GPU-001]", func() {
 			return fake.Response{Stdout: []byte("0\n1\n")}
 		}}
 		r := hostfileFab("node001 2 all.q@node001 0-1\n", map[string]string{"PE": "smp.pe"}, runner, nvidiaCfg())
-		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]int{0, 1}))
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0", "1"}))
 		Expect(r.Warnings).To(ContainElement(ContainSubstring("physical")))
 	})
 
@@ -188,7 +188,70 @@ var _ = Describe("multi-host GPU discovery through Fabricate [REQ-GPU-001]", fun
 		}}
 		r := hostfileFab(nodeSlots("node001", 1)+nodeSlots("node002", 2),
 			map[string]string{"PE": "smp.pe"}, runner, testConfig())
-		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]int{0}))
-		Expect(r.Layout.Nodes[1].GPUs).To(Equal([]int{0, 1}))
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0"}))
+		Expect(r.Layout.Nodes[1].GPUs).To(Equal([]string{"0", "1"}))
+	})
+})
+
+var _ = Describe("unrecognized granted device ids are reported [REQ-GPU-002]", func() {
+	// Deleting this warning used to leave the whole suite green. It is the only
+	// runtime signal that a granted id was guessed at by grant position, which is
+	// how a device identity turns into the wrong device.
+	It("warns, and still runs, when a granted id cannot be classified", func() {
+		xml := `<detailed_job_info><djob_info><element>
+		  <JB_ja_tasks><element>
+		    <JAT_granted_resources_list>
+		      <element><GRU_name>gpu</GRU_name><GRU_host>ocs-worker2</GRU_host>
+		        <GRU_resource_map_list>
+		          <element><RESL_value>0</RESL_value><RESL_amount>1</RESL_amount></element>
+		          <element><RESL_value>0000:c1:00.0</RESL_value><RESL_amount>1</RESL_amount></element>
+		        </GRU_resource_map_list></element>
+		    </JAT_granted_resources_list>
+		  </element></JB_ja_tasks>
+		</element></djob_info></detailed_job_info>`
+		r := hostfileFab("ocs-worker2 2 all.q@ocs-worker2 0-1\n", nil,
+			&fake.Runner{Responder: func(string, []string) fake.Response {
+				return fake.Response{Stdout: []byte(xml)}
+			}}, testConfig())
+
+		Expect(r.Warnings).To(ContainElement(SatisfyAll(
+			ContainSubstring("unrecognized gpu device id"),
+			ContainSubstring("ocs-worker2"),
+			ContainSubstring("0000:c1:00.0"))))
+		// Still usable: the id became its grant position so the job can run.
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal([]string{"0", "1"}))
+	})
+
+	It("stays quiet when every granted id is understood", func() {
+		r := hostfileFab("ocs-worker2 2 all.q@ocs-worker2 0-1\n", nil,
+			xmlResponder("qstat_j_gpu2.xml", nil), testConfig())
+		for _, w := range r.Warnings {
+			Expect(w).NotTo(ContainSubstring("unrecognized"))
+		}
+	})
+
+	It("carries UUID ids through the whole chain and keeps SLURM_JOB_GPUS numeric", func() {
+		xml := `<detailed_job_info><djob_info><element>
+		  <JB_ja_tasks><element>
+		    <JAT_granted_resources_list>
+		      <element><GRU_name>gpu</GRU_name><GRU_host>ocs-worker2</GRU_host>
+		        <GRU_resource_map_list>
+		          <element><RESL_value>GPU-0123456789abcdef</RESL_value><RESL_amount>1</RESL_amount></element>
+		          <element><RESL_value>GPU-dead0000000000ff</RESL_value><RESL_amount>1</RESL_amount></element>
+		        </GRU_resource_map_list></element>
+		    </JAT_granted_resources_list>
+		  </element></JB_ja_tasks>
+		</element></djob_info></detailed_job_info>`
+		r := hostfileFab("ocs-worker2 2 all.q@ocs-worker2 0-1\n", nil,
+			&fake.Runner{Responder: func(string, []string) fake.Response {
+				return fake.Response{Stdout: []byte(xml)}
+			}}, testConfig())
+
+		Expect(r.Layout.Nodes[0].GPUs).To(Equal(
+			[]string{"GPU-0123456789abcdef", "GPU-dead0000000000ff"}))
+		m := exportMap(r)
+		Expect(m["SLURM_GPUS_ON_NODE"]).To(Equal("2"))
+		// SLURM documents this as global ids; a UUID map has none, so positions.
+		Expect(m["SLURM_JOB_GPUS"]).To(Equal("0,1"))
 	})
 })

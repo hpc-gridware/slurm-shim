@@ -3,6 +3,7 @@ package fabricator
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
@@ -58,9 +59,9 @@ func Predict(opts Options, nodes []PredictedNode) (*Result, error) {
 	for i, n := range nodes {
 		// Device ids are positional stand-ins: the count drives the gpu task policy
 		// and SLURM_GPUS_ON_NODE, while the real ids come from the RSMAP grant.
-		gpus := make([]int, n.GPUs)
+		gpus := make([]string, n.GPUs)
 		for g := range gpus {
-			gpus[g] = g
+			gpus[g] = strconv.Itoa(g)
 		}
 		ns.hosts[i] = nodeInfo{
 			Host: gedata.Host{Name: n.Name, FQDN: n.Name, Slots: n.Slots},

@@ -65,3 +65,37 @@ var _ = Describe("GenerateConfig", func() {
 		Expect(back.Partitions).To(Equal(cfg.Partitions))
 	})
 })
+
+var _ = Describe("gpu.vendor is the site's choice [REQ-GPU-004]", func() {
+	ctx := context.Background()
+	planFor := func(f *fakeAdmin) install.Plan {
+		facts, _ := install.Discover(ctx, f)
+		return install.MakePlan(facts, install.Options{Prefix: prefix})
+	}
+
+	It("keeps a site-set vendor when the config is regenerated", func() {
+		// The vendor cannot be discovered from GE: an RSMAP says nothing about the
+		// hardware behind it. Overwriting an AMD site back to nvidia on a reinstall
+		// would be silent at submit time and wrong at run time.
+		existing := config.Default()
+		existing.GPU.Vendor = config.VendorAMD
+		cfg := install.GenerateConfig(planFor(bare()), existing)
+		Expect(cfg.GPU.Vendor).To(Equal(config.VendorAMD))
+	})
+
+	It("gives a brand-new config the nvidia default", func() {
+		Expect(install.GenerateConfig(planFor(bare()), nil).GPU.Vendor).
+			To(Equal(config.VendorNVIDIA))
+	})
+
+	It("round-trips a site-set vendor through Render without warning", func() {
+		existing := config.Default()
+		existing.GPU.Vendor = config.VendorAMD
+		rendered, err := config.Render(install.GenerateConfig(planFor(bare()), existing))
+		Expect(err).NotTo(HaveOccurred())
+		back, warns, err := config.Parse(rendered)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(back.GPU.Vendor).To(Equal(config.VendorAMD))
+	})
+})

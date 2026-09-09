@@ -11,9 +11,10 @@ import (
 //
 // Verified on OCS 9.1.5: a job submitted `-l h_vmem=1G` runs with
 // `ulimit -v 1048576`, and an allocation past that fails ("memory exhausted").
-// A CUDA context reserves tens of GB of address space at initialisation and
+// A GPU context reserves tens of GB of address space at initialisation and
 // touches almost none of it, so a --mem request mapped onto one of these kills
-// every GPU process at start. Kept as a set, not a single name, because the
+// every GPU process at start. This is a property of the runtime reserving
+// address space, not of any one vendor: CUDA and ROCm both do it. Kept as a set, not a single name, because the
 // s_/h_ pairs and h_data behave the same way.
 var addressSpaceComplexes = map[string]bool{
 	"h_vmem": true, "s_vmem": true,
@@ -25,7 +26,7 @@ var addressSpaceComplexes = map[string]bool{
 // the guidance cannot drift between the commands (same rule as the -par
 // warnings above).
 const memoryComplexGPUWarn = "memory_complex %q is enforced as virtual address space " +
-	"(RLIMIT_AS), but this job requests GPUs: a CUDA context reserves tens of GB of " +
+	"(RLIMIT_AS), but this job requests GPUs: a GPU context reserves tens of GB of " +
 	"address space at init, so --mem will fail the job before your code runs -- set " +
 	"memory_complex to mem_free (see README: Memory requests)"
 
@@ -35,7 +36,7 @@ const memoryComplexGPUWarn = "memory_complex %q is enforced as virtual address s
 // It fires only when all three hold: the job actually asked for memory, the
 // site's complex is address-space enforced, and the job requests GPUs. A CPU-only
 // site running h_vmem deliberately is a legitimate choice and stays quiet -- the
-// warning names a failure that only materialises with a CUDA context.
+// warning names a failure that only materialises with a GPU context.
 func MemoryComplexWarning(cfg *config.Config, r Request) string {
 	if r.Mem == "" || cfg.MemoryComplex == "" {
 		return ""

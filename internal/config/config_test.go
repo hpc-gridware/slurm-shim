@@ -235,3 +235,138 @@ var _ = Describe("control port validation", func() {
 		Expect(warns).To(ContainElement(ContainSubstring(`unknown config key "control_port"`)))
 	})
 })
+
+var _ = Describe("gpu.vendor [REQ-GPU-004]", func() {
+	It("defaults to nvidia", func() {
+		Expect(config.Default().GPU.Vendor).To(Equal(config.VendorNVIDIA))
+	})
+
+	It("parses amd and leaves the other gpu keys at their defaults", func() {
+		cfg, warns, err := config.Parse([]byte("gpu:\n  vendor: amd\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.GPU.Vendor).To(Equal(config.VendorAMD))
+		Expect(cfg.GPU.Isolation).To(Equal("shim"))
+		Expect(cfg.GPU.Discovery).To(Equal("qstat-gres"))
+	})
+
+	// Warn, never fail. config.Load runs in slurm-shim-env, the PE
+	// start_proc_args hook, so a hard error here would take down every job on the
+	// host over a typo in a key that only matters to GPU steps. The refusal
+	// happens at the point of use instead.
+	It("warns on an unknown vendor without failing the load", func() {
+		cfg, warns, err := config.Parse([]byte("gpu:\n  vendor: rocm\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(SatisfyAll(
+			ContainSubstring("rocm"), ContainSubstring("nvidia"), ContainSubstring("amd"))))
+		Expect(cfg).NotTo(BeNil())
+	})
+
+	It("accepts an empty vendor silently, so a rendered default never warns", func() {
+		cfg, warns, err := config.Parse([]byte("gpu:\n  vendor: \"\"\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(config.ValidVendor(cfg.GPU.Vendor)).To(BeTrue())
+	})
+
+	DescribeTable("ValidVendor",
+		func(v string, want bool) { Expect(config.ValidVendor(v)).To(Equal(want)) },
+		Entry("empty means nvidia", "", true),
+		Entry("nvidia", "nvidia", true),
+		Entry("amd", "amd", true),
+		Entry("surrounding space is tolerated", "  amd  ", true),
+		Entry("intel is not supported", "intel", false),
+		// "AMD" is how the brand is written everywhere, so refusing every GPU step
+		// over the capitalisation would be a trap rather than strictness.
+		Entry("upper case is accepted", "AMD", true),
+		Entry("mixed case is accepted", "Nvidia", true),
+	)
+})
+
+var _ = Describe("gpu.vendor normalisation", func() {
+	It("lowercases and trims the configured value once, at parse time", func() {
+		cfg, warns, err := config.Parse([]byte("gpu:\n  vendor: \"  AMD  \"\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.GPU.Vendor).To(Equal(config.VendorAMD),
+			"consumers compare directly, so nothing downstream should have to trim or fold case")
+	})
+
+	It("keeps an unrecognised value visible so the warning can name it", func() {
+		cfg, warns, err := config.Parse([]byte("gpu:\n  vendor: Rocm\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.GPU.Vendor).To(Equal("rocm"))
+		Expect(warns).To(ContainElement(ContainSubstring("rocm")))
+	})
+})
+
+var _ = Describe("misspelled keys inside a known block are reported", func() {
+	// knownKeys reflects over top-level fields only, so a typo one level down used
+	// to be accepted in silence. On an AMD site "vendr: amd" then left gpu.vendor
+	// at its default and every rank got the wrong device variable, from a
+	// one-character mistake, with no diagnostic anywhere.
+	It("warns about a misspelled key inside gpu", func() {
+		cfg, warns, err := config.Parse([]byte("gpu:\n  vendr: amd\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`"gpu.vendr"`)))
+		Expect(cfg.GPU.Vendor).To(Equal(config.VendorNVIDIA), "the typo really was ignored")
+	})
+
+	It("stays quiet about a correctly spelled nested key", func() {
+		_, warns, err := config.Parse([]byte("gpu:\n  vendor: amd\n  isolation: cgroup\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+	})
+
+	It("warns about a misspelled key inside one partition, naming that partition", func() {
+		// This is the case the original report was filed for.
+		doc := "partitions:\n  gpu: {queue: gpu.q, pe: gpu.pe, allocation_rule_overide: never}\n"
+		_, warns, err := config.Parse([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`"partitions.gpu.allocation_rule_overide"`)))
+	})
+
+	It("does not mistake a site's own partition names for unknown keys", func() {
+		doc := "partitions:\n  anything: {queue: a.q, pe: p}\n  else: {queue: b.q, pe: p}\n"
+		_, warns, err := config.Parse([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		for _, w := range warns {
+			Expect(w).NotTo(ContainSubstring("unknown config key"))
+		}
+	})
+
+	It("warns about a misspelled key inside a pe entry", func() {
+		_, warns, err := config.Parse([]byte("pes:\n  gpu.pe: {task_polcy: gpu}\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`"pes.gpu.pe.task_polcy"`)))
+	})
+
+	It("still warns about an unknown top-level key", func() {
+		_, warns, err := config.Parse([]byte("nonsense: 1\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`"nonsense"`)))
+	})
+})
+
+var _ = Describe("qstat_timeout must be positive", func() {
+	// Zero or negative is not a slower shim: every qstat call expires before it
+	// starts, so GPU discovery finds nothing and the job runs with no device
+	// environment at all.
+	DescribeTable("warns and falls back",
+		func(doc string) {
+			cfg, warns, err := config.Parse([]byte(doc))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(warns).To(ContainElement(ContainSubstring("qstat_timeout")))
+			Expect(cfg.QstatTimeout.Duration).To(Equal(config.Default().QstatTimeout.Duration))
+		},
+		Entry("zero", "qstat_timeout: 0s\n"),
+		Entry("negative", "qstat_timeout: -1s\n"),
+	)
+
+	It("accepts a positive timeout without a word", func() {
+		cfg, warns, err := config.Parse([]byte("qstat_timeout: 20s\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.QstatTimeout.Duration.String()).To(Equal("20s"))
+	})
+})

@@ -1,6 +1,7 @@
 package layout_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,9 +13,13 @@ import (
 
 var _ = Describe("layout error paths", func() {
 	It("reports a descriptive schema-version error [REQ-LAY-005]", func() {
-		err := layout.ErrSchemaVersion{Got: 2, Want: 1}
-		Expect(err.Error()).To(ContainSubstring("schema_version 2"))
-		Expect(err.Error()).To(ContainSubstring("understands 1"))
+		// The message must name the range this build can actually read, not just
+		// the version it writes: an operator hitting this after a rollback needs to
+		// know which side is too new.
+		err := layout.ErrSchemaVersion{Got: 99, Want: layout.SchemaVersion}
+		Expect(err.Error()).To(ContainSubstring("schema_version 99"))
+		Expect(err.Error()).To(ContainSubstring(
+			fmt.Sprintf("%d-%d", layout.MinReadableSchemaVersion, layout.SchemaVersion)))
 	})
 
 	It("fails Write when the target directory cannot be created [REQ-LAY-004]", func() {

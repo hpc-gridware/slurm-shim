@@ -81,12 +81,18 @@ var _ = Describe("Envelope and StepSpec codecs [REQ-RUN-009]", func() {
 	})
 
 	It("round-trips the StepSpec", func() {
+		// The device fields are set deliberately. This spec used to exercise them
+		// only at their zero values, which is why a mutation disconnecting the
+		// vendor from the wire survived the whole suite.
 		s := proto.StepSpec{
-			Env:     []string{"HOME=/home/alice", "SLURM_JOB_ID=4711"},
-			Command: []string{"hostname"},
-			Label:   true,
+			Env:       []string{"HOME=/home/alice", "SLURM_JOB_ID=4711"},
+			Command:   []string{"hostname"},
+			Label:     true,
+			GPUEnvVar: proto.EnvROCRDevices,
 			Ranks: []proto.RankSpec{
-				{Rank: 0, Local: 0, NodeID: 0, Cpuset: "0-3", EnvDelta: []string{"SLURM_PROCID=0"}},
+				{Rank: 0, Local: 0, NodeID: 0, Cpuset: "0-3",
+					GPUs:     proto.DeviceIDs{"GPU-0123456789abcdef", "1"},
+					EnvDelta: []string{"SLURM_PROCID=0"}},
 			},
 		}
 		b, err := proto.EncodeSpec(s)

@@ -100,9 +100,14 @@ func (s *supervisor) dryRun() int {
 		spec := s.stepSpec(base, ni)
 		for _, r := range spec.Ranks {
 			fmt.Fprintf(out, "\nrank %d (%s) adds:\n", r.Rank, node.Host)
-			// The stepper's own overlay builder, so SLURMD_NODENAME and
-			// CUDA_VISIBLE_DEVICES -- which it adds, not the planner -- are reported.
-			printEnv(out, stepper.RankOverlay(r, node.Host))
+			// The stepper's own overlay builder, so SLURMD_NODENAME and the device
+			// variable -- which it adds, not the planner -- are reported.
+			overlay, err := stepper.RankOverlay(r, node.Host, spec.GPUEnvVar)
+			if err != nil {
+				errln(s.stderr, "srun: error: "+err.Error())
+				return 1
+			}
+			printEnv(out, overlay)
 		}
 	}
 	return 0
@@ -118,6 +123,9 @@ func (s *supervisor) dryRun() int {
 // (REQ-CHN-003, SI-51); the rest (CONFIG, TASK_POLICY, DISABLE, DRY_RUN) are
 // client inputs rather than part of the environment contract, and unsetPreamble
 // says so.
+// Both device variables are admitted, not just the selected vendor's: the report
+// must be able to show that an inherited foreign variable was removed, which is
+// the failure most likely to break an AMD site (REQ-GPU-004).
 func stepEnv(base []string) []string {
 	var out []string
 	for _, kv := range base {
@@ -125,7 +133,9 @@ func stepEnv(base []string) []string {
 			continue
 		}
 		if strings.HasPrefix(kv, "SLURM_") || strings.HasPrefix(kv, "SLURMD_") ||
-			strings.HasPrefix(kv, "MASTER_") || strings.HasPrefix(kv, "CUDA_VISIBLE_DEVICES=") {
+			strings.HasPrefix(kv, "MASTER_") ||
+			strings.HasPrefix(kv, proto.EnvCUDADevices+"=") ||
+			strings.HasPrefix(kv, proto.EnvROCRDevices+"=") {
 			out = append(out, kv)
 		}
 	}
@@ -151,7 +161,7 @@ func rankSummary(r proto.RankSpec) string {
 		parts = append(parts, "cpuset "+r.Cpuset)
 	}
 	if len(r.GPUs) > 0 {
-		parts = append(parts, "gpus "+joinInts(r.GPUs))
+		parts = append(parts, "gpus "+strings.Join(r.GPUs, ","))
 	}
 	switch {
 	case r.StdoutFile != "" && r.StdoutFile == r.StderrFile:
@@ -188,12 +198,4 @@ func (s *supervisor) hasSlaveNode() bool {
 		}
 	}
 	return false
-}
-
-func joinInts(ids []int) string {
-	parts := make([]string, len(ids))
-	for i, id := range ids {
-		parts[i] = fmt.Sprint(id)
-	}
-	return strings.Join(parts, ",")
 }

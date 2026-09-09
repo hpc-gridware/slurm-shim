@@ -26,7 +26,8 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `31_sbatch_resources` | the resource flags reach GE and take effect: `--time` -> `h_rt` (and GE enforces it), `--mem` -> the memory complex, `#SBATCH --gres=gpu:N` -> RSMAP grant -> `SLURM_JOB_GPUS` -> step `CUDA_VISIBLE_DEVICES`, `--dependency` -> `-hold_jid`, `--array %p` -> `-tc`, `--signal` -> `-notify -r y`; malformed values rejected at submit time |
 | `40_squeue_scancel` | `squeue` lists a live job; `scancel` removes it |
 | `50_scontrol` | `scontrol show hostnames` expands a compressed nodelist, one per line |
-| `60_gpu` | a fake RSMAP grant -> `SLURM_JOB_GPUS` + per-rank `CUDA_VISIBLE_DEVICES` |
+| `60_gpu` | a fake RSMAP grant -> `SLURM_JOB_GPUS` + per-rank `CUDA_VISIBLE_DEVICES`, and that the other vendor's variable is not written |
+| `61_gpu_vendor` | `gpu.vendor` selects the device variable and removes the other vendor's inherited masks; an RSMAP UUID reaches the rank verbatim; an unknown vendor refuses GPU steps but not the allocation |
 | `70_reject` | an impossible `srun` is rejected before launch (exit 1, no hang) |
 | `80_sinfo` | `sinfo` shows live node counts/states from GE (not `n/a` placeholders) |
 | `90_array` | `--array`: 0-based SLURM indices over 1-based GE tasks in the job env, `srun`, `sacct` and `scancel`; a `%a` batch path GE cannot express is substituted, not dropped (the Hydra/submitit shape) |

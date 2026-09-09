@@ -30,7 +30,7 @@ type StepNode struct {
 	Host        string
 	LayoutIndex int
 	Slots       int
-	GPUs        []int
+	GPUs        []string
 }
 
 // PlacedRank is one rank's placement (Table B geometry).
@@ -39,7 +39,7 @@ type PlacedRank struct {
 	StepNodeIndex int // SLURM_NODEID
 	Local         int // SLURM_LOCALID
 	Cpuset        string
-	GPUs          []int
+	GPUs          []string
 }
 
 // StepPlan is the resolved placement for a step.
