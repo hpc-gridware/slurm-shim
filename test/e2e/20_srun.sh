@@ -15,8 +15,8 @@ cat >"$job" <<'EOF'
 srun -l -n 6 bash -c 'echo "rank=$SLURM_PROCID node=$SLURM_NODEID host=$(hostname)"'
 EOF
 
-remote=/home/gridware/e2e-20-srun.sh
-out=/home/gridware/e2e-20-srun.out
+remote=$JOB_HOME/e2e-20-srun.sh
+out=$JOB_HOME/e2e-20-srun.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 res="$(jobout "$id" "$out")"

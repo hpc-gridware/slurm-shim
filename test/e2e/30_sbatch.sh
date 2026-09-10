@@ -16,8 +16,8 @@ cat >"$job" <<'EOF'
 echo "hello-from-sbatch on $(hostname)"
 EOF
 
-remote=/home/gridware/e2e-30-sbatch.sh
-out=/home/gridware/e2e-30-sbatch.out
+remote=$JOB_HOME/e2e-30-sbatch.sh
+out=$JOB_HOME/e2e-30-sbatch.out
 put_job "$job" "$remote"
 gridware "rm -f '$out'"
 

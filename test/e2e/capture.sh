@@ -26,7 +26,7 @@ cat >"$gjob" <<'EOF'
 #!/bin/bash
 sleep 30
 EOF
-remote=/home/gridware/e2e-capture-gpu.sh
+remote=$JOB_HOME/e2e-capture-gpu.sh
 put_job "$gjob" "$remote"
 id="$(gridware "qsub -terse -pe make 2 -l ${GPU_COMPLEX}=1 -q all.q@ocs-worker1 -o /dev/null -j y '$remote'")"
 id="${id%%.*}"

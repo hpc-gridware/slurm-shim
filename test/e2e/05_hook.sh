@@ -14,7 +14,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
 log "05_hook: the source hook enforces abort, and only where it should"
 
-HOOK=/opt/slurm-shim/etc/slurm-shim-source-hook.sh
+HOOK="$SHIM_PREFIX/etc/slurm-shim-source-hook.sh"
 gridware "test -f $HOOK" || { fail "hook not installed at $HOOK"; finish; }
 
 # hook_case <case-dir-setup> <policy> -- prints "<job-exit> <nodelist-or-unset>".

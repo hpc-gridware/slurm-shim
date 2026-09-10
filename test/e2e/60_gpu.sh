@@ -3,6 +3,10 @@
 # Uses the fake RSMAP complex so no real GPU is needed.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
+# Target a host that actually declares devices instead of naming a container,
+# so this runs against a real cluster too.
+GPU_HOST="$(gpu_host)"
+[ -n "$GPU_HOST" ] || { fail "no exec host declares the $GPU_COMPLEX complex"; finish; }
 log "60_gpu: RSMAP grant -> SLURM_JOB_GPUS + per-rank CUDA_VISIBLE_DEVICES"
 
 ensure_gpu_complex
@@ -19,12 +23,12 @@ srun -n 2 bash -c 'echo "default localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVI
 srun -n 2 --gpus-per-task=1 bash -c 'echo "pertask localid=$SLURM_LOCALID cuda=[$CUDA_VISIBLE_DEVICES] rocr=[${ROCR_VISIBLE_DEVICES-UNSET}]"'
 EOF
 
-remote=/home/gridware/e2e-60-gpu.sh
-out=/home/gridware/e2e-60-gpu.out
+remote=$JOB_HOME/e2e-60-gpu.sh
+out=$JOB_HOME/e2e-60-gpu.out
 put_job "$job" "$remote"
 gridware "rm -f '$out'"
 # gpu is a per-slot consumable: -l gpu=1 x 2 slots = both of the worker's devices.
-id="$(gridware "qsub -terse -pe make 2 -l ${GPU_COMPLEX}=1 -q all.q@ocs-worker1 -o '$out' -j y '$remote'")"
+id="$(gridware "qsub -terse -pe make 2 -l ${GPU_COMPLEX}=1 -q all.q@$GPU_HOST -o '$out' -j y '$remote'")"
 id="${id%%.*}"
 if [ -n "$id" ]; then pass "gpu job submitted (id $id)"; else fail "qsub returned no id"; fi
 

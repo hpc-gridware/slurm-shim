@@ -111,8 +111,8 @@ cat >"$gjob" <<'EOF'
 echo "JOBGPUS=[$SLURM_JOB_GPUS] ONNODE=[$SLURM_GPUS_ON_NODE]"
 srun bash -c 'echo "rank=$SLURM_PROCID cuda=[$CUDA_VISIBLE_DEVICES]"'
 EOF
-gremote=/home/gridware/e2e-31-gres.sh
-gout=/home/gridware/e2e-31-gres.out
+gremote=$JOB_HOME/e2e-31-gres.sh
+gout=$JOB_HOME/e2e-31-gres.out
 put_job "$gjob" "$gremote"
 gridware "rm -f '$gout'"
 # Through the DIRECTIVE path (#SBATCH --gres), not the CLI path, so both are covered.
@@ -195,8 +195,8 @@ cat >"$memjob" <<'EOF'
 echo "ULIMIT_V=$(ulimit -v)"
 dd if=/dev/zero of=/dev/null bs=2G count=1 2>&1 | tail -1
 EOF
-mem_remote=/home/gridware/e2e-31-mem.sh
-mem_out=/home/gridware/e2e-31-mem.out
+mem_remote=$JOB_HOME/e2e-31-mem.sh
+mem_out=$JOB_HOME/e2e-31-mem.out
 put_job "$memjob" "$mem_remote"
 rm -f "$memjob"
 mem_id="$(sbatch_submit "$mem_remote" "$mem_out")"

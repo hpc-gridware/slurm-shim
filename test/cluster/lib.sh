@@ -52,8 +52,14 @@ SSH_USER="${SSH_USER:-}"                  # empty: let ssh pick (config/agent)
 read -r -a NODES <<< "$NODES_SPEC"
 MASTER="${MASTER:-ocs-master}"
 JOB_USER="${JOB_USER:-gridware}"          # unprivileged user that submits jobs
+# Where that user's home lives. NOT always /home/$JOB_USER: on a cloud cluster
+# /home belongs to the SSH login user the provider's guest agent manages, and
+# NFS-mounting a shared /home over it shadows that user's authorized_keys and
+# locks you out of every node at once. Cluster homes therefore live on their own
+# export, and this names it.
+JOB_HOME="${JOB_HOME:-/home/$JOB_USER}"
 # Everything a child check process needs to reach the same cluster.
-export NODES_SPEC MASTER JOB_USER BACKEND SSH_CMD SCP_CMD SSH_USER \
+export NODES_SPEC MASTER JOB_USER JOB_HOME BACKEND SSH_CMD SCP_CMD SSH_USER \
        SHIM_PREFIX CELL_DIR
 
 # Readiness signal: how many instances of which queue must exist. Defaults to one
@@ -249,6 +255,34 @@ gridware() { node_sh_as "$JOB_USER" "$MASTER" "cd && $*"; }
 # manager runs a command as root on the master. Root is a GE manager on the
 # container cluster, so qconf mutations (PE hooks, complexes) go through it.
 manager() { node_sh "$MASTER" "$*"; }
+
+# queue_host prints a host that actually has an instance of $READY_QUEUE, and
+# gpu_host one that declares the GPU complex. Checks that must pin a job to a
+# specific queue instance use these instead of naming a container: on a real
+# cluster the manager often runs no execd at all, so "the master" is not a queue
+# instance and hardcoding one makes the check unrunnable off the container tree.
+# Returns the SHORT name, which is what a job reports in SLURM_JOB_NODELIST and
+# what `hostname -s` gives. Deliberately not parsed from `qstat -f`: that column
+# is TRUNCATED (a 30-char cut of the FQDN), so it yields a host that does not
+# exist and comparisons against job output silently fail.
+queue_host() {
+  manager "qconf -sel 2>/dev/null | head -1 | cut -d. -f1" | tr -d '[:space:]'
+}
+
+# Prefers a host that is NOT the manager: on a real cluster the manager runs no
+# execd and has no devices, and on the container cluster this keeps picking the
+# same worker the checks have always used.
+gpu_host() {
+  local h
+  h="$(manager "for h in \$(qconf -sel); do
+      [ \"\$h\" = '$MASTER' ] && continue
+      if qconf -se \$h | tr -d ' ' | grep -q '${GPU_COMPLEX}=[0-9]'; then echo \$h | cut -d. -f1; break; fi
+    done" | tr -d '[:space:]')"
+  [ -n "$h" ] || h="$(manager "for h in \$(qconf -sel); do
+      if qconf -se \$h | tr -d ' ' | grep -q '${GPU_COMPLEX}=[0-9]'; then echo \$h | cut -d. -f1; break; fi
+    done" | tr -d '[:space:]')"
+  printf '%s' "$h"
+}
 
 # ensure_gpu_complex configures a fake RSMAP GPU complex so the GPU path can be
 # exercised without real hardware. Idempotent: adds the complex if absent and sets

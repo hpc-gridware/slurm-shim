@@ -7,26 +7,26 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
 log "08_install: slurm-shim install / doctor"
 
-S=/opt/slurm-shim/bin/slurm-shim
+S="$SHIM_PREFIX/bin/slurm-shim"
 ADM="source /opt/ocs/default/common/settings.sh && $S"
 
 # (1) Plan is read-only: the cluster is identical before and after.
 before="$(manager "qconf -sp slurm-shim 2>/dev/null; qconf -sq all.q | grep -E '^(pe_list|starter_method)'")"
-plan="$(manager "$ADM install --prefix /opt/slurm-shim 2>&1")"
+plan="$(manager "$ADM install --prefix $SHIM_PREFIX 2>&1")"
 assert_contains "$plan" "Nothing was changed" "plan mode says it changed nothing"
 after="$(manager "qconf -sp slurm-shim 2>/dev/null; qconf -sq all.q | grep -E '^(pe_list|starter_method)'")"
 assert_eq "$after" "$before" "plan mode left the cluster identical"
 
 # (2) Apply is idempotent: the second run applies zero changes.
-manager "$ADM install --prefix /opt/slurm-shim --apply >/dev/null 2>&1"
-second="$(manager "$ADM install --prefix /opt/slurm-shim --apply 2>&1")"
+manager "$ADM install --prefix $SHIM_PREFIX --apply >/dev/null 2>&1"
+second="$(manager "$ADM install --prefix $SHIM_PREFIX --apply 2>&1")"
 assert_contains "$second" "0 change(s) applied" "second --apply changes nothing"
 assert_contains "$second" "ok        slurm-shim   start_proc_args" "the dedicated PE is reported unchanged"
 
 # (3) The dedicated PE has the reference shape, and the queue offers it.
 pe="$(manager "qconf -sp slurm-shim")"
 assert_contains "$pe" "control_slaves       TRUE" "PE control_slaves TRUE"
-assert_contains "$pe" "start_proc_args      /opt/slurm-shim/bin/slurm-shim-env" "PE start_proc_args -> slurm-shim-env"
+assert_contains "$pe" "start_proc_args      $SHIM_PREFIX/bin/slurm-shim-env" "PE start_proc_args -> slurm-shim-env"
 assert_contains "$pe" "allocation_rule      \$round_robin" "PE allocation_rule \$round_robin"
 assert_contains "$(manager "qconf -sq all.q | grep ^pe_list")" "slurm-shim" "all.q offers the slurm-shim PE"
 
@@ -37,7 +37,7 @@ refusal="$(manager "$ADM install --prefix /opt/elsewhere 2>&1")"
 assert_contains "$refusal" "REFUSED   all.q        starter_method" "existing starter_method is refused"
 assert_contains "$refusal" "REFUSED   slurm-shim   start_proc_args" "existing PE start_proc_args is refused"
 assert_contains "$refusal" "MPI" "the refusal explains the MPI hazard"
-assert_eq "$(manager "qconf -sq all.q | grep ^starter_method | awk '{print \$2}'")" "/opt/slurm-shim/bin/slurm-shim-starter" \
+assert_eq "$(manager "qconf -sq all.q | grep ^starter_method | awk '{print \$2}'")" "$SHIM_PREFIX/bin/slurm-shim-starter" \
   "the refused starter was not changed"
 
 # (5) The site config is merged, not rewritten: the test partitions survive

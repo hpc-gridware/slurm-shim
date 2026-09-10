@@ -21,18 +21,22 @@ cat >"$job" <<'EOF'
 env | grep '^SLURM_' | sort
 EOF
 
-remote=/home/gridware/e2e-95-dryrun.sh
-out=/home/gridware/e2e-95-dryrun.out
+remote=$JOB_HOME/e2e-95-dryrun.sh
+out=$JOB_HOME/e2e-95-dryrun.out
 put_job "$job" "$remote"
 
 # ---------------------------------------------------------------- no mutation
 
-before="$(gridware "qstat -u '*' 2>/dev/null | wc -l")"
+# Job ids, not a line count: an unrelated job finishing between the two samples
+# would otherwise fail this for a reason unrelated to the dry run.
+qids() { gridware "qstat -u '*' 2>/dev/null | awk 'NR>2 {print \$1}' | sort" 2>/dev/null || true; }
+before="$(qids)"
 dry_err="$(gridware "SLURM_SHIM_DRY_RUN=1 sbatch --output='$out' '$remote' 2>&1 >/dev/null")"
 dry_out="$(gridware "SLURM_SHIM_DRY_RUN=1 sbatch --output='$out' '$remote' 2>/dev/null")"
-after="$(gridware "qstat -u '*' 2>/dev/null | wc -l")"
+after="$(qids)"
 
-assert_eq "$after" "$before" "a dry run queues no job [REQ-DRY-002]"
+assert_eq "$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | grep -c . || true)" "0" \
+  "a dry run queues no job [REQ-DRY-002]"
 assert_contains "$dry_err" "dry run" "the banner names the mode"
 assert_contains "$dry_err" "would submit" "the report shows the qsub line"
 assert_contains "$dry_err" "qsub -terse -q all.q -pe make" "the qsub line names the mapped queue and PE"
@@ -48,11 +52,12 @@ esac
 
 # --test-only must reach the same mode without an environment variable, since a
 # caller that can only inject argv or #SBATCH lines has no other route.
-t_before="$(gridware "qstat -u '*' 2>/dev/null | wc -l")"
+t_before="$(qids)"
 t_err="$(gridware "sbatch --test-only --output='$out' '$remote' 2>&1 >/dev/null")"
-t_after="$(gridware "qstat -u '*' 2>/dev/null | wc -l")"
+t_after="$(qids)"
 assert_contains "$t_err" "dry run" "--test-only enters the mode with no env var"
-assert_eq "$t_after" "$t_before" "--test-only queues no job"
+assert_eq "$(comm -13 <(printf '%s\n' "$t_before") <(printf '%s\n' "$t_after") | grep -c . || true)" "0" \
+  "--test-only queues no job"
 
 # ------------------------------------------------------- the parity assertion
 
@@ -125,7 +130,7 @@ fi
 # qsub -V forwards the submit environment, and the fabricator's unset preamble is
 # what stops an inherited dry-run flag turning every srun in the job into a no-op
 # that still exits 0. Plant it explicitly and confirm the job does real work.
-leak_out=/home/gridware/e2e-95-leak.out
+leak_out=$JOB_HOME/e2e-95-leak.out
 leak="$(mktemp)"
 cat >"$leak" <<'EOF'
 #!/bin/bash
@@ -134,7 +139,7 @@ cat >"$leak" <<'EOF'
 #SBATCH --ntasks-per-node=1
 srun echo REAL-WORK-RAN
 EOF
-leak_remote=/home/gridware/e2e-95-leak.sh
+leak_remote=$JOB_HOME/e2e-95-leak.sh
 put_job "$leak" "$leak_remote"
 rm -f "$leak"
 
@@ -152,17 +157,18 @@ fi
 # sites without a queue starter_method) must scrub the inherited DRY_RUN flag too
 # -- the scrub lives in the fabricated environment file, which the hook sources
 # whichever path reaches it (todos/037).
-leak2_out=/home/gridware/e2e-95-leak2.out
+leak2_out=$JOB_HOME/e2e-95-leak2.out
 leak2="$(mktemp)"
 cat >"$leak2" <<'EOF'
 #!/bin/bash
 #SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-. /opt/slurm-shim/etc/slurm-shim-source-hook.sh
+. @SHIM_PREFIX@/etc/slurm-shim-source-hook.sh
 srun echo REAL-WORK-RAN-NOSTARTER
 EOF
-leak2_remote=/home/gridware/e2e-95-leak2.sh
+sed -i.bak "s|@SHIM_PREFIX@|$SHIM_PREFIX|" "$leak2" && rm -f "$leak2.bak"
+leak2_remote=$JOB_HOME/e2e-95-leak2.sh
 put_job "$leak2" "$leak2_remote"
 rm -f "$leak2"
 leak2_id="$(gridware "rm -f '$leak2_out'; sbatch --export=ALL,SLURM_SHIM_DRY_RUN=1 --output='$leak2_out' '$leak2_remote'" \
@@ -187,7 +193,7 @@ cat >"$keep" <<'EOF'
 #SBATCH --ntasks-per-node=1
 sleep 120
 EOF
-keep_remote=/home/gridware/e2e-95-keep.sh
+keep_remote=$JOB_HOME/e2e-95-keep.sh
 put_job "$keep" "$keep_remote"
 rm -f "$keep"
 

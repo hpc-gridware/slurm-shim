@@ -13,7 +13,7 @@ log "07_interactive: srun --pty outside an allocation -> qrsh session"
 
 # ptyrun <script-body> -- run a body as gridware under a real pty, return stdout.
 ptyrun() {
-  local body="$1" f="/home/$JOB_USER/e2e-07.sh"
+  local body="$1" f="$JOB_HOME/e2e-07.sh"
   printf '#!/bin/bash\n%s\n' "$body" > /tmp/e2e-07.sh
   put_job /tmp/e2e-07.sh "$f"
   # Invoke via bash so the copied file needs no execute bit, under script(1) so
@@ -25,7 +25,7 @@ ptyrun() {
 out="$(ptyrun 'cd "$HOME" && srun --pty -p batch -c 2 bash -c "echo GOT tty=\$(tty) JOB=\$SLURM_JOB_ID NN=\$SLURM_NNODES PART=\$SLURM_JOB_PARTITION pwd=\$(pwd)"')"
 assert_contains "$out" "tty=/dev/pts/" "the session runs on a real pty"
 assert_contains "$out" "JOB=" "SLURM_JOB_ID is set in the session"
-assert_contains "$out" "pwd=/home/$JOB_USER" "the session starts in the invocation dir (-cwd)"
+assert_contains "$out" "pwd=$JOB_HOME" "the session starts in the invocation dir (-cwd)"
 
 # (2) Exit status propagates through qrsh.
 out="$(ptyrun 'srun --pty -p batch bash -c "exit 7"; echo "RC=$?"')"
@@ -44,16 +44,27 @@ assert_contains "$out" "ACCT=e2eacct" "--account reaches SLURM_JOB_ACCOUNT via -
 # (5) 2-node --pty session, then srun steps fan out from inside it.
 out="$(ptyrun 'srun --pty -p batch -N 2 --ntasks-per-node=1 bash -c "echo OUTER NN=\$SLURM_NNODES; srun hostname 2>/dev/null | sort | tr \"\\n\" \" \"; echo"')"
 assert_contains "$out" "OUTER NN=2" "the interactive session spans two nodes"
-hosts="$(printf '%s\n' "$out" | grep -oE 'ocs-(master|worker[12])' | sort -u | tr '\n' ' ')"
-n="$(printf '%s' "$hosts" | tr ' ' '\n' | grep -c .)"
+# Match against THIS cluster's nodes rather than a hardcoded container pattern.
+# A grep that finds nothing exits 1, and under `set -e` that killed the check
+# outright -- silently, right after the previous assertion passed.
+hosts=""
+for _h in "${NODES[@]}"; do
+  case "$out" in *"$_h"*) hosts="$hosts $_h" ;; esac
+done
+n="$(printf '%s' "$hosts" | tr ' ' '\n' | grep -c . || true)"
 assert_eq "$n" "2" "inner srun fanned out to both allocated nodes ($hosts)"
 
 # (6) Dry run: prints the qrsh line, creates no job.
-before="$(gridware "qstat -u '*' 2>/dev/null | grep -c . || true")"
+# Compare the SET of job ids, not a line count. A count changes whenever an
+# unrelated job finishes between the two samples, which fails the check for a
+# reason that has nothing to do with the dry run.
+qids() { gridware "qstat -u '*' 2>/dev/null | awk 'NR>2 {print \$1}' | sort" 2>/dev/null || true; }
+before_ids="$(qids)"
 out="$(gridware 'SLURM_SHIM_DRY_RUN=1 srun --pty -p batch -c 2 bash 2>&1')"
 assert_contains "$out" "-now no -pty y -cwd -q all.q -pe make 2" "dry run prints the resolved qrsh line"
-after="$(gridware "qstat -u '*' 2>/dev/null | grep -c . || true")"
-assert_eq "$after" "$before" "dry run created no job"
+after_ids="$(qids)"
+new_ids="$(comm -13 <(printf '%s\n' "$before_ids") <(printf '%s\n' "$after_ids") | grep -c . || true)"
+assert_eq "$new_ids" "0" "dry run created no job"
 
 # (7) QRSH_WRAPPER is scrubbed (cannot hijack the session).
 out="$(ptyrun 'QRSH_WRAPPER=/bin/echo srun --pty -p batch bash -c "echo REAL JOB=\$SLURM_JOB_ID"')"
@@ -63,5 +74,5 @@ assert_contains "$out" "REAL JOB=" "QRSH_WRAPPER is scrubbed; the real command r
 out="$(gridware 'srun hostname 2>&1 || true')"
 assert_contains "$out" "not inside a slurm-shim allocation" "non-pty standalone srun still rejects"
 
-gridware "rm -f /home/$JOB_USER/e2e-07.sh"
+gridware "rm -f $JOB_HOME/e2e-07.sh"
 finish

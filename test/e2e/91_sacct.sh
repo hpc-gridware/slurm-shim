@@ -35,14 +35,14 @@ field() {
 }
 
 # ---------------------------------------------------------------- a clean job
-ok_id="$(gridware "cd /home/gridware && sbatch --job-name=e2eok --wrap='sleep 2'" \
+ok_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2eok --wrap='sleep 2'" \
   | awk '/Submitted batch job/{print $NF}')"
 [ -n "$ok_id" ] || fail "sbatch returned no job id"
 
 # ------------------------------------------------------------- a failing job
 # Dies by signal, which GE records in its `failed` field on every supported
 # version.
-bad_id="$(gridware "cd /home/gridware && sbatch --job-name=e2ebad --wrap='kill -TERM \$\$'" \
+bad_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2ebad --wrap='kill -TERM \$\$'" \
   | awk '/Submitted batch job/{print $NF}')"
 [ -n "$bad_id" ] || fail "sbatch returned no job id for the failing job"
 
@@ -53,12 +53,12 @@ bad_id="$(gridware "cd /home/gridware && sbatch --job-name=e2ebad --wrap='kill -
 # COMPLETED/0:0. Fixed in 9.1.5, so the assertion below is version-gated -- the
 # shim's mapping never changed. See docs/solutions/integration-issues/
 # pe-jobs-lose-exit-status-in-accounting.md.
-e3_id="$(gridware "cd /home/gridware && sbatch --job-name=e2eexit3 --wrap='exit 3'" \
+e3_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2eexit3 --wrap='exit 3'" \
   | awk '/Submitted batch job/{print $NF}')"
 [ -n "$e3_id" ] || fail "sbatch returned no job id for the exit-3 job"
 
 # ------------------------------------------------------- a long job, still live
-live_id="$(gridware "cd /home/gridware && sbatch --job-name=e2elive --wrap='sleep 45'" \
+live_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2elive --wrap='sleep 45'" \
   | awk '/Submitted batch job/{print $NF}')"
 sleep 8
 

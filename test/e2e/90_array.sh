@@ -9,7 +9,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
 log "90_array: 0-based SLURM indices over 1-based GE tasks (env, srun, sacct, -o)"
 
-work=/home/gridware/e2e-90-array
+work=$JOB_HOME/e2e-90-array
 gridware "rm -rf '$work'; mkdir -p '$work/logs'"
 
 # waitgone <jobid> blocks (bounded) until the array leaves the queue.

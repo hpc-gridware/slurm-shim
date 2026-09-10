@@ -9,6 +9,10 @@
 # left beside the ROCr mask selects the wrong devices, or none, with no error.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
+# Target a host that actually declares devices instead of naming a container,
+# so this runs against a real cluster too.
+GPU_HOST="$(gpu_host)"
+[ -n "$GPU_HOST" ] || { fail "no exec host declares the $GPU_COMPLEX complex"; finish; }
 log "61_gpu_vendor: gpu.vendor selects and isolates the device variable"
 
 ensure_gpu_complex
@@ -47,7 +51,7 @@ cat >"$job" <<'EOF'
 echo "ALLOC JOBGPUS=[$SLURM_JOB_GPUS]"
 srun -n 2 --gpus-per-task=1 bash -c 'echo "RANK $SLURM_LOCALID cuda=[${CUDA_VISIBLE_DEVICES-UNSET}] rocr=[${ROCR_VISIBLE_DEVICES-UNSET}] hip=[${HIP_VISIBLE_DEVICES-UNSET}] ord=[${GPU_DEVICE_ORDINAL-UNSET}]"'
 EOF
-remote=/home/gridware/e2e-61-vendor.sh
+remote=$JOB_HOME/e2e-61-vendor.sh
 put_job "$job" "$remote"
 
 cat >"$job" <<'EOF'
@@ -55,7 +59,7 @@ cat >"$job" <<'EOF'
 echo "ALLOC JOBGPUS=[$SLURM_JOB_GPUS]"
 srun -n 2 bash -c 'echo "RANK $SLURM_LOCALID cuda=[${CUDA_VISIBLE_DEVICES-UNSET}] rocr=[${ROCR_VISIBLE_DEVICES-UNSET}]"'
 EOF
-remote_unbound=/home/gridware/e2e-61-vendor-unbound.sh
+remote_unbound=$JOB_HOME/e2e-61-vendor-unbound.sh
 put_job "$job" "$remote_unbound"
 rm -f "$job"
 
@@ -63,10 +67,10 @@ rm -f "$job"
 # carries foreign device masks, as a site prolog or container image would leave
 # them; ids differ from the grant so a leak is visible in the output.
 run_gpu_job() {
-  local out="/home/gridware/e2e-61-$1.out" script="$remote" id
+  local out="$JOB_HOME/e2e-61-$1.out" script="$remote" id
   [ "${2-}" = unbound ] && script="$remote_unbound"
   gridware "rm -f '$out'"
-  id="$(gridware "CUDA_VISIBLE_DEVICES=6,7 HIP_VISIBLE_DEVICES=6,7 GPU_DEVICE_ORDINAL=6,7 qsub -terse -V -pe make 2 -l ${GPU_COMPLEX}=1 -q all.q@ocs-worker1 -o '$out' -j y '$script'")"
+  id="$(gridware "CUDA_VISIBLE_DEVICES=6,7 HIP_VISIBLE_DEVICES=6,7 GPU_DEVICE_ORDINAL=6,7 qsub -terse -V -pe make 2 -l ${GPU_COMPLEX}=1 -q all.q@$GPU_HOST -o '$out' -j y '$script'")"
   id="${id%%.*}"
   jobout "$id" "$out"
 }
@@ -106,7 +110,7 @@ assert_contains "$res" "RANK 1 cuda=[UNSET] rocr=[0,1]" "amd unbound: rank 1 see
 # A device UUID is the only identity stable across reboot, driver reload and an
 # AMD compute-partition change. Device ids used to be coerced to int, so a UUID
 # silently became its position in the grant and the job got the wrong devices.
-manager "qconf -mattr exechost complex_values '${GPU_COMPLEX}=2(GPU-0123456789abcdef GPU-dead0000000000ff)' ocs-worker1" >/dev/null
+manager "qconf -mattr exechost complex_values '${GPU_COMPLEX}=2(GPU-0123456789abcdef GPU-dead0000000000ff)' $GPU_HOST" >/dev/null
 res="$(run_gpu_job uuid)"
 assert_contains "$res" "rocr=[GPU-0123456789abcdef]" "uuid: the first UUID reaches its rank verbatim"
 assert_contains "$res" "rocr=[GPU-dead0000000000ff]" "uuid: the second UUID reaches its rank verbatim"

@@ -15,8 +15,8 @@ cat >"$job" <<'EOF'
 sleep 120
 EOF
 
-remote=/home/gridware/e2e-40-sleep.sh
-out=/home/gridware/e2e-40-sleep.out
+remote=$JOB_HOME/e2e-40-sleep.sh
+out=$JOB_HOME/e2e-40-sleep.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 

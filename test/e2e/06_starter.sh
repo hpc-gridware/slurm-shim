@@ -10,6 +10,10 @@
 # install tree is root-owned.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 require_cluster
+# A real queue instance to pin native qsub jobs to. The manager is not
+# necessarily one: on a real cluster it often runs no execd at all.
+QUEUE_HOST="$(queue_host)"
+[ -n "$QUEUE_HOST" ] || { fail "no instance of $READY_QUEUE found"; finish; }
 log "06_starter: unmodified SLURM scripts get SLURM_* via starter_method"
 
 STARTER="$SHIM_PREFIX/bin/slurm-shim-starter"
@@ -65,22 +69,28 @@ echo "MASTER=$(scontrol show hostnames | head -n1) SELF=$(hostname)"
 echo "HOSTS=$(scontrol show hostnames | tr '\n' ',')"
 srun bash -c 'echo "RANK $SLURM_PROCID on $(hostname)"'
 EOF
-remote=/home/gridware/e2e-06-pristine.sh
-out=/home/gridware/e2e-06-pristine.out
+remote=$JOB_HOME/e2e-06-pristine.sh
+out=$JOB_HOME/e2e-06-pristine.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 if [ -n "$id" ]; then pass "pristine script accepted (job $id)"; else fail "pristine script did not submit"; fi
 res="$(jobout "$id" "$out")"
 assert_contains "$res" "NNODES=3 NTASKS=6" "unmodified script sees SLURM_NNODES/NTASKS"
-assert_contains "$res" "NODELIST=ocs-" "unmodified script sees SLURM_JOB_NODELIST"
+nodelist="$(printf '%s\n' "$res" | sed -n 's/^NODELIST=//p')"
+if [ -n "$nodelist" ]; then pass "unmodified script sees SLURM_JOB_NODELIST ($nodelist)"
+else fail "SLURM_JOB_NODELIST was empty"; fi
 hosts="$(printf '%s\n' "$res" | sed -n 's/^HOSTS=//p')"
 n="$(printf '%s' "$hosts" | tr ',' '\n' | grep -c .)"
 assert_eq "$n" "3" "scontrol show hostnames expands to 3 hosts with no hook line"
 master="$(printf '%s\n' "$res" | sed -n 's/^MASTER=\([^ ]*\) SELF=\(.*\)$/\1 \2/p')"
-case "$master" in
-  "ocs-master ocs-master"|"ocs-worker1 ocs-worker1"|"ocs-worker2 ocs-worker2") pass "first hostname is the master host ($master)" ;;
-  *) fail "first hostname is not the master host: '$master'" ;;
-esac
+# The property is that the FIRST name from scontrol show hostnames is the host
+# the batch script itself runs on -- true on any cluster, not just this one.
+m_first="${master%% *}"; m_self="${master##* }"
+if [ -n "$m_first" ] && [ "$m_first" = "$m_self" ]; then
+  pass "first hostname is the master host ($m_first)"
+else
+  fail "first hostname '$m_first' is not the host running the script '$m_self'"
+fi
 ranks="$(printf '%s\n' "$res" | grep -c '^RANK ')"
 assert_eq "$ranks" "6" "srun fans 6 ranks out under the starter"
 
@@ -90,8 +100,8 @@ cat >"$job" <<'EOF'
 #!/bin/bash
 echo "NATIVE SLURM_JOB_ID=[${SLURM_JOB_ID:-unset}]"
 EOF
-remote=/home/gridware/e2e-06-native.sh
-out=/home/gridware/e2e-06-native.out
+remote=$JOB_HOME/e2e-06-native.sh
+out=$JOB_HOME/e2e-06-native.out
 put_job "$job" "$remote"
 gridware "rm -f '$out'"
 nid="$(gridware "qsub -terse -q all.q -o '$out' -j y '$remote'")"
@@ -112,14 +122,14 @@ assert_contains "$acct" "exit_status=0" "native job: exit_status=0"
 # job env to the stepper, so a job-level export could never reach it -- the only
 # faithful test is to invoke the starter as srun does. Deleting the starter's
 # short-circuit makes this fail (the hook would see the sentinel and exit 1).
-res="$(gridware 'd=$(mktemp -d); mkdir -p "$d/slurm_shim"; : > "$d/slurm_shim/environment.failed"; printf "#!/bin/sh\necho STEPPER-RAN\n" > "$d/slurm-shim"; chmod +x "$d/slurm-shim"; TMPDIR="$d" SLURM_SHIM_HOOK_MISSING_ENV=abort /opt/slurm-shim/bin/slurm-shim-starter "$d/slurm-shim" stepper --envelope X 2>&1; echo "RC=$?"; rm -rf "$d"')"
+res="$(gridware 'd=$(mktemp -d); mkdir -p "$d/slurm_shim"; : > "$d/slurm_shim/environment.failed"; printf "#!/bin/sh\necho STEPPER-RAN\n" > "$d/slurm-shim"; chmod +x "$d/slurm-shim"; TMPDIR="$d" SLURM_SHIM_HOOK_MISSING_ENV=abort '"$SHIM_PREFIX"'/bin/slurm-shim-starter "$d/slurm-shim" stepper --envelope X 2>&1; echo "RC=$?"; rm -rf "$d"')"
 assert_contains "$res" "STEPPER-RAN" "the starter passes a stepper launch through before the hook (sentinel + abort policy notwithstanding)"
 
 # (4) A failed fabrication must fail the JOB, not the queue instance. Point the
 # single-node 'smp' PE at a stand-in that does exactly what the fabricator does
 # on failure (write the sentinel, exit 0), restore it on exit, and check both
 # the job's fate and every all.q instance afterwards.
-stand_in=/home/gridware/e2e-06-failfab.sh
+stand_in=$JOB_HOME/e2e-06-failfab.sh
 gridware "printf '%s\n' '#!/bin/sh' 'mkdir -p \"\${TMPDIR:-/tmp}/slurm_shim\" && touch \"\${TMPDIR:-/tmp}/slurm_shim/environment.failed\"' 'exit 0' > '$stand_in'; chmod 755 '$stand_in'"
 manager "qconf -mattr pe start_proc_args '$stand_in' smp >/dev/null"
 cat >"$job" <<'EOF'
@@ -128,8 +138,8 @@ cat >"$job" <<'EOF'
 #SBATCH --nodes=1
 echo "BODY RAN"
 EOF
-remote=/home/gridware/e2e-06-sentinel.sh
-out=/home/gridware/e2e-06-sentinel.out
+remote=$JOB_HOME/e2e-06-sentinel.sh
+out=$JOB_HOME/e2e-06-sentinel.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 [ -n "$id" ] || { fail "submit produced no job id"; finish; }
@@ -163,13 +173,16 @@ assert_eq "$bad" "0" "no all.q instance went into E state"
 
 # (5) SLURM runs a shebang-less script under the user's shell; so must the starter.
 printf '#SBATCH --partition=batch\necho "NOSHEBANG NODELIST=$SLURM_JOB_NODELIST"\n' >"$job"
-remote=/home/gridware/e2e-06-noshebang.sh
-out=/home/gridware/e2e-06-noshebang.out
+remote=$JOB_HOME/e2e-06-noshebang.sh
+out=$JOB_HOME/e2e-06-noshebang.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 [ -n "$id" ] || { fail "submit produced no job id"; finish; }
 res="$(jobout "$id" "$out")"
-assert_contains "$res" "NOSHEBANG NODELIST=ocs-" "shebang-less script runs and sees the environment"
+case "$res" in
+  *"NOSHEBANG NODELIST="?*) pass "shebang-less script runs and sees the environment" ;;
+  *) fail "shebang-less script did not see SLURM_JOB_NODELIST" ;;
+esac
 
 # (6) The exploit the starter made reachable (todos/029): a co-tenant pre-creates
 # the predictable per-job TMPDIR world-writable and plants a failure sentinel in
@@ -180,15 +193,15 @@ cat >"$job" <<'EOF'
 #!/bin/bash
 echo "PLANTED native ran; SLURM_JOB_ID=[${SLURM_JOB_ID:-unset}]"
 EOF
-remote=/home/gridware/e2e-06-planted.sh
-out=/home/gridware/e2e-06-planted.out
+remote=$JOB_HOME/e2e-06-planted.sh
+out=$JOB_HOME/e2e-06-planted.out
 put_job "$job" "$remote"; gridware "rm -f '$out'"
-pid="$(gridware "qsub -terse -h -q all.q@ocs-master -o '$out' -j y '$remote'")"
+pid="$(gridware "qsub -terse -h -q all.q@$QUEUE_HOST -o '$out' -j y '$remote'")"
 if [ -n "$pid" ]; then pass "held native job submitted ($pid)"; else fail "held native job did not submit"; fi
 planted="/tmp/$pid.1.all.q"
-manager "mkdir -p '$planted/slurm_shim' && chmod 777 '$planted' '$planted/slurm_shim' && : > '$planted/slurm_shim/environment.failed' && chmod 666 '$planted/slurm_shim/environment.failed'"
+node_sh "$QUEUE_HOST" "mkdir -p '$planted/slurm_shim' && chmod 777 '$planted' '$planted/slurm_shim' && : > '$planted/slurm_shim/environment.failed' && chmod 666 '$planted/slurm_shim/environment.failed'"
 gridware "qrls '$pid' >/dev/null 2>&1"; wait_job "$pid"
-res="$(gridware "cat '$out' 2>/dev/null")"; manager "rm -rf '$planted'"
+res="$(gridware "cat '$out' 2>/dev/null")"; node_sh "$QUEUE_HOST" "rm -rf '$planted'"
 assert_contains "$res" "PLANTED native ran" "planted sentinel (029): a native job still runs"
 assert_contains "$res" "not a private directory" "planted sentinel (029): the hook reported why it ignored the state"
 
@@ -199,15 +212,15 @@ cat >"$job" <<'EOF'
 #!/bin/bash
 echo "PLANTED pe NODELIST=[${SLURM_JOB_NODELIST:-unset}]"
 EOF
-remote=/home/gridware/e2e-06-reclaim.sh
-out=/home/gridware/e2e-06-reclaim.out
+remote=$JOB_HOME/e2e-06-reclaim.sh
+out=$JOB_HOME/e2e-06-reclaim.out
 put_job "$job" "$remote"; gridware "rm -f '$out'"
-pid="$(gridware "qsub -terse -h -pe make 2 -q all.q@ocs-master -o '$out' -j y '$remote'")"
+pid="$(gridware "qsub -terse -h -pe make 2 -q all.q@$QUEUE_HOST -o '$out' -j y '$remote'")"
 planted="/tmp/$pid.1.all.q"
-manager "mkdir -p '$planted/slurm_shim' && chmod 777 '$planted' '$planted/slurm_shim' && : > '$planted/slurm_shim/environment.failed'"
+node_sh "$QUEUE_HOST" "mkdir -p '$planted/slurm_shim' && chmod 777 '$planted' '$planted/slurm_shim' && : > '$planted/slurm_shim/environment.failed'"
 gridware "qrls '$pid' >/dev/null 2>&1"; wait_job "$pid"
-res="$(gridware "cat '$out' 2>/dev/null")"; manager "rm -rf '$planted'"
-assert_contains "$res" "PLANTED pe NODELIST=[ocs-master" "planted sentinel (029): the fabricator reclaimed TMPDIR and the PE job got its environment"
+res="$(gridware "cat '$out' 2>/dev/null")"; node_sh "$QUEUE_HOST" "rm -rf '$planted'"
+assert_contains "$res" "PLANTED pe NODELIST=[$QUEUE_HOST" "planted sentinel (029): the fabricator reclaimed TMPDIR and the PE job got its environment"
 
 # (8) shell_start_mode posix_compliant (todos/031): OCS would have run the script
 # under the -S shell as a LOGIN shell; the starter must do the same. A #!/bin/sh
@@ -219,10 +232,10 @@ cat >"$job" <<'EOF'
 if shopt -q login_shell 2>/dev/null; then echo "PC LOGIN=yes"; else echo "PC LOGIN=no"; fi
 echo "PC BASH=${BASH_VERSION:-none}"
 EOF
-remote=/home/gridware/e2e-06-posix.sh
-out=/home/gridware/e2e-06-posix.out
+remote=$JOB_HOME/e2e-06-posix.sh
+out=$JOB_HOME/e2e-06-posix.out
 put_job "$job" "$remote"; gridware "rm -f '$out'"
-pid="$(gridware "qsub -terse -S /bin/bash -q all.q@ocs-master -o '$out' -j y '$remote'")"
+pid="$(gridware "qsub -terse -S /bin/bash -q all.q@$QUEUE_HOST -o '$out' -j y '$remote'")"
 wait_job "$pid"
 res="$(gridware "cat '$out' 2>/dev/null")"
 manager "qconf -mattr queue shell_start_mode '$mode_orig' all.q >/dev/null"
@@ -240,10 +253,10 @@ cat >"$job" <<'EOF'
 #!/bin/bash
 echo "SFS ran under ${BASH_VERSION:+bash}"
 EOF
-remote=/home/gridware/e2e-06-stdin.sh
-out=/home/gridware/e2e-06-stdin.out
+remote=$JOB_HOME/e2e-06-stdin.sh
+out=$JOB_HOME/e2e-06-stdin.out
 put_job "$job" "$remote"; gridware "rm -f '$out'"
-pid="$(gridware "qsub -terse -q all.q@ocs-master -o '$out' -j y '$remote'")"
+pid="$(gridware "qsub -terse -q all.q@$QUEUE_HOST -o '$out' -j y '$remote'")"
 wait_job "$pid"
 res="$(gridware "cat '$out' 2>/dev/null")"
 manager "qconf -mattr queue shell_start_mode '$mode_orig' all.q >/dev/null"

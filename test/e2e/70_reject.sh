@@ -17,8 +17,8 @@ srun -n 999 hostname 2>&1
 echo "rc=$?"
 EOF
 
-remote=/home/gridware/e2e-70-reject.sh
-out=/home/gridware/e2e-70-reject.out
+remote=$JOB_HOME/e2e-70-reject.sh
+out=$JOB_HOME/e2e-70-reject.out
 put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 res="$(jobout "$id" "$out")"
@@ -26,7 +26,14 @@ res="$(jobout "$id" "$out")"
 assert_contains "$res" "srun:" "srun emitted a diagnostic for the rejected request"
 assert_contains "$res" "rc=1" "srun exits 1 (clean pre-launch rejection, no hang)"
 # The step must NOT have launched: no real hostname line should appear.
-if printf '%s\n' "$res" | grep -qE '^ocs-(master|worker)'; then
+# Any node of THIS cluster appearing means a rank launched. A hardcoded
+# container pattern would silently never match on a real cluster, turning this
+# into an assertion that can only pass.
+_launched=0
+for _h in "${NODES[@]}"; do
+  case "$res" in *"$_h"*) _launched=1 ;; esac
+done
+if [ "$_launched" = 1 ]; then
   fail "a rank launched despite the over-request"
 else
   pass "no rank launched (rejected before qrsh)"
