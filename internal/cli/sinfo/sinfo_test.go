@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -166,3 +167,161 @@ var _ = Describe("nodeState mapping", func() {
 func bytes_IndexBatchBeforeGpu(b []byte) bool {
 	return bytes.Index(b, []byte("batch")) < bytes.Index(b, []byte("gpu"))
 }
+
+var _ = Describe("sinfo flags [todo 078]", func() {
+	// sinfo previously parsed NOTHING: every flag was dropped and the full human
+	// table printed regardless, so `sinfo -h -o '%P'` returned a header row plus
+	// six columns. squeue has honoured -h/-o since it was written, which made the
+	// shim inconsistent with itself.
+	twoPartitions := func() *config.Config {
+		cfg := config.Default()
+		cfg.Partitions = map[string]config.Partition{
+			"batch": {Queue: "all.q", PE: "smp.pe"},
+			"gpu":   {Queue: "all.q", PE: "gpu.pe"},
+		}
+		return cfg
+	}
+
+	It("prints no header with -h", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).NotTo(ContainSubstring("PARTITION"))
+		Expect(out.String()).To(ContainSubstring("batch"))
+	})
+
+	It("prints only the requested field with -o", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h", "-o", "%P"}, &out, io.Discard)).To(Equal(0))
+		// One partition name per line and nothing else -- this is the shape a
+		// script consumes.
+		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			Expect(strings.Fields(line)).To(HaveLen(1), "line %q should carry one field", line)
+		}
+		Expect(out.String()).To(ContainSubstring("batch"))
+		Expect(out.String()).To(ContainSubstring("gpu"))
+	})
+
+	It("suppresses the header whenever a format is given", func() {
+		// A caller that passes -o without -h is still parsing fields, so a header
+		// row would be read as data.
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-o", "%P"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).NotTo(ContainSubstring("PARTITION"))
+	})
+
+	It("accepts --format= and the attached -o form", func() {
+		for _, args := range [][]string{{"-h", "--format=%P"}, {"-h", "-o%P"}} {
+			var out bytes.Buffer
+			Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), args, &out, io.Discard)).To(Equal(0))
+			Expect(out.String()).To(ContainSubstring("batch"), "args %v", args)
+		}
+	})
+
+	It("expands several specifiers in one format", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(threeStates), twoPartitions(), []string{"-h", "-o", "%P/%D/%T"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(MatchRegexp(`batch/\d+/\w+`))
+	})
+
+	It("ignores a width modifier rather than rejecting it", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h", "-o", "%.10P"}, &out, io.Discard)).To(Equal(0))
+		Expect(strings.TrimSpace(out.String())).To(ContainSubstring("batch"))
+	})
+
+	It("ERRORS on an unsupported specifier rather than emitting it literally", func() {
+		// %G (gres) is a real sinfo specifier the shim cannot answer. Passing the
+		// literal "%G" through, or dropping it, would both hand the caller a
+		// wrong parse with no indication.
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h", "-o", "%G"}, &out, &errb)).To(Equal(2))
+		Expect(errb.String()).To(ContainSubstring("unsupported format specifier %G"))
+		Expect(errb.String()).To(ContainSubstring("%P"), "the error should list what IS supported")
+	})
+
+	It("ERRORS on an unknown flag rather than ignoring it", func() {
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"--wat"}, &out, &errb)).To(Equal(2))
+		Expect(errb.String()).To(ContainSubstring("unrecognized option"))
+	})
+
+	It("errors when -o is given without a value", func() {
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-o"}, &out, &errb)).To(Equal(2))
+		Expect(errb.String()).To(ContainSubstring("requires an argument"))
+	})
+
+	It("leaves the default output unchanged when no flags are given", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), nil, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(HavePrefix("PARTITION AVAIL TIMELIMIT NODES STATE NODELIST\n"))
+	})
+})
+
+var _ = Describe("sinfo -p and format edge cases [todo 078 review]", func() {
+	twoPartitions := func() *config.Config {
+		cfg := config.Default()
+		cfg.Partitions = map[string]config.Partition{
+			"batch": {Queue: "all.q", PE: "smp.pe"},
+			"gpu":   {Queue: "all.q", PE: "gpu.pe"},
+		}
+		return cfg
+	}
+
+	It("restricts the listing with -p", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h", "-p", "gpu"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("gpu"))
+		Expect(out.String()).NotTo(ContainSubstring("batch"))
+	})
+
+	It("accepts -p a,b and the attached -pgpu form", func() {
+		for _, args := range [][]string{{"-h", "-p", "batch,gpu"}, {"-h", "-pgpu"}} {
+			var out bytes.Buffer
+			Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), args, &out, io.Discard)).To(Equal(0))
+			Expect(out.String()).To(ContainSubstring("gpu"), "args %v", args)
+		}
+	})
+
+	It("rejects an unknown partition rather than printing an empty listing", func() {
+		// An empty result reads as "the partition is empty"; the truth is "there
+		// is no such partition".
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-p", "nope"}, &out, &errb)).To(Equal(2))
+		Expect(errb.String()).To(ContainSubstring("invalid partition name"))
+	})
+
+	It("writes NOTHING to stdout when -p is invalid", func() {
+		// The header used to be printed before the name was validated, so a
+		// failing invocation still emitted a row a parser would consume.
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-p", "nope"}, &out, &errb)).To(Equal(2))
+		Expect(out.String()).To(BeEmpty())
+	})
+
+	It("suppresses the header for an explicitly EMPTY format", func() {
+		// -o '' asked for a format. Falling back to the default table, header and
+		// all, contradicts the request.
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-o", ""}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).NotTo(ContainSubstring("PARTITION"))
+	})
+
+	It("renders %% as a literal percent", func() {
+		var out bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h", "-o", "x%%y"}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("x%y"))
+	})
+
+	It("errors on a trailing bare %", func() {
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"-h", "-o", "%"}, &out, &errb)).To(Equal(2))
+		Expect(errb.String()).To(ContainSubstring("bare %"))
+	})
+
+	It("names the supported flags when rejecting an unknown one", func() {
+		var out, errb bytes.Buffer
+		Expect(run(fakeQstat(twoNodeIdle), twoPartitions(), []string{"--sort"}, &out, &errb)).To(Equal(2))
+		Expect(errb.String()).To(ContainSubstring("-p/--partition"))
+	})
+})

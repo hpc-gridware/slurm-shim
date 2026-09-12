@@ -57,6 +57,13 @@ type options struct {
 	// mode without controlling the environment.
 	testOnly bool
 
+	// parsable prints the job id ALONE, which is how scripts capture it:
+	//   jid=$(sbatch --parsable job.sh)
+	// Without it the caller gets "Submitted batch job 123" and has to parse
+	// prose -- and when the flag was merely warn-and-ignored, the job still ran,
+	// so the caller silently held a string that was not an id.
+	parsable bool
+
 	script     string   // script file path (first non-flag token)
 	scriptArgs []string // tokens after the script
 }
@@ -67,6 +74,7 @@ type options struct {
 // path.
 var boolLong = map[string]bool{
 	"test-only": true,
+	"parsable":  true,
 }
 
 // setBool applies a valueless long flag.
@@ -74,6 +82,9 @@ func setBool(o *options, name string) error {
 	switch name {
 	case "test-only":
 		o.testOnly = true
+		return nil
+	case "parsable":
+		o.parsable = true
 		return nil
 	}
 	return fmt.Errorf("sbatch: error: --%s is not a boolean flag", name)
@@ -94,8 +105,8 @@ func truthyFlag(v string) bool {
 // EXCEPT those also listed in boolLong, which take none. Anything absent is
 // warn-and-ignored (REQ-SBT-001).
 var knownLong = map[string]bool{
-	"test-only": true,
-	"nodes":     true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
+	"test-only": true, "parsable": true,
+	"nodes": true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
 	"partition": true, "job-name": true, "output": true, "error": true,
 	"chdir": true, "wrap": true, "array": true,
 	"time": true, "mem": true, "mem-per-cpu": true,

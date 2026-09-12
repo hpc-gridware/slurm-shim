@@ -335,6 +335,25 @@ ensure_gpu_complex() {
   ids="$(seq -s ' ' 0 $((GPU_PER_WORKER - 1)))"
   for w in "${NODES[@]}"; do
     [ "$w" = "$MASTER" ] && continue
+    # NEVER overwrite a real RSMAP.
+    #
+    # This publishes INVENTED device ids so the GPU path can be exercised on a
+    # cluster with no GPUs. Run unconditionally on a host that HAS devices, it
+    # replaces that site's real ids -- UUIDs, typically -- with the ordinals
+    # 0..N-1, and rewrites the consumable scope besides.
+    #
+    # That is destructive to a working cluster, and silent: jobs still run, and
+    # are handed ids that no longer identify the devices. Anyone evaluating the
+    # shim by running this suite on their own GPU box would do it to themselves.
+    #
+    # If the node reports real devices, leave its complex_values alone. The
+    # callers only need SOME gpu complex to exist, and a real one serves them
+    # better than a fake one.
+    if node_sh "$w" 'command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "^GPU"' \
+       || node_sh "$w" 'command -v rocm-smi >/dev/null 2>&1 && rocm-smi --showid >/dev/null 2>&1'; then
+      log "$w has real devices -- keeping its RSMAP (not publishing fake ids)"
+      continue
+    fi
     manager "qconf -mattr exechost complex_values '${GPU_COMPLEX}=${GPU_PER_WORKER}(${ids})' $w"
   done
 }

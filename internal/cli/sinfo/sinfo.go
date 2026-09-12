@@ -3,7 +3,9 @@
 // compressed nodelist. The qstat -f data comes from gedata.QueueInstances (which
 // parses via the go-clusterscheduler library); this package only maps GE queue
 // states to SLURM node states and formats rows. --version is handled by the
-// dispatcher; other flags are ignored (SI-32).
+// dispatcher. -h/--noheader and -o/--format are honoured; anything else is an
+// error, because sinfo output is script-parsed and a silently dropped flag
+// changes the shape of what the caller reads.
 package sinfo
 
 import (
@@ -32,29 +34,79 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr io.Writer) int {
-	_ = args // no flags beyond --version (handled upstream) are supported (SI-32)
-	fmt.Fprintln(stdout, "PARTITION AVAIL TIMELIMIT NODES STATE NODELIST")
-
-	// Live queue instances from GE. On failure sinfo degrades to a config-only
-	// listing rather than erroring, so it stays useful off-cluster.
-	instances, qErr := gedata.QueueInstances(context.Background(), runner)
-
+	opt, err := parseFlags(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "sinfo: error: %v\n", err)
+		return 2
+	}
 	names := make([]string, 0, len(cfg.Partitions))
 	for name := range cfg.Partitions {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
+	// -p/--partition. A name that does not exist is an error rather than an
+	// empty listing: `sinfo -p gpu` returning nothing reads as "the partition is
+	// empty" when it actually means "there is no such partition".
+	if len(opt.partitions) > 0 {
+		want := map[string]bool{}
+		for _, p := range opt.partitions {
+			if _, ok := cfg.Partitions[p]; !ok {
+				fmt.Fprintf(stderr, "sinfo: error: invalid partition name %q\n", p)
+				return 2
+			}
+			want[p] = true
+		}
+		kept := names[:0]
+		for _, n := range names {
+			if want[n] {
+				kept = append(kept, n)
+			}
+		}
+		names = kept
+	}
+
+	// Header LAST of the pre-flight steps: an invalid -p must not have already
+	// written a header row to stdout before the error is reported.
+	if !opt.noHeader && !opt.formatSet {
+		fmt.Fprintln(stdout, "PARTITION AVAIL TIMELIMIT NODES STATE NODELIST")
+	}
+
+	// Live queue instances from GE. On failure sinfo degrades to a config-only
+	// listing rather than erroring, so it stays useful off-cluster.
+	instances, qErr := gedata.QueueInstances(context.Background(), runner)
+
+	emit := func(f rowFields) int {
+		if !opt.formatSet {
+			fmt.Fprintf(stdout, "%s %s %s %s %s %s\n",
+				f.partition, f.avail, f.timelimit, f.nodes, f.state, f.nodelist)
+			return 0
+		}
+		line, ferr := renderFormat(opt.format, f)
+		if ferr != nil {
+			fmt.Fprintf(stderr, "sinfo: error: %v\n", ferr)
+			return 2
+		}
+		fmt.Fprintln(stdout, line)
+		return 0
+	}
+
 	for _, name := range names {
 		rows := partitionRows(cfg.Partitions[name].Queue, instances)
 		if len(rows) == 0 {
 			// No live data (query failed, or the queue has no instances): keep the
 			// neutral placeholder so the partition still shows up.
-			fmt.Fprintf(stdout, "%s up infinite 0 n/a -\n", name)
+			if rc := emit(rowFields{name, "up", "infinite", "0", "n/a", "-"}); rc != 0 {
+				return rc
+			}
 			continue
 		}
 		for _, r := range rows {
-			fmt.Fprintf(stdout, "%s up infinite %d %s %s\n", name, r.count, r.state, r.nodelist)
+			if rc := emit(rowFields{
+				name, "up", "infinite", fmt.Sprintf("%d", r.count), r.state, r.nodelist,
+			}); rc != 0 {
+				return rc
+			}
 		}
 	}
 

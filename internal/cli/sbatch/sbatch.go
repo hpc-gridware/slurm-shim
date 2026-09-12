@@ -173,7 +173,14 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		fmt.Fprintln(stderr, "sbatch: error: qsub did not return a job id")
 		return 1
 	}
-	fmt.Fprintf(stdout, "Submitted batch job %s\n", id)
+	// --parsable: the id alone. SLURM also supports "<id>;<cluster>", but the
+	// bare form is what callers parse, and the shim has no cluster federation to
+	// name.
+	if opt.parsable {
+		fmt.Fprintf(stdout, "%s\n", id)
+	} else {
+		fmt.Fprintf(stdout, "Submitted batch job %s\n", id)
+	}
 	return 0
 }
 

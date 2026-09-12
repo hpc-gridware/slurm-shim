@@ -766,3 +766,66 @@ var _ = Describe("sbatch --account [parity with srun]", func() {
 		Expect(args).To(ContainElements("-A", "proj1"))
 	})
 })
+
+var _ = Describe("sbatch --parsable [todo 077]", func() {
+	// Before this existed, --parsable was treated as an unknown directive:
+	// warned, ignored, and the job SUBMITTED anyway. So
+	//
+	//     jid=$(sbatch --parsable job.sh)
+	//
+	// -- the standard way a script captures a job id -- returned
+	// "sbatch: warning: ...\nSubmitted batch job 165" and every later
+	// scancel/sacct on $jid used a string that was not an id. Silent, because
+	// the job really had run.
+	writeScript := func(body string) string {
+		path := filepath.Join(GinkgoT().TempDir(), "job.sh")
+		Expect(os.WriteFile(path, []byte(body), 0o700)).To(Succeed())
+		return path
+	}
+
+	It("prints the job id alone, with no prose", func() {
+		script := writeScript("#!/bin/bash\n#SBATCH --partition=gpu\necho hi\n")
+		var out bytes.Buffer
+		var ignored []string
+		rc := run(fakeQsub("4711", &ignored), testCfg(), "/shim", []string{"--parsable", script}, &out, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(out.String()).To(Equal("4711\n"))
+		Expect(out.String()).NotTo(ContainSubstring("Submitted"))
+	})
+
+	It("is not warned about as an unknown directive", func() {
+		script := writeScript("#!/bin/bash\n#SBATCH --partition=gpu\necho hi\n")
+		var out, errb bytes.Buffer
+		var ignored []string
+		Expect(run(fakeQsub("4711", &ignored), testCfg(), "/shim",
+			[]string{"--parsable", script}, &out, &errb)).To(Equal(0))
+		Expect(errb.String()).NotTo(ContainSubstring("unknown directive"))
+	})
+
+	It("works as a #SBATCH directive too", func() {
+		script := writeScript("#!/bin/bash\n#SBATCH --partition=gpu\n#SBATCH --parsable\necho hi\n")
+		var out bytes.Buffer
+		var ignored []string
+		Expect(run(fakeQsub("4711", &ignored), testCfg(), "/shim", []string{script}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(Equal("4711\n"))
+	})
+
+	It("does not consume the script path", func() {
+		// A boolean flag that wrongly ate the next token would swallow the script
+		// and submit nothing -- the failure mode boolLong exists to prevent.
+		script := writeScript("#!/bin/bash\n#SBATCH --partition=gpu\necho hi\n")
+		var captured []string
+		var out bytes.Buffer
+		Expect(run(fakeQsub("4711", &captured), testCfg(), "/shim",
+			[]string{"--parsable", script}, &out, io.Discard)).To(Equal(0))
+		Expect(captured[len(captured)-1]).To(Equal(script))
+	})
+
+	It("leaves the default output unchanged when not given", func() {
+		script := writeScript("#!/bin/bash\n#SBATCH --partition=gpu\necho hi\n")
+		var out bytes.Buffer
+		var ignored []string
+		Expect(run(fakeQsub("4711", &ignored), testCfg(), "/shim", []string{script}, &out, io.Discard)).To(Equal(0))
+		Expect(out.String()).To(Equal("Submitted batch job 4711\n"))
+	})
+})
