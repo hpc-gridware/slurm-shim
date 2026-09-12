@@ -61,7 +61,7 @@ wait_job() { for _ in $(seq 1 60); do gridware "qstat -j '$1' >/dev/null 2>&1" |
 cat >"$job" <<'EOF'
 #!/bin/bash
 #SBATCH --partition=batch
-#SBATCH --nodes=3
+#SBATCH --nodes=@EXEC_NODES@
 #SBATCH --ntasks-per-node=2
 echo "NODELIST=$SLURM_JOB_NODELIST"
 echo "NNODES=$SLURM_NNODES NTASKS=$SLURM_NTASKS"
@@ -69,6 +69,7 @@ echo "MASTER=$(scontrol show hostnames | head -n1) SELF=$(hostname)"
 echo "HOSTS=$(scontrol show hostnames | tr '\n' ',')"
 srun bash -c 'echo "RANK $SLURM_PROCID on $(hostname)"'
 EOF
+sed -i.bak "s|@EXEC_NODES@|${EXEC_NODES:-1}|" "$job" && rm -f "$job.bak"
 remote=$JOB_HOME/e2e-06-pristine.sh
 out=$JOB_HOME/e2e-06-pristine.out
 put_job "$job" "$remote"

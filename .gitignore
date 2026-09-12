@@ -11,6 +11,9 @@ coverage.txt
 /docs/req-milestones.yaml
 /tools
 
+
+/pkgs/
+
 # Local internal notes
 /info.md
 

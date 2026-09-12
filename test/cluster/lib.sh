@@ -181,6 +181,33 @@ require_cluster() {
   for n in "${NODES[@]}"; do
     node_running "$n" || die "node $n is not reachable (BACKEND=$BACKEND; for docker run: make cluster-up)"
   done
+  EXEC_NODES="$(exec_node_count)"
+  export EXEC_NODES
+}
+
+# exec_node_count: how many hosts can actually RUN a job.
+#
+# Not `qconf -sel`: that lists every admin/exec host, including a manager that
+# carries no queue instance -- so a job asking for that many nodes is refused
+# with "Requested node configuration is not available", which reads like a
+# broken cluster rather than a miscount. The queue hostlist is the set that can
+# actually take work.
+#
+# A hostlist may name an @hostgroup, and qconf WRAPS long values with a
+# backslash continuation, so unfold before splitting.
+exec_node_count() {
+  local n
+  n="$(manager "
+    hl=\$(qconf -sq ${READY_QUEUE:-all.q} 2>/dev/null \
+          | sed -e :a -e '/\\\\\$/N; s/\\\\\\n[[:space:]]*/ /; ta' \
+          | awk '/^hostlist/ { \$1=\"\"; print }')
+    for h in \$hl; do
+      case \"\$h\" in
+        @*) qconf -shgrp \"\$h\" 2>/dev/null | awk '/^hostlist/ { \$1=\"\"; print }' ;;
+        *)  echo \"\$h\" ;;
+      esac
+    done | tr ' ' '\n' | sed '/^\$/d' | sort -u | grep -c . || true" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$n" ] && [ "$n" -gt 0 ] && echo "$n" || echo 1
 }
 
 # wait_ready blocks until every node has a queue instance (per the quickinstall

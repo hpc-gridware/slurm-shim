@@ -9,7 +9,7 @@ trap 'rm -f "$job"' EXIT
 cat >"$job" <<'EOF'
 #!/bin/bash
 #SBATCH --partition=batch
-#SBATCH --nodes=3
+#SBATCH --nodes=@EXEC_NODES@
 #SBATCH --ntasks-per-node=2
 # Deliberately the ONE e2e job that still sources the hook itself. Every other
 # check submits a pristine script and relies on the queue starter_method; this
@@ -22,6 +22,7 @@ echo "NODELIST=$SLURM_JOB_NODELIST"
 echo "JOBID=$SLURM_JOB_ID"
 echo "MASTER=$MASTER_ADDR:$MASTER_PORT"
 EOF
+sed -i.bak "s|@EXEC_NODES@|${EXEC_NODES:-1}|" "$job" && rm -f "$job.bak"
 # The heredoc is quoted so every $SLURM_* reaches the job untouched; splice the
 # site's install prefix in afterwards.
 sed -i.bak "s|@SHIM_PREFIX@|$SHIM_PREFIX|" "$job" && rm -f "$job.bak"

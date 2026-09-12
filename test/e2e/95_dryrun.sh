@@ -15,11 +15,12 @@ trap 'rm -f "$job"' EXIT
 cat >"$job" <<'EOF'
 #!/bin/bash
 #SBATCH --partition=batch
-#SBATCH --nodes=3
+#SBATCH --nodes=@EXEC_NODES@
 #SBATCH --ntasks-per-node=2
 #SBATCH --job-name=e2e-dryrun
 env | grep '^SLURM_' | sort
 EOF
+sed -i.bak "s|@EXEC_NODES@|${EXEC_NODES:-1}|" "$job" && rm -f "$job.bak"
 
 remote=$JOB_HOME/e2e-95-dryrun.sh
 out=$JOB_HOME/e2e-95-dryrun.out

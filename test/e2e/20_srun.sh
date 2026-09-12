@@ -10,10 +10,11 @@ trap 'rm -f "$job"' EXIT
 cat >"$job" <<'EOF'
 #!/bin/bash
 #SBATCH --partition=batch
-#SBATCH --nodes=3
+#SBATCH --nodes=@EXEC_NODES@
 #SBATCH --ntasks-per-node=2
 srun -l -n 6 bash -c 'echo "rank=$SLURM_PROCID node=$SLURM_NODEID host=$(hostname)"'
 EOF
+sed -i.bak "s|@EXEC_NODES@|${EXEC_NODES:-1}|" "$job" && rm -f "$job.bak"
 
 remote=$JOB_HOME/e2e-20-srun.sh
 out=$JOB_HOME/e2e-20-srun.out

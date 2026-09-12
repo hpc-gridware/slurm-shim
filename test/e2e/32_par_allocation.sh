@@ -39,13 +39,20 @@ SLEEPER='--wrap="sleep 45"'
 # --------------------------------------------- a multi-node layout is pinned
 # The batch partition's PE is $round_robin, so before -par this exact request
 # landed 2 slots on each of 3 hosts only because the cluster happens to have 3.
-id="$(submit "-p batch -N 3 --ntasks-per-node=2 $SLEEPER")"
-if [ -z "$id" ]; then
-  fail "sbatch -N 3 --ntasks-per-node=2 was refused"
+# Two slots on each of N hosts. N comes from the cluster, not a constant -- the
+# claim is that the layout is PINNED, and 3 was only ever "what the container
+# harness happens to have".
+if [ "${EXEC_NODES:-1}" -lt 2 ]; then
+  skip "a multi-node layout needs >= 2 queue hosts (this cluster has ${EXEC_NODES:-1})"
 else
-  CLEANUP_IDS="$CLEANUP_IDS $id"
-  assert_eq "$(jattr "$id" allocation_rule)" "2" "-N 3 --ntasks-per-node=2 pins 2 slots per node"
-  assert_eq "$(jattr "$id" parallel_environment)" "makerange:6" "the slot count is unchanged by -par"
+  id="$(submit "-p batch -N $EXEC_NODES --ntasks-per-node=2 $SLEEPER")"
+  if [ -z "$id" ]; then
+    fail "sbatch -N $EXEC_NODES --ntasks-per-node=2 was refused"
+  else
+    CLEANUP_IDS="$CLEANUP_IDS $id"
+    assert_eq "$(jattr "$id" allocation_rule)" "2" "-N $EXEC_NODES --ntasks-per-node=2 pins 2 slots per node"
+    assert_eq "$(jattr "$id" parallel_environment)" "makerange:$((EXEC_NODES * 2))" "the slot count is unchanged by -par"
+  fi
 fi
 
 # ------------------------------------------- a single-node layout is pinned too

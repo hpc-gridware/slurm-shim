@@ -14,10 +14,12 @@ else
   pass "no placeholder rows (live node states populated)"
 fi
 
-# batch and gpu both map to all.q on all 3 nodes; the NODES column across a
-# partition's state rows must total 3 (robust to a node being split off by state).
+# batch and gpu both map to all.q on every queue host; the NODES column across a
+# partition's state rows must total the cluster's size (robust to a node being
+# split off by state). The count is DERIVED: hardcoding 3 only worked on the
+# container harness and fails on any other cluster shape.
 for part in batch gpu; do
   total="$(printf '%s\n' "$out" | awk -v p="$part" '$1==p {n+=$4} END{print n+0}')"
-  assert_eq "$total" "3" "$part totals 3 nodes across state rows"
+  assert_eq "$total" "$EXEC_NODES" "$part totals $EXEC_NODES node(s) across state rows"
 done
 finish
