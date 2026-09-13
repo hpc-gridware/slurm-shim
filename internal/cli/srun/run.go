@@ -243,7 +243,7 @@ func (s *supervisor) launch() int {
 
 	// Preflight tight-integration launch before spawning anything (REQ-CHN-005).
 	if remote {
-		pf := launch.Preflight(context.Background(), gedata.ExecRunner{}, s.lay.Job.PEName)
+		pf := launch.Preflight(context.Background(), gedata.ExecRunner{}, s.lay.Job.PEName, s.lay.Job.Queue)
 		for _, w := range pf.Warnings {
 			errln(s.stderr, "srun: warning: "+w)
 		}

@@ -14,10 +14,18 @@ want_gpu=0
 require_cluster
 
 arch="$(container_arch)"
-log "building slurm-shim for linux/$arch"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# Stamp the version, exactly as the Makefile and the release workflow do.
+# Without it every test cluster reported "slurm-shim 0.1.0-dev" whatever you
+# built, so `sbatch --version` on the cluster could not tell you what was
+# actually installed -- unhelpful anywhere, and actively misleading in a suite
+# whose job is comparing behaviour across versions.
+shim_version="$(cd "$REPO_ROOT" && git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-dev)"
+log "building slurm-shim $shim_version for linux/$arch"
 ( cd "$REPO_ROOT" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
-    go build -tags osusergo,netgo -trimpath -o "$tmp/slurm-shim" ./cmd/slurm-shim )
+    go build -tags osusergo,netgo -trimpath \
+      -ldflags "-X github.com/hpc-gridware/slurm-shim/internal/version.Shim=$shim_version" \
+      -o "$tmp/slurm-shim" ./cmd/slurm-shim )
 
 # The qrsh envelope carries the master's absolute shim path as the remote argv0
 # (REQ-RUN-009), so the binary must live at the SAME path on every node.

@@ -23,7 +23,12 @@ var _ = Describe("PE config parsing", func() {
 })
 
 var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
-	fixtureRunner := func() *fake.Runner {
+	// queueCfg is what `qconf -sq` returns. "INFINITY" everywhere is the GE
+	// default and means the per-slot hazard cannot bite.
+	unlimited := "qname                 all.q\nh_vmem               INFINITY\ns_vmem               INFINITY\n"
+	capped := "qname                 all.q\nh_vmem               4G\ns_vmem               INFINITY\n"
+
+	runnerWith := func(queueCfg string) *fake.Runner {
 		data, err := os.ReadFile("testdata/qconf_sp_make.txt")
 		Expect(err).NotTo(HaveOccurred())
 		return &fake.Runner{Responder: func(name string, args []string) fake.Response {
@@ -34,15 +39,53 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 			if len(args) > 0 && args[0] == "-sconf" {
 				return fake.Response{Exit: 1}
 			}
+			if len(args) > 0 && args[0] == "-sq" {
+				return fake.Response{Stdout: []byte(queueCfg)}
+			}
 			Expect(args).To(Equal([]string{"-sp", "make"}))
 			return fake.Response{Stdout: data}
 		}}
 	}
+	fixtureRunner := func() *fake.Runner { return runnerWith(unlimited) }
 
-	It("passes with control_slaves TRUE, warning on per-slot rlimits [REQ-APX-003]", func() {
-		res := Preflight(context.Background(), fixtureRunner(), "make")
+	It("passes with control_slaves TRUE [REQ-APX-003]", func() {
+		res := Preflight(context.Background(), fixtureRunner(), "make", "all.q")
 		Expect(res.OK()).To(BeTrue())
-		Expect(res.Warnings).To(ContainElement(ContainSubstring("per-slot h_vmem")))
+	})
+
+	It("warns about the per-slot hazard ONLY when the queue really caps memory", func() {
+		// The point of SI-18 is an OOM under a per-slot memory cap. With every
+		// limit at INFINITY there is nothing to exceed, so there is nothing to
+		// say -- and saying it anyway, on every step of every job, is how a
+		// warning stops being read.
+		res := Preflight(context.Background(), runnerWith(capped), "make", "all.q")
+		Expect(res.Warnings).To(ContainElement(ContainSubstring("SI-18")))
+		Expect(res.Warnings).To(ContainElement(ContainSubstring("h_vmem=4G")),
+			"the warning must name the limit it found, not just assert a hazard")
+	})
+
+	It("is SILENT when the queue imposes no per-slot memory limit", func() {
+		res := Preflight(context.Background(), runnerWith(unlimited), "make", "all.q")
+		for _, w := range res.Warnings {
+			Expect(w).NotTo(ContainSubstring("SI-18"))
+			Expect(w).NotTo(ContainSubstring("daemon_forks_slaves"))
+		}
+	})
+
+	It("is SILENT when no queue is known, rather than guessing", func() {
+		res := Preflight(context.Background(), fixtureRunner(), "make", "")
+		for _, w := range res.Warnings {
+			Expect(w).NotTo(ContainSubstring("SI-18"))
+		}
+	})
+
+	It("still describes the tradeoff unconditionally for doctor", func() {
+		// doctor reports a standing property of the cluster to the person who
+		// can change it, so this one must NOT be conditional.
+		Expect(PEForksNote(map[string]string{"daemon_forks_slaves": "FALSE"}, "make")).
+			To(ContainSubstring("SI-18"))
+		Expect(PEForksNote(map[string]string{"daemon_forks_slaves": "TRUE"}, "make")).
+			To(ContainSubstring("concurrent srun steps will not run"))
 	})
 
 	It("does NOT report the spool exposure, which srun would print on every step", func() {
@@ -52,7 +95,7 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		// repeatedly -- and the line landed interleaved with the job own output,
 		// corrupting what tools parse. doctor reports it once, under security,
 		// via TokenSpoolWarning.
-		res := Preflight(context.Background(), fixtureRunner(), "make")
+		res := Preflight(context.Background(), fixtureRunner(), "make", "all.q")
 		for _, w := range res.Warnings {
 			Expect(w).NotTo(ContainSubstring("SI-51"))
 			Expect(w).NotTo(ContainSubstring("spool"))
@@ -69,7 +112,7 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		r := &fake.Runner{Responder: func(string, []string) fake.Response {
 			return fake.Response{Stdout: []byte("pe_name make\ncontrol_slaves FALSE\ndaemon_forks_slaves FALSE\n")}
 		}}
-		res := Preflight(context.Background(), r, "make")
+		res := Preflight(context.Background(), r, "make", "all.q")
 		Expect(res.OK()).To(BeFalse())
 		Expect(res.Errors).To(ContainElement(ContainSubstring("control_slaves TRUE")))
 	})
@@ -78,7 +121,7 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		r := &fake.Runner{Responder: func(string, []string) fake.Response {
 			return fake.Response{Stdout: []byte("control_slaves TRUE\ndaemon_forks_slaves TRUE\n")}
 		}}
-		res := Preflight(context.Background(), r, "make")
+		res := Preflight(context.Background(), r, "make", "all.q")
 		Expect(res.OK()).To(BeTrue())
 		Expect(res.Warnings).To(ContainElement(ContainSubstring("concurrent srun steps will not run")))
 	})
@@ -87,12 +130,12 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		r := &fake.Runner{Responder: func(string, []string) fake.Response {
 			return fake.Response{Exit: 1, Stderr: []byte("qconf: PE \"make\" does not exist")}
 		}}
-		res := Preflight(context.Background(), r, "make")
+		res := Preflight(context.Background(), r, "make", "all.q")
 		Expect(res.OK()).To(BeFalse())
 	})
 
 	It("is a no-op for a single-node job with no PE", func() {
-		res := Preflight(context.Background(), fixtureRunner(), "")
+		res := Preflight(context.Background(), fixtureRunner(), "", "all.q")
 		Expect(res.OK()).To(BeTrue())
 		Expect(res.Warnings).To(BeEmpty())
 	})

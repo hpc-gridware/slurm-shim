@@ -219,12 +219,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		default:
 			r.fail("pe %s start_proc_args is %q, not this tree's slurm-shim-env", p.PE, pe.StartProcArgs)
 		}
-		pf := launch.Preflight(ctx, runner, p.PE)
+		// No queue here: doctor inspects the cluster, not a job. It reports
+		// the daemon_forks_slaves tradeoff unconditionally, because that is a
+		// standing property of the PE and this is the person who can change it.
+		// srun gets the conditional version, gated on the job's own queue
+		// actually setting a per-slot memory limit.
+		pf := launch.Preflight(ctx, runner, p.PE, "")
 		for _, e := range pf.Errors {
 			r.fail("pe %s: %s", p.PE, e)
 		}
 		for _, w := range pf.Warnings {
 			r.warn("pe %s: %s", p.PE, w)
+		}
+		if peCfg, err := launch.PEConfig(ctx, runner, p.PE); err == nil {
+			r.warn("pe %s: %s", p.PE, launch.PEForksNote(peCfg, p.PE))
 		}
 	}
 	if hosts, err := admin.ExecHosts(ctx); err == nil {

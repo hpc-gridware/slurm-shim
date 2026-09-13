@@ -90,7 +90,11 @@ srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 
 `sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE hook fabricates the `SLURM_*` variables and the queue's `starter_method` sources them before the script's first line. **The script needs no edit only because `slurm-shim install` wired `starter_method`.** On a site that has not, a job script must source `$SGE_ROOT/slurm-shim/etc/slurm-shim-source-hook.sh` itself, or the site enables `wrapper_mode` (see [Configuration](#configuration)); the recipes under [`docs/recipes/`](docs/recipes/) carry that line so they run either way.
 
-*(TODO: record an asciinema/GIF of sbatch -> squeue -> job output.)*
+![sbatch -> squeue -> job output on an Open Cluster Scheduler cluster](docs/assets/slurm-shim-demo.gif)
+
+*A real session, not a mock-up: recorded by [`test/cluster/demo-cast.sh`](test/cluster/demo-cast.sh)
+against the containerised 3-node Open Cluster Scheduler cluster `make cluster-up`
+brings up. Reproduce it with `make cluster-up && make demo`.*
 
 ## Try it without a cluster
 
@@ -131,7 +135,16 @@ These already speak Grid Engine — they need no shim, and the native route is t
 | **JupyterHub** | [`batchspawner`](https://github.com/jupyterhub/batchspawner)'s [`GridengineSpawner`](https://github.com/jupyterhub/batchspawner/blob/main/SPAWNERS.md) |
 | **MPI** (OpenMPI, Intel MPI, MVAPICH) | Open Cluster Scheduler tight integration via the PE's `mpirun` — see the shipped [MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) (PE templates and start/stop scripts) |
 
-> **TODO:** add runnable `examples/` and a community `tests/` harness so the matrix below can be verified on a real cluster and pass/fail reports filed as issues. Neither exists yet.
+> **How the matrix below is verified.** Runnable examples live in
+> [`docs/recipes/`](docs/recipes/) (one per framework, each a complete job script), and
+> [`test/e2e/`](test/e2e/) is a 21-check end-to-end suite that runs against a live
+> Open Cluster Scheduler cluster -- `make cluster-up && make e2e` boots one in
+> containers and runs the lot. The same suite runs on real VMs over ssh, which is
+> how the GPU rows are exercised on actual hardware.
+>
+> What is still missing is *your* cluster: the matrix is verified on the
+> configurations we can boot, not on every Grid Engine derivative and site policy.
+> Pass/fail reports as issues are very welcome.
 
 ## Compatibility matrix
 
@@ -145,7 +158,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + the vendor device mask (`CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`). See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
 | `srun --pty` (interactive) | ✅ | Outside an allocation, `srun --pty [flags] <cmd>` becomes an interactive `qrsh -now no -pty y` session on a compute node, with the full `SLURM_*` environment; `srun` inside it launches steps. See [Interactive sessions](#interactive-sessions). |
 | `srun` (standalone, no `--pty`) | ❌ | A non-interactive `srun` outside an allocation exits 1 (`standalone: reject`). Run it inside an interactive session, or via `sbatch`. |
-| `squeue` | ✅ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. |
+| `squeue` | ⚠️ | Backed by `qstat -xml`. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`. No `--json`. **Three of the eight default columns are placeholders**, because `qstat -xml` does not carry them: `TIME` is always `0:00`, `NODES` always `1`, and `NODELIST` shows only the master task's host (so a 3-node job reads as 1 node). `JOBID`, `PARTITION`, `NAME`, `USER`, `ST`/`STATE` and `CPUS` are real -- select them with `-o` if you parse the output. |
 | `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based; `-u` passthrough). `scancel --signal` (submitit's checkpoint-preempt) maps to `qmod -rj` (reschedule -> delivers SIGUSR2 to a `-notify` job and restarts it). Honors [dry run](#dry-run). |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`); `requeue` -> `qmod -rj` (task-scoped for `<id>_<task>`); honors [dry run](#dry-run). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |

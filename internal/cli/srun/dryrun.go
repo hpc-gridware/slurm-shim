@@ -59,7 +59,7 @@ func (s *supervisor) dryRun() int {
 	// The preflight srun would run before a remote launch is read-only (qconf), so
 	// a dry run reports the same verdict without launching anything.
 	if qrsh && s.hasSlaveNode() {
-		pf := launch.Preflight(context.Background(), gedata.ExecRunner{}, s.lay.Job.PEName)
+		pf := launch.Preflight(context.Background(), gedata.ExecRunner{}, s.lay.Job.PEName, s.lay.Job.Queue)
 		for _, e := range pf.Errors {
 			kv(out, "preflight", "ERROR: "+e)
 		}
