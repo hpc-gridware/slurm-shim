@@ -81,7 +81,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	plan := install.MakePlan(facts, install.Options{Prefix: *prefix, PEName: *peName, Queues: queues, Force: *force})
 
-	existing, cfgUsed, _, _ := config.LoadFrom([]string{*cfgPath})
+	// Fail on an unparseable config HERE, before any cluster change is applied.
+	// The write below merges into this file rather than overwriting it, so it
+	// refuses a file it cannot parse -- and refusing at write time would leave
+	// the cluster already modified with no config to match. Better to stop
+	// before touching anything.
+	existing, cfgUsed, _, cfgErr := config.LoadFrom([]string{*cfgPath})
+	if cfgErr != nil {
+		fmt.Fprintf(stderr, "install: error: %s is not valid YAML: %v\n", *cfgPath, cfgErr)
+		fmt.Fprintf(stderr, "install: fix or move it and re-run; nothing has been changed.\n")
+		return 1
+	}
 	if cfgUsed == "" {
 		existing = nil
 	}
@@ -139,7 +149,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "cluster    %d change(s) applied\n", report.Applied())
 
-	data, err := config.Render(cfg)
+	// MERGE, never overwrite. Rendering the struct over the file drops every key
+	// the running binary does not model -- which silently loses site settings on
+	// an upgrade, a rollback, or an install run from an older binary. See
+	// config.MergeInto.
+	prev, readErr := os.ReadFile(*cfgPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		fmt.Fprintf(stderr, "install: error: reading %s: %v\n", *cfgPath, readErr)
+		return 1
+	}
+	data, err := config.MergeInto(prev, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "install: error: rendering config: %v\n", err)
 		return 1
@@ -148,7 +167,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "install: error: %v\n", err)
 		return 1
 	}
-	if err := os.WriteFile(*cfgPath, data, 0o644); err != nil {
+	if err := writeConfigAtomic(*cfgPath, data); err != nil {
 		fmt.Fprintf(stderr, "install: error: writing %s: %v\n", *cfgPath, err)
 		return 1
 	}
@@ -213,3 +232,53 @@ type multi []string
 
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
+
+// writeConfigAtomic replaces the config file by rename, preserving the mode of
+// the file it replaces.
+//
+// os.WriteFile truncates first and writes second, so an interruption between
+// the two leaves a truncated config -- the same data loss MergeInto exists to
+// prevent, arriving by a different door. This is not theoretical here: the
+// config lives under $SGE_ROOT/$SGE_CELL/common, which on a normal cluster is
+// an NFS export, and a write to it can fail partway. A rename is atomic, so the
+// old config survives intact until the new one is complete on disk.
+//
+// The mode is carried over because a site that restricted its config to 0600
+// should not have it widened to world-readable by an upgrade. New files get
+// 0644: every node reads this file, so it must stay readable by the users
+// running jobs.
+func writeConfigAtomic(path string, data []byte) error {
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+
+	dir := filepath.Dir(path)
+	// Same directory, so the rename cannot cross a filesystem boundary.
+	tmp, err := os.CreateTemp(dir, ".slurm-shim-config-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// fsync before rename: without it the rename can land while the contents are
+	// still only in the page cache, which a crash then loses.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes the file 0600; set the intended mode before it is visible
+	// under its real name.
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}

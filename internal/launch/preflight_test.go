@@ -39,11 +39,30 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		}}
 	}
 
-	It("passes with control_slaves TRUE, warning on per-slot rlimits and token spool [REQ-APX-003]", func() {
+	It("passes with control_slaves TRUE, warning on per-slot rlimits [REQ-APX-003]", func() {
 		res := Preflight(context.Background(), fixtureRunner(), "make")
 		Expect(res.OK()).To(BeTrue())
 		Expect(res.Warnings).To(ContainElement(ContainSubstring("per-slot h_vmem")))
-		Expect(res.Warnings).To(ContainElement(ContainSubstring("spool file is owner-only")))
+	})
+
+	It("does NOT report the spool exposure, which srun would print on every step", func() {
+		// SI-51 is a property of the CLUSTER, not of the job: the user running
+		// the job generally cannot chmod the execd spool. Preflight warnings are
+		// printed by srun per step, so reporting it here told the wrong person
+		// repeatedly -- and the line landed interleaved with the job own output,
+		// corrupting what tools parse. doctor reports it once, under security,
+		// via TokenSpoolWarning.
+		res := Preflight(context.Background(), fixtureRunner(), "make")
+		for _, w := range res.Warnings {
+			Expect(w).NotTo(ContainSubstring("SI-51"))
+			Expect(w).NotTo(ContainSubstring("spool"))
+		}
+	})
+
+	It("still exposes the spool check for doctor to call directly", func() {
+		// The check itself must keep working -- only its delivery changed.
+		Expect(TokenSpoolWarning(context.Background(), fixtureRunner())).
+			To(ContainSubstring("SI-51"))
 	})
 
 	It("fails loud when control_slaves is not TRUE", func() {

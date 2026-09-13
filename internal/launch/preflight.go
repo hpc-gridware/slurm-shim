@@ -56,13 +56,18 @@ func Preflight(ctx context.Context, r gedata.Runner, peName string) PreflightRes
 			"PE %q has daemon_forks_slaves FALSE: a stepper forking N ranks runs under one slot's rlimits, so per-slot h_vmem limits can OOM multi-rank steps (SI-18)", peName))
 	}
 
-	// Token delivery (SI-51, REQ-CHN-005): the per-step token travels via
-	// `qrsh -v`, which GE stages in the execd spool. tokenSpoolWarning checks
-	// whether that staging area is reachable by other users and stays silent
-	// when it is not, so this is a finding rather than a standing reminder.
-	if w := tokenSpoolWarning(ctx, r); w != "" {
-		res.Warnings = append(res.Warnings, w)
-	}
+	// SI-51 (execd spool exposure) is DELIBERATELY NOT reported here.
+	//
+	// Preflight warnings are printed by srun on every step. The spool mode is a
+	// property of the CLUSTER, not of the job: the user running the job usually
+	// cannot change it (it needs root on the exec hosts), so telling them once
+	// per step is telling the wrong person, repeatedly. In practice the line
+	// lands interleaved with the job own output -- observed between rank lines
+	// in a captured multi-node result -- so it both corrupts what tools parse
+	// and trains readers to skip warnings.
+	//
+	// `doctor` reports it once, under security, via launch.TokenSpoolWarning.
+	// That is run deliberately by the person who can actually fix the directory.
 
 	return res
 }

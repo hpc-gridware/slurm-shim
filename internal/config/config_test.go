@@ -38,11 +38,13 @@ var _ = Describe("Config loading", func() {
 
 	Describe("overlay onto defaults", func() {
 		It("overrides only the keys present and keeps other defaults", func() {
-			cfg, warns, err := config.Parse([]byte("kill_on_bad_exit: false\nlaunch_ramp: 8\n"))
+			// Two keys set, and neither may disturb an untouched third. Note the
+			// overridden key must NOT be one the defaults assertion below checks.
+			cfg, warns, err := config.Parse([]byte("kill_on_bad_exit: false\nkill_wait: 45s\n"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(warns).To(BeEmpty())
 			Expect(cfg.KillOnBadExit).To(BeFalse())
-			Expect(cfg.LaunchRamp).To(Equal(8))
+			Expect(cfg.KillWait.Duration).To(Equal(45 * time.Second))
 			// Untouched keys keep their defaults.
 			Expect(cfg.CompatVersion).To(Equal("24.05.0"))
 			Expect(cfg.LaunchTimeout.Duration).To(Equal(60 * time.Second))
@@ -231,8 +233,12 @@ var _ = Describe("control port validation", func() {
 	})
 
 	It("warns that the removed control_port key is ignored (migration signal)", func() {
+		// Named as OBSOLETE, not merely unknown: the shim wrote this key itself
+		// (it had a default, so it is in every config install ever produced) and
+		// can therefore say what replaced it.
 		_, warns := parse("control_port: 30000\n")
-		Expect(warns).To(ContainElement(ContainSubstring(`unknown config key "control_port"`)))
+		Expect(warns).To(ContainElement(ContainSubstring(`config key "control_port" is obsolete`)))
+		Expect(warns).To(ContainElement(ContainSubstring("control_port_base")))
 	})
 })
 
@@ -368,5 +374,24 @@ var _ = Describe("qstat_timeout must be positive", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(warns).To(BeEmpty())
 		Expect(cfg.QstatTimeout.Duration.String()).To(Equal("20s"))
+	})
+})
+
+var _ = Describe("removed keys [todo 079]", func() {
+	It("reports launch_ramp as unknown rather than silently accepting it", func() {
+		// launch_ramp was parsed, defaulted to 64, and read NOWHERE -- no ramp or
+		// semaphore existed in internal/launch or internal/stepper. A config key
+		// is a promise; an operator tuning a slow multi-node launch would have
+		// found it, changed it, and measured noise. Removed rather than
+		// implemented: throttling should arrive with an implementation and a
+		// test, not before. knownKeys() is reflection-based, so removing the
+		// field gives the migration warning for free -- the same path control_port
+		// took.
+		_, warns, err := config.Parse([]byte("launch_ramp: 8\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`config key "launch_ramp" is obsolete`)))
+		// It must say how to make it stop, because Parse runs on EVERY command:
+		// without the cleanup step this warning is permanent noise on stderr.
+		Expect(warns).To(ContainElement(ContainSubstring("install --apply")))
 	})
 })

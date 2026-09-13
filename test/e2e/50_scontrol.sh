@@ -8,7 +8,10 @@ log "50_scontrol: show hostnames expands a compressed nodelist"
 # Pure function of its argument -- no job needed.
 out="$(gridware "scontrol show hostnames 'ocs-worker[1-2],ocs-master'")"
 n="$(printf '%s\n' "$out" | grep -c .)"
-assert_eq "$n" "$EXEC_NODES" "expands to $EXEC_NODES hostname(s)"
+# Three, because the ARGUMENT names three hosts. This is a pure function of its
+# input and has nothing to do with how big the cluster is -- an earlier pass at
+# making the suite size-portable wrongly substituted EXEC_NODES here.
+assert_eq "$n" "3" "expands to 3 hostnames"
 assert_contains "$out" "ocs-worker1" "includes ocs-worker1"
 assert_contains "$out" "ocs-worker2" "includes ocs-worker2"
 assert_contains "$out" "ocs-master" "includes ocs-master"

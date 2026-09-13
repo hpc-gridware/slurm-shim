@@ -224,10 +224,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			r.fail("pe %s: %s", p.PE, e)
 		}
 		for _, w := range pf.Warnings {
-			// The spool exposure is a cluster fact, reported once under security.
-			if strings.Contains(w, "SI-51") {
-				continue
-			}
 			r.warn("pe %s: %s", p.PE, w)
 		}
 	}

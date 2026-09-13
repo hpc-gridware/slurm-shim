@@ -34,8 +34,8 @@ id="$(sbatch_submit "$remote" "$out")"
 if [ -n "$id" ]; then pass "sbatch accepted the job (id $id)"; else fail "sbatch returned no job id"; fi
 
 res="$(jobout "$id" "$out")"
-assert_contains "$res" "NNODES=3" "SLURM_NNODES == 3"
-assert_contains "$res" "NTASKS=6" "SLURM_NTASKS == 6"
+assert_contains "$res" "NNODES=$EXEC_NODES" "SLURM_NNODES == $EXEC_NODES"
+assert_contains "$res" "NTASKS=$((EXEC_NODES * 2))" "SLURM_NTASKS == $((EXEC_NODES * 2))"
 # Every name in the nodelist must be a node of THIS cluster -- portable, and a
 # stronger claim than matching a container-name prefix.
 # SLURM_JOB_NODELIST is COMPRESSED ("host[2,1]"), so it must be expanded before

@@ -76,13 +76,13 @@ put_job "$job" "$remote"
 id="$(sbatch_submit "$remote" "$out")"
 if [ -n "$id" ]; then pass "pristine script accepted (job $id)"; else fail "pristine script did not submit"; fi
 res="$(jobout "$id" "$out")"
-assert_contains "$res" "NNODES=3 NTASKS=6" "unmodified script sees SLURM_NNODES/NTASKS"
+assert_contains "$res" "NNODES=$EXEC_NODES NTASKS=$((EXEC_NODES * 2))" "unmodified script sees SLURM_NNODES/NTASKS"
 nodelist="$(printf '%s\n' "$res" | sed -n 's/^NODELIST=//p')"
 if [ -n "$nodelist" ]; then pass "unmodified script sees SLURM_JOB_NODELIST ($nodelist)"
 else fail "SLURM_JOB_NODELIST was empty"; fi
 hosts="$(printf '%s\n' "$res" | sed -n 's/^HOSTS=//p')"
 n="$(printf '%s' "$hosts" | tr ',' '\n' | grep -c .)"
-assert_eq "$n" "3" "scontrol show hostnames expands to 3 hosts with no hook line"
+assert_eq "$n" "$EXEC_NODES" "scontrol show hostnames expands to $EXEC_NODES hosts with no hook line"
 master="$(printf '%s\n' "$res" | sed -n 's/^MASTER=\([^ ]*\) SELF=\(.*\)$/\1 \2/p')"
 # The property is that the FIRST name from scontrol show hostnames is the host
 # the batch script itself runs on -- true on any cluster, not just this one.
@@ -93,7 +93,7 @@ else
   fail "first hostname '$m_first' is not the host running the script '$m_self'"
 fi
 ranks="$(printf '%s\n' "$res" | grep -c '^RANK ')"
-assert_eq "$ranks" "6" "srun fans 6 ranks out under the starter"
+assert_eq "$ranks" "$((EXEC_NODES * 2))" "srun fans $((EXEC_NODES * 2)) ranks out under the starter"
 
 # (2) A NATIVE Open Cluster Scheduler job in the same queue never ran the fabricator and
 # must be unaffected: the hook's default policy is continue.
@@ -168,7 +168,7 @@ fi
 # failed qstat or a renamed queue would otherwise make an empty result read as
 # "no E state" (todos/036).
 insts="$(gridware "qstat -f 2>/dev/null | grep -c '^all\.q@' || true")"
-assert_eq "$insts" "3" "qstat saw all three all.q instances (E-state probe ran)"
+assert_eq "$insts" "$EXEC_NODES" "qstat saw all $EXEC_NODES all.q instances (E-state probe ran)"
 bad="$(gridware "qstat -f 2>/dev/null | awk '\$1 ~ /^all\\.q@/ && NF >= 6 && \$6 ~ /E/' | grep -c . || true")"
 assert_eq "$bad" "0" "no all.q instance went into E state"
 

@@ -69,13 +69,26 @@ put_job() {
 
 # jobout <jobid> <outfile> waits (bounded) for the job to leave the queue, then
 # prints the output file. Empty if it never produced one.
+#
+# The wait is JOB_DEADLINE seconds (default 180). It used to be a hardcoded
+# 90 x 2s, which quietly truncated every long check: a GPU training job given
+# JOB_DEADLINE=1800 was read at 180s and reported as "no steps logged" -- a false
+# failure, on the most expensive checks in the campaign.
+#
+# It also ALWAYS succeeds. Callers assign it in a command substitution, and the
+# harness runs under `set -e`, so a missing output file (job not dispatched yet)
+# used to abort the whole check before it could report anything -- the caller
+# saw "produced NO SUMMARY", which reads as a harness bug rather than a slow
+# job. "Empty if it never produced one" was the documented contract all along;
+# this makes it true, so no call site needs its own `|| true`.
 jobout() {
   local id="$1" out="$2"
-  for _ in $(seq 1 90); do
+  local deadline=$(( $(date +%s) + ${JOB_DEADLINE:-180} ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
     gridware "squeue -h -j '$id' 2>/dev/null | grep -q ." || break
     sleep 2
   done
-  gridware "cat '$out' 2>/dev/null"
+  gridware "cat '$out' 2>/dev/null" || true
 }
 
 # sbatch_submit <remote-script> <outfile> [extra sbatch args...] submits through

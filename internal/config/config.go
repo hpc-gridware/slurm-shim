@@ -217,7 +217,16 @@ type Config struct {
 	EmitCPUsPerTask        bool   `yaml:"emit_cpus_per_task"`
 
 	// Control-channel and launch settings (D-1, SI-37).
-	LaunchRamp    int      `yaml:"launch_ramp"`
+	//
+	// launch_ramp was REMOVED: it was parsed and defaulted to 64 and read
+	// nowhere -- there was no ramp, throttle or semaphore anywhere in
+	// internal/launch or internal/stepper. A key in a config file is a promise,
+	// and an operator tuning a slow multi-node launch would have found it,
+	// reasoned about it, changed it, and measured noise. It also blocked honest
+	// measurement: no fan-out figure could be attributed to a setting that does
+	// nothing. Removing the field makes knownKeys() report it as an unknown key,
+	// which is the same migration control_port got. If launch throttling is ever
+	// wanted, it should arrive with an implementation and a test, not before.
 	LaunchTimeout Duration `yaml:"launch_timeout"`
 	// Control-channel listen range. srun binds a port in [base, base+range) so a
 	// site can write one firewall rule; base 0 falls back to an ephemeral port,
@@ -279,7 +288,6 @@ func Default() *Config {
 		MemoryComplex:          "mem_free",
 		AllocationRuleOverride: OverrideAuto,
 		EmitCPUsPerTask:        false,
-		LaunchRamp:             64,
 		LaunchTimeout:          Duration{60 * time.Second},
 		// 61000-61439: above the usual Linux ephemeral ceiling (32768-60999) so
 		// the listener cannot race the source port of an outbound connection,
@@ -351,6 +359,13 @@ func Parse(data []byte) (*Config, []string, error) {
 		known := knownKeys()
 		for _, k := range sortedKeys(raw) {
 			if !known[k] {
+				// A key the shim retired is named as obsolete, with what
+				// replaced it -- "unknown" is wrong for a key we wrote
+				// ourselves and then removed.
+				if w := retiredKeyWarning(k); w != "" {
+					warnings = append(warnings, w)
+					continue
+				}
 				warnings = append(warnings, fmt.Sprintf("unknown config key %q ignored", k))
 				continue
 			}
