@@ -260,16 +260,24 @@ func writeConfigAtomic(path string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename succeeds
+	// Best-effort cleanup of the temp file, and a no-op once the rename has
+	// succeeded. Discarded deliberately: there is no useful recovery from a
+	// failed unlink of a file we are abandoning anyway, and reporting it would
+	// mask the real error on the paths below.
+	defer func() { _ = os.Remove(tmpName) }()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		// Close errors are discarded on the FAILURE paths only: we already hold
+		// the error that matters, and returning the close error instead would
+		// hide why the write failed. The success path below checks Close, which
+		// is where a deferred flush actually surfaces.
+		_ = tmp.Close()
 		return err
 	}
 	// fsync before rename: without it the rename can land while the contents are
 	// still only in the page cache, which a crash then loses.
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
