@@ -6,7 +6,11 @@
 
 **Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — `submitit`, JAX, and anything else that shells out to `sbatch`.
 
-> **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.5). GPU paths are validated through a fake RSMAP complex, **not** on real hardware. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+> **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.5).
+>
+> **NVIDIA GPU paths are validated on real hardware** — multi-node NVIDIA L4 clusters on GCE — not only through the fake RSMAP complex used in CI. What that run establishes: every rank opens exactly the devices Grid Engine granted, matched by UUID against the job's own `resource_map` (set equality, so no aliasing and no double-booking across hosts); `CUDA_VISIBLE_DEVICES` is the only device variable written; `SLURM_LOCALID`/`LOCAL_RANK` index correctly into each rank's visible devices; and a `torchrun` all-reduce crosses hosts over a real NIC rather than silently falling back to loopback.
+>
+> **Not yet validated on hardware:** the AMD/ROCm path (`gpu.vendor: amd`, `ROCR_VISIBLE_DEVICES`) is unit-tested only — we have no AMD hardware — and cgroup-enforced device isolation needs Gridware Cluster Scheduler's `qgpu`. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
 https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
@@ -353,7 +357,15 @@ succeeds). It enforces nothing.
 - **Under a dry run `sbatch` prints no `Submitted batch job` line.** A tool that
   parses stdout for a job id (clearml-agent does) gets the predicted environment
   block instead. See [dry run](#dry-run).
-- **GPU paths are not validated on real hardware** — the live e2e suite uses a fake RSMAP complex, so device *assignment* is asserted but CUDA/NCCL never runs.
+- **The AMD/ROCm path is not validated on hardware.** `gpu.vendor: amd` and the
+  `ROCR_VISIBLE_DEVICES` mask are unit-tested only; we have no AMD hardware. The
+  NVIDIA path *is* exercised on real multi-node L4 clusters, where CUDA and a
+  cross-host NCCL all-reduce actually run. The CI e2e suite still uses a fake
+  RSMAP complex, so on that path device *assignment* is asserted but no CUDA runs.
+- **cgroup-enforced device isolation is unverified.** `gpu.isolation: cgroup`
+  needs Gridware Cluster Scheduler's `qgpu`; on stock Open Cluster Scheduler the
+  device mask is advisory, so a process that ignores `CUDA_VISIBLE_DEVICES` can
+  still reach another job's GPU.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
 
 ## Requirements
