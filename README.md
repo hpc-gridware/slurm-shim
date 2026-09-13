@@ -30,12 +30,15 @@ Two parts: a one-time site install by an Open Cluster Scheduler (fka Sun Grid En
 
 ```bash
 # ---- one-time site install (an Open Cluster Scheduler manager does this) ----
-# 1. Get the payload onto the manager host. The bootstrap downloads the release,
-#    verifies its checksum, and goes straight on to step 2:
+# 1a. Get the payload onto the manager host. The bootstrap downloads the release,
+#     verifies its checksum, and goes on to do steps 2 and 3 (--expose=profile.d):
 curl -fsSL https://github.com/hpc-gridware/slurm-shim/releases/latest/download/install.sh | sh
 
-#    Or unpack the tarball yourself -- the same delivery model as OCS:
+# 1b. Or unpack the tarball yourself -- the same delivery model as OCS. Steps 2
+#     and 3 are then yours to run:
+mkdir -p $SGE_ROOT/slurm-shim
 tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
+export PATH=$SGE_ROOT/slurm-shim/bin:$PATH   # this shell only; step 3 is the site-wide choice
 
 # 2. Configure the cluster. Source the cell first; run as a manager.
 source $SGE_ROOT/default/common/settings.sh
