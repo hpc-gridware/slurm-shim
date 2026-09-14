@@ -1,0 +1,76 @@
+name: Bug report
+description: A SLURM script, launcher or command that does not behave as it would on SLURM.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The failing script plus the version and `doctor` output below usually make an issue reproducible on the first try.
+
+        Please redact anything sensitive first. Job scripts, `env` output and dry-run reports can contain tokens, internal hostnames and project ids. For a security issue, do not use this form; see [SECURITY.md](https://github.com/hpc-gridware/slurm-shim/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead. Include error messages verbatim.
+    validations:
+      required: true
+
+  - type: textarea
+    id: script
+    attributes:
+      label: Job script or command
+      description: The SLURM batch script or `srun` / `sbatch` command line, trimmed to the smallest version that still fails.
+      render: bash
+    validations:
+      required: true
+
+  - type: input
+    id: shim-version
+    attributes:
+      label: slurm-shim version
+      description: Output of `sbatch --version`
+      placeholder: slurm 24.05.0 (slurm-shim v0.5.0)
+    validations:
+      required: true
+
+  - type: input
+    id: scheduler-version
+    attributes:
+      label: Scheduler and version
+      description: Output of `qconf -help | head -1`
+      placeholder: OCS 9.1.5 (250826-0734)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Launcher or framework involved
+      options:
+        - None (plain sbatch / srun)
+        - torchrun / PyTorch
+        - accelerate
+        - Lightning
+        - JAX / Flax
+        - submitit / Hydra
+        - Ray
+        - DeepSpeed
+        - Other (say which above)
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: slurm-shim doctor output
+      description: Run `slurm-shim doctor` on the manager host.
+      render: text
+
+  - type: textarea
+    id: dry-run
+    attributes:
+      label: Dry-run report (optional)
+      description: "`SLURM_SHIM_DRY_RUN=1 sbatch <script>` shows the translated Grid Engine submission without submitting. Redact before pasting."
+      render: text

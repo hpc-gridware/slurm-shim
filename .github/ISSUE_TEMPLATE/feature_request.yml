@@ -1,0 +1,36 @@
+name: Feature request
+description: A SLURM flag, environment variable, command or tool the shim should support.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [compatibility matrix](https://github.com/hpc-gridware/slurm-shim/blob/main/README.md#compatibility-matrix) first. The most useful requests name the real tool or script that needs the feature. If the tool already has a native Grid Engine integration, that path is usually the better one.
+
+  - type: input
+    id: feature
+    attributes:
+      label: Flag, variable, command or tool
+      placeholder: "e.g. an sbatch flag, a SLURM_* variable, squeue --json"
+    validations:
+      required: true
+
+  - type: textarea
+    id: need
+    attributes:
+      label: Who needs it
+      description: The launcher, framework or script that uses it, and what breaks or degrades without it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: slurm-behaviour
+    attributes:
+      label: Behaviour on SLURM
+      description: What it does on a real SLURM cluster. A link to the SLURM documentation is enough.
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example script or command
+      render: bash

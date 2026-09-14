@@ -6,7 +6,7 @@
 
 **Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — `submitit`, JAX, and anything else that shells out to `sbatch`.
 
-> **Status: pre-release.** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised end-to-end against live Open Cluster Scheduler clusters (9.0.10, 9.1.5). The NVIDIA GPU path is validated on multi-node L4 clusters: every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+> **Validated** end-to-end against live Open Cluster Scheduler clusters (9.0.10, 9.1.5) and on multi-node, multi-GPU NVIDIA L4 clusters: every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts. The [compatibility matrix](#compatibility-matrix) lists every supported command, flag and variable — for anything missing, [open an issue](../../issues).
 
 https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
@@ -654,7 +654,7 @@ from LDAP; and more.
 
 ## Contributing
 
-🚧 `CONTRIBUTING.md` and `good-first-issue` labels are not set up yet. Most future "add support for sbatch flag X" work touches a single mapping table (`internal/cli/sbatch/translate.go`); the `SLURM_*` contract lives in `internal/fabricator`. Run `make test` and `make lint` before submitting.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Most "support sbatch flag X" work touches one mapping table, `internal/cli/sbatch/translate.go`; the `SLURM_*` contract lives in `internal/fabricator`. Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Trademarks
 

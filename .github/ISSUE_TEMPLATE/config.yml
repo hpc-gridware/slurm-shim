@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://www.hpc-gridware.com/security
+    about: Please report vulnerabilities privately, not as a public issue.
+  - name: Gridware Cluster Scheduler support
+    url: https://hpc-gridware.com/gridware-cluster-scheduler/
+    about: Commercial support for the shim alongside Gridware Cluster Scheduler.
