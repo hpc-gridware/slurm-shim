@@ -3,7 +3,7 @@ module github.com/hpc-gridware/slurm-shim
 go 1.25.0
 
 require (
-	github.com/hpc-gridware/go-clusterscheduler v0.0.0-20260819130825-4ba374e69d91
+	github.com/hpc-gridware/go-clusterscheduler v0.0.0-20260914070040-16f761972bbd
 	github.com/onsi/ginkgo/v2 v2.23.3
 	github.com/onsi/gomega v1.37.0
 	github.com/spf13/pflag v1.0.10

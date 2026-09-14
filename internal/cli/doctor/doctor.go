@@ -155,7 +155,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if write, drop, err := cfg.GPU.DeviceVars(); err != nil {
 		r.fail("%v; GPU steps will be refused", err)
 	} else if cfg.GPU.Isolation == "cgroup" {
-		r.pass("gpu.vendor %s, but gpu.isolation is cgroup: GE masks the devices, so the shim writes no device variable and removes only %s",
+		// Config logic only: whether Grid Engine actually confines the devices
+		// needs qmaster, and is checked in the "gpu isolation" section.
+		r.pass("gpu.vendor %s, gpu.isolation cgroup: the shim writes no device variable and removes only %s",
 			vendorOrDefault(cfg.GPU.Vendor), strings.Join(drop, ", "))
 	} else {
 		// Report the inherited variables that are cleared, not the full drop set:
@@ -235,8 +237,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			r.warn("pe %s: %s", p.PE, launch.PEForksNote(peCfg, p.PE))
 		}
 	}
-	if hosts, err := admin.ExecHosts(ctx); err == nil {
+	hosts, hostsErr := admin.ExecHosts(ctx)
+	if hostsErr == nil {
 		r.info("%d exec host(s): %s -- each must have %s at the same path", len(hosts), strings.Join(hosts, " "), prefix)
+	}
+
+	// -- gpu isolation --------------------------------------------------------
+	if cfg.GPU.Isolation == "cgroup" {
+		r.section("gpu isolation")
+		checkCgroupIsolation(ctx, r, admin, cfg.GPU.GresComplex, hosts, hostsErr)
 	}
 
 	// -- memory ---------------------------------------------------------------

@@ -25,3 +25,7 @@ coverage.txt
 
 # Build output: the payload tree, release tarballs and their checksums.
 /dist/
+
+# Local cross-repo development against a go-clusterscheduler checkout.
+go.work
+go.work.sum

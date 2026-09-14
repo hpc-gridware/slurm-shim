@@ -6,11 +6,7 @@
 
 **Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — `submitit`, JAX, and anything else that shells out to `sbatch`.
 
-> **Status: pre-release** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised by an end-to-end suite against live Open Cluster Scheduler clusters (9.0.10 and 9.1.5).
->
-> **NVIDIA GPU paths are validated on real hardware** — multi-node NVIDIA L4 clusters on GCE — not only through the fake RSMAP complex used in CI. What that run establishes: every rank opens exactly the devices Grid Engine granted, matched by UUID against the job's own `resource_map` (set equality, so no aliasing and no double-booking across hosts); `CUDA_VISIBLE_DEVICES` is the only device variable written; `SLURM_LOCALID`/`LOCAL_RANK` index correctly into each rank's visible devices; and a `torchrun` all-reduce crosses hosts over a real NIC rather than silently falling back to loopback.
->
-> **Not yet validated on hardware:** the AMD/ROCm path (`gpu.vendor: amd`, `ROCR_VISIBLE_DEVICES`) is unit-tested only — we have no AMD hardware — and cgroup-enforced device isolation needs Gridware Cluster Scheduler's `qgpu`. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
+> **Status: pre-release.** The seven client commands and the `SLURM_*` environment contract are implemented, unit-tested, and exercised end-to-end against live Open Cluster Scheduler clusters (9.0.10, 9.1.5). The NVIDIA GPU path is validated on multi-node L4 clusters: every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts. If a flag isn't listed as supported, assume it doesn't work and [open an issue](../../issues).
 
 https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
 
@@ -360,15 +356,10 @@ succeeds). It enforces nothing.
 - **Under a dry run `sbatch` prints no `Submitted batch job` line.** A tool that
   parses stdout for a job id (clearml-agent does) gets the predicted environment
   block instead. See [dry run](#dry-run).
-- **The AMD/ROCm path is not validated on hardware.** `gpu.vendor: amd` and the
-  `ROCR_VISIBLE_DEVICES` mask are unit-tested only; we have no AMD hardware. The
-  NVIDIA path *is* exercised on real multi-node L4 clusters, where CUDA and a
-  cross-host NCCL all-reduce actually run. The CI e2e suite still uses a fake
-  RSMAP complex, so on that path device *assignment* is asserted but no CUDA runs.
-- **cgroup-enforced device isolation is unverified.** `gpu.isolation: cgroup`
-  needs Gridware Cluster Scheduler's `qgpu`; on stock Open Cluster Scheduler the
-  device mask is advisory, so a process that ignores `CUDA_VISIBLE_DEVICES` can
-  still reach another job's GPU.
+- `gpu.vendor: amd` (ROCm) is unit-tested, not yet validated on AMD hardware.
+- Enforced GPU device isolation (`gpu.isolation: cgroup`) requires Gridware Cluster
+  Scheduler, with each RSMAP instance declaring its `devices`; `slurm-shim doctor`
+  checks every host. Under `gpu.isolation: shim` the device mask is advisory.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
 
 ## Requirements
@@ -444,7 +435,7 @@ gpu:
                                   # (exactly one is written; the other vendor's variables
                                   # are removed from the rank env, never blanked)
   discovery: qstat-gres           # RSMAP grant -> the vendor device mask
-  isolation: shim                 # shim (per-rank masking) | cgroup (GE devices_allow)
+  isolation: shim                 # shim (per-rank mask) | cgroup (GCS device isolation)
   gres_complex: gpu
   bind: none                      # none (SLURM default: whole grant visible to every
                                   # task) | per-task (split the grant among tasks)
@@ -637,9 +628,29 @@ stderr.
 
 ## Support
 
-The shim is open source (Apache-2.0) and community-supported via GitHub issues — bug reports with the failing SLURM script attached are the most useful.
+The shim is open source (Apache-2.0) and community-supported via
+[GitHub issues](../../issues) — bug reports with the failing SLURM
+script attached are the most useful.
 
-*(TODO: confirm internally whether commercial [Gridware Cluster Scheduler](https://hpc-gridware.com/gridware-cluster-scheduler/) support will cover the shim before advertising it here.)*
+For [Gridware Cluster Scheduler](https://hpc-gridware.com/gridware-cluster-scheduler/)
+customers, HPC-Gridware supports the shim on a best-effort basis alongside the
+scheduler: installation, the commands and flags listed as implemented in the
+[compatibility matrix](#compatibility-matrix), and the `SLURM_*` environment
+contract. Whether a given SLURM script runs unchanged depends on which flags it
+uses; the matrix is the reference for that, not a promise.
+
+[Open Cluster Scheduler](https://github.com/hpc-gridware/clusterscheduler)
+is free and open source, developed and maintained by
+[HPC-Gridware](https://hpc-gridware.com); everything the shim does works on it.
+Gridware Cluster Scheduler is HPC-Gridware's supported enterprise edition of
+Open Cluster Scheduler. Two of its additions matter directly to shim users:
+cgroup-enforced GPU device isolation and per-job GPU accounting (`qgpu`).
+Beyond that it adds Qontrol, a web-based admin console for managing multiple
+installations; an SQL accounting and reporting database; FlexNet
+license-manager integration so costly vendor licenses are shared efficiently
+across the cluster; Prometheus/Grafana monitoring integration; cache-aware job
+pinning; ACLs that honour supplementary GIDs so resource access can be managed
+from LDAP; and more.
 
 ## Contributing
 
