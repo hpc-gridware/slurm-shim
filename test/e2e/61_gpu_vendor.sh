@@ -75,18 +75,46 @@ run_gpu_job() {
   jobout "$id" "$out"
 }
 
+# Device ids are asserted by SHAPE, not literally. The container harness
+# publishes ordinals (0 1); a cluster with real devices publishes UUIDs, and a
+# literal "cuda=[0]" failed there while every rank had the right device. What
+# the vendor switch changes is WHICH variable holds the ids and how many each
+# rank gets, so that is what is checked.
+#
+# field_of <rank> <var>: the bracket contents of var on that rank's line of $res.
+field_of() {
+  printf '%s\n' "$res" | sed -n "s/^RANK $1 .*$2=\[\([^]]*\)\].*/\1/p" | head -1
+}
+# count_ids <list>: how many ids a comma list holds; UNSET and empty hold none.
+count_ids() {
+  case "$1" in ''|UNSET) echo 0; return ;; esac
+  printf '%s' "$1" | tr ',' '\n' | sed '/^$/d' | grep -c . || true
+}
+# assert_one_each_distinct <var> <label>: each rank holds exactly one id in var,
+# and the two ranks hold different ones.
+assert_one_each_distinct() {
+  local r0 r1
+  r0="$(field_of 0 "$1")"; r1="$(field_of 1 "$1")"
+  assert_eq "$(count_ids "$r0")" "1" "$2: rank 0 gets exactly one device in $1"
+  assert_eq "$(count_ids "$r1")" "1" "$2: rank 1 gets exactly one device in $1"
+  if [ "$(count_ids "$r0")" = 1 ] && [ "$r0" != "$r1" ]; then
+    pass "$2: the two ranks got different devices"
+  else
+    fail "$2: ranks got the same device, or none ($r0 / $r1)"
+  fi
+}
+
 # --- nvidia (the default) ---------------------------------------------------
 set_vendor nvidia
 res="$(run_gpu_job nvidia)"
-assert_contains "$res" "RANK 0 cuda=[0]" "nvidia: rank 0 gets its device as CUDA_VISIBLE_DEVICES"
-assert_contains "$res" "RANK 1 cuda=[1]" "nvidia: rank 1 gets its device as CUDA_VISIBLE_DEVICES"
-assert_contains "$res" "rocr=[UNSET]" "nvidia: no ROCR_VISIBLE_DEVICES is written"
+assert_one_each_distinct cuda "nvidia"
+assert_eq "$(field_of 0 rocr)$(field_of 1 rocr)" "UNSETUNSET" "nvidia: no ROCR_VISIBLE_DEVICES is written"
 
 # --- amd --------------------------------------------------------------------
 set_vendor amd
 res="$(run_gpu_job amd)"
-assert_contains "$res" "RANK 0 cuda=[UNSET] rocr=[0]" "amd: rank 0 gets ROCR_VISIBLE_DEVICES only"
-assert_contains "$res" "RANK 1 cuda=[UNSET] rocr=[1]" "amd: rank 1 gets ROCR_VISIBLE_DEVICES only"
+assert_one_each_distinct rocr "amd"
+assert_eq "$(field_of 0 cuda)$(field_of 1 cuda)" "UNSETUNSET" "amd: no CUDA_VISIBLE_DEVICES is written"
 # The point of the feature: an inherited mask must be gone, not merely shadowed.
 if printf '%s\n' "$res" | grep -q 'RANK .*hip=\[UNSET\] ord=\[UNSET\]'; then
   pass "amd: inherited HIP_VISIBLE_DEVICES and GPU_DEVICE_ORDINAL are removed"
@@ -103,8 +131,11 @@ fi
 # into its own visible device list. JAX reads local_device_ids=[SLURM_LOCALID]
 # and torch reads LOCAL_RANK, so an unbound rank must see the whole grant.
 res="$(run_gpu_job amdunbound unbound)"
-assert_contains "$res" "RANK 0 cuda=[UNSET] rocr=[0,1]" "amd unbound: rank 0 sees the whole grant"
-assert_contains "$res" "RANK 1 cuda=[UNSET] rocr=[0,1]" "amd unbound: rank 1 sees the whole grant"
+u0="$(field_of 0 rocr)"; u1="$(field_of 1 rocr)"
+assert_eq "$(count_ids "$u0")" "2" "amd unbound: rank 0 sees the whole grant"
+assert_eq "$(count_ids "$u1")" "2" "amd unbound: rank 1 sees the whole grant"
+assert_eq "$u0" "$u1" "amd unbound: both ranks see the same two devices"
+assert_eq "$(field_of 0 cuda)$(field_of 1 cuda)" "UNSETUNSET" "amd unbound: no CUDA_VISIBLE_DEVICES is written"
 
 # --- amd with UUID RSMAP ids ------------------------------------------------
 # A device UUID is the only identity stable across reboot, driver reload and an
@@ -130,7 +161,10 @@ assert_contains "$res" "srun: error: unknown gpu.vendor" "srun refuses the step,
 # the PE hook, or a typo would take down every job on the host, GPU or not. A bare
 # "JOBGPUS=" would also match an empty grant.
 assert_contains "$res" "ALLOC JOBGPUS=[0,1]" "unknown vendor does not fail the allocation itself"
-if printf '%s\n' "$res" | grep -q 'RANK .*cuda=\[0\]'; then
+# Any device list in CUDA_VISIBLE_DEVICES counts, not just "[0]": a literal id
+# can never match a UUID RSMAP, which made this pass on real hardware whatever
+# the shim did.
+if printf '%s\n' "$res" | grep -q '^RANK .*cuda=\[[^]U][^]]*\]'; then
   fail "unknown vendor silently fell back to CUDA_VISIBLE_DEVICES"
 else
   pass "unknown vendor refuses the GPU step instead of guessing a variable"

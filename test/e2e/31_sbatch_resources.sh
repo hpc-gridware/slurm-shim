@@ -126,7 +126,12 @@ if [ -n "$gres_id" ]; then
   gres_out="$(jobout "$gres_id" "$gout" || true)"
   assert_contains "$gres_out" "JOBGPUS=[0]" "the grant becomes SLURM_JOB_GPUS"
   assert_contains "$gres_out" "ONNODE=[1]" "the grant becomes SLURM_GPUS_ON_NODE"
-  assert_contains "$gres_out" "rank=0 cuda=[0]" "the grant reaches the step as CUDA_VISIBLE_DEVICES"
+  # Exactly one device, in whatever id form the RSMAP uses: ordinals on the
+  # container harness, UUIDs on a cluster with real devices. A literal "[0]"
+  # failed on real hardware while the step had in fact received its one GPU.
+  step_cuda="$(printf '%s\n' "$gres_out" | sed -n 's/.*rank=0 cuda=\[\([^]]*\)\].*/\1/p' | head -1)"
+  step_count="$(printf '%s' "$step_cuda" | tr ',' '\n' | sed '/^$/d' | grep -c . || true)"
+  assert_eq "$step_count" "1" "the grant reaches the step as CUDA_VISIBLE_DEVICES (one device: ${step_cuda:-none})"
 else
   fail "sbatch of the --gres job returned no id"
 fi
