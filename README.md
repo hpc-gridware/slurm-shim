@@ -8,7 +8,9 @@
 
 > **Validated** end-to-end against live Open Cluster Scheduler clusters (9.0.10, 9.1.5) and on multi-node, multi-GPU NVIDIA L4 clusters: every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts. The [compatibility matrix](#compatibility-matrix) lists every supported command, flag and variable — for anything missing, [open an issue](../../issues).
 
-https://github.com/user-attachments/assets/fa13c0c7-1e13-4fa3-b7fa-5ce421ba9160
+![A stock SLURM script submitted with sbatch on an Open Cluster Scheduler cluster: squeue, six ranks across three nodes, sacct](docs/assets/slurm-shim-demo.gif)
+
+*A live session on a 3-node Open Cluster Scheduler cluster, recorded with [`test/cluster/demo-cast.sh`](test/cluster/demo-cast.sh).*
 
 ---
 
@@ -92,12 +94,6 @@ srun torchrun --nnodes=4 --nproc-per-node=8 train.py
 ```
 
 `sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE hook fabricates the `SLURM_*` variables and the queue's `starter_method` sources them before the script's first line. **The script needs no edit only because `slurm-shim install` wired `starter_method`.** On a site that has not, a job script must source `$SGE_ROOT/slurm-shim/etc/slurm-shim-source-hook.sh` itself, or the site enables `wrapper_mode` (see [Configuration](#configuration)); the recipes under [`docs/recipes/`](docs/recipes/) carry that line so they run either way.
-
-![sbatch -> squeue -> job output on an Open Cluster Scheduler cluster](docs/assets/slurm-shim-demo.gif)
-
-*A real session, not a mock-up: recorded by [`test/cluster/demo-cast.sh`](test/cluster/demo-cast.sh)
-against the containerised 3-node Open Cluster Scheduler cluster `make cluster-up`
-brings up. Reproduce it with `make cluster-up && make demo`.*
 
 ## Try it without a cluster
 

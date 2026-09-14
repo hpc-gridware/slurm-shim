@@ -9,3 +9,4 @@ echo "[alloc] nodes=$SLURM_NNODES tasks=$SLURM_NTASKS"
 echo "[alloc] nodelist=$SLURM_JOB_NODELIST"
 echo "[alloc] rendezvous=$MASTER_ADDR:$MASTER_PORT"
 srun bash -c 'echo "  rank $SLURM_PROCID/$SLURM_NTASKS on $(hostname)"'
+sleep 8   # stand-in for the training loop
