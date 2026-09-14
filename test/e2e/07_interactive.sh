@@ -12,13 +12,29 @@ require_cluster
 log "07_interactive: srun --pty outside an allocation -> qrsh session"
 
 # ptyrun <script-body> -- run a body as gridware under a real pty, return stdout.
+#
+# The pty must start with NOTHING on its input, as a terminal does when a person
+# types `srun --pty`. script(1) cannot provide that here: node_sh feeds the
+# command through stdin, so script inherits an exhausted pipe and forwards its
+# EOF into the pty the moment the session starts (verified: a program under it
+# reads 0 bytes and exits at once). That is the condition of CS-1759, "qrsh -pty
+# yes fails when characters are sent to stdin at startup time", fixed in 9.1.x
+# but not 9.0.x -- and on the 9.0.10 nightly leg every session here ended at once
+# with RC=0 and a stray NUL, from the day this check was added, while 9.1.x
+# passed. A person at a terminal sends nothing at startup, so neither should the
+# check.
+#
+# docker exec -t without -i allocates a real pty with no stdin attached at all.
+# The ssh backend keeps script(1): it targets real clusters, which run 9.1.x.
 ptyrun() {
   local body="$1" f="$JOB_HOME/e2e-07.sh"
   printf '#!/bin/bash\n%s\n' "$body" > /tmp/e2e-07.sh
   put_job /tmp/e2e-07.sh "$f"
-  # Invoke via bash so the copied file needs no execute bit, under script(1) so
-  # the session gets a real pty.
-  node_sh "$MASTER" "script -qec 'su - $JOB_USER -c \"bash $f\"' /dev/null" 2>&1 | tr -d '\r'
+  # Invoke via bash so the copied file needs no execute bit.
+  case "$BACKEND" in
+    docker) docker exec -t "$MASTER" su - "$JOB_USER" -c "bash $f" 2>&1 | tr -d '\r' ;;
+    *)      node_sh "$MASTER" "script -qec 'su - $JOB_USER -c \"bash $f\"' /dev/null" 2>&1 | tr -d '\r' ;;
+  esac
 }
 
 # (1) A real session: pty, the SLURM_* environment, and the invocation dir.
