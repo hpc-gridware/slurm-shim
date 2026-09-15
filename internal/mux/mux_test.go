@@ -88,3 +88,55 @@ var _ = Describe("Output demux [REQ-RUN-020]", func() {
 		Expect(buf.String()).To(Equal("partial\n"))
 	})
 })
+
+// writeRecorder records the byte slice of every Write call separately, so a spec
+// can assert how many calls a line cost rather than only what was written.
+type writeRecorder struct{ writes [][]byte }
+
+func (w *writeRecorder) Write(p []byte) (int, error) {
+	w.writes = append(w.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+var _ = Describe("Output demux write atomicity [REQ-RUN-020]", func() {
+	// A job script may background several srun steps that all inherited the same
+	// stdout; Ray's head-plus-workers recipe does exactly that. The Demux mutex
+	// orders writes within ONE srun process and can do nothing about another one,
+	// so a line split across several Write calls lets a concurrent srun insert its
+	// own line between the payload and the newline. Observed on a four-node GCP
+	// cluster: two workers' lines arrived concatenated, and a line count saw three
+	// steps as two. One Write per frame is what keeps concurrent steps apart.
+	frame := func(rank uint32, payload string, eol bool) proto.Frame {
+		f := proto.Frame{Type: proto.FrameOut, Rank: rank, Payload: []byte(payload)}
+		if eol {
+			f.Flags |= proto.FlagEOL
+		}
+		return f
+	}
+
+	It("writes a complete line in exactly one call", func() {
+		rec := &writeRecorder{}
+		d := mux.NewDemux(rec, rec, false)
+		Expect(d.Handle(frame(0, "RAYWORKER on node001", true))).To(Succeed())
+		Expect(rec.writes).To(HaveLen(1))
+		Expect(string(rec.writes[0])).To(Equal("RAYWORKER on node001\n"))
+	})
+
+	It("writes a labelled line in exactly one call", func() {
+		rec := &writeRecorder{}
+		d := mux.NewDemux(rec, rec, true)
+		Expect(d.Handle(frame(3, "hello", true))).To(Succeed())
+		Expect(rec.writes).To(HaveLen(1))
+		Expect(string(rec.writes[0])).To(Equal("3: hello\n"))
+	})
+
+	It("writes a continuation chunk in exactly one call", func() {
+		rec := &writeRecorder{}
+		d := mux.NewDemux(rec, rec, true)
+		Expect(d.Handle(frame(1, "part", false))).To(Succeed())
+		Expect(d.Handle(frame(1, "rest", true))).To(Succeed())
+		Expect(rec.writes).To(HaveLen(2))
+		Expect(string(rec.writes[0])).To(Equal("1: part"))
+		Expect(string(rec.writes[1])).To(Equal("rest\n"), "a continuation is not re-labelled")
+	})
+})

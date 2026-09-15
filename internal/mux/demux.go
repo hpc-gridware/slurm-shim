@@ -50,22 +50,31 @@ func (d *Demux) Handle(f proto.Frame) error {
 		w = d.stderr
 	}
 
+	// ONE Write per frame: label, payload and newline are assembled first and
+	// issued as a single call. The mutex above only orders writes within THIS
+	// process, and a job script may background several srun steps that all
+	// inherited the same stdout -- which is exactly what Ray's head-plus-workers
+	// recipe does. Emitting a line in two or three writes lets another srun slip
+	// its own line in between the payload and the newline, so two ranks' lines end
+	// up concatenated on one line. That was observed on a four-node GCP cluster
+	// (2026-09-15): a worker on one host and a worker on another shared a line,
+	// and anything counting lines saw three steps as two. Concurrent sruns share
+	// one file description, so a single write per line is what keeps them apart.
+	line := make([]byte, 0, len(f.Payload)+16)
 	if d.label && !d.midline[k] {
-		if _, err := io.WriteString(w, strconv.FormatUint(uint64(f.Rank), 10)+": "); err != nil {
-			return err
-		}
+		line = append(line, strconv.FormatUint(uint64(f.Rank), 10)...)
+		line = append(line, ':', ' ')
 	}
-	if _, err := w.Write(f.Payload); err != nil {
-		return err
-	}
+	line = append(line, f.Payload...)
 
 	if f.Flags&proto.FlagEOL != 0 {
-		if _, err := io.WriteString(w, "\n"); err != nil {
-			return err
-		}
+		line = append(line, '\n')
 		d.midline[k] = false
 	} else {
 		d.midline[k] = true
+	}
+	if _, err := w.Write(line); err != nil {
+		return err
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
@@ -73,11 +74,36 @@ func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr
 		rows = filterByJob(rows, opt.jobID)
 	}
 
+	// The node columns need a second view: plain qstat -xml carries only the
+	// MASTER queue instance, so a multi-node job reads as one node. Only ask for
+	// it when the requested format actually has a node column, and never fail the
+	// listing over it -- a supplementary query is not worth a non-zero exit.
+	v := view{cfg: cfg, now: time.Now()}
+	if needsHosts(opt.format) {
+		h, err := gedata.JobHosts(context.Background(), runner, opt.jobID)
+		if err != nil {
+			fmt.Fprintf(stderr, "squeue: warning: node list unavailable: %v\n", err)
+		} else {
+			v.hosts = h
+		}
+	}
+
 	if !opt.noHeader {
 		fmt.Fprintln(stdout, formatHeader(opt.format))
 	}
+	var guessed []string
 	for _, r := range rows {
-		fmt.Fprintln(stdout, formatRow(opt.format, r, cfg))
+		if v.degraded(r) {
+			guessed = append(guessed, r.Key())
+		}
+		fmt.Fprintln(stdout, v.formatRow(opt.format, r))
+	}
+	// A guessed allocation reads exactly like a correct single-node one, so say so
+	// on stderr. Without this the only failure signal is the shape of the answer,
+	// which is the same shape a real single-node job has.
+	if len(guessed) > 0 && needsHosts(opt.format) {
+		fmt.Fprintf(stderr, "squeue: warning: no granted host list for %s; showing the master host only\n",
+			strings.Join(guessed, ","))
 	}
 	return 0
 }
