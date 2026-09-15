@@ -121,6 +121,10 @@ func assemble(qctx context.Context, res *Result, e envReader, cfg *config.Config
 	res.Layout = lay
 
 	res.Exports = buildTableA(e, cfg, nodes, geom, lay, id, hasTask, taskID)
+	// Clear any inherited device mask before the batch export sets ours. The
+	// preamble is rendered before the exports, so removing the variable we are
+	// about to write is harmless and removing the other vendor's is the point.
+	res.Unset = append(res.Unset, batchDeviceUnsets(cfg, lay.Nodes[0].GPUs)...)
 
 	if !uniform(geom.PerNode) {
 		// A10 omitted; warn because Lightning hard-crashes without it (SI-40).

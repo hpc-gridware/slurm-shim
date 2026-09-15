@@ -308,6 +308,22 @@ func buildTableA(e envReader, cfg *config.Config, ns nodeSet, geom plan.TaskGeom
 		if per, ok := uniformGPUCount(lay); ok {
 			add("SLURM_GPUS_PER_NODE", strconv.Itoa(per))
 		}
+		// The device-visibility variable belongs in the BATCH environment too, not
+		// only in a rank's. SLURM sets it for the batch step from the job's
+		// allocation, so a script that uses its GPUs directly -- `python train.py`
+		// under sbatch, with no srun anywhere, which is the ordinary single-node
+		// shape -- sees its granted devices there. Writing it only per rank left
+		// such a script seeing EVERY device on the node, including ones the
+		// scheduler granted to another job. Verified missing on a GCP L4 cluster
+		// (2026-09-15): the batch scope reported cuda=[unset] while the rank under
+		// srun correctly received the granted UUID.
+		//
+		// This is the master node's grant. A step overrides it per rank, and the
+		// stepper removes the inherited value first, so this cannot layer under a
+		// rank mask (REQ-GPU-004).
+		if v, ok := batchDeviceVar(cfg, master.GPUs); ok {
+			add(v.name, v.value)
+		}
 	}
 
 	if lay.Job.MemPerNodeMB > 0 {
@@ -397,3 +413,45 @@ func isNumeric(s string) bool {
 }
 
 func osReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
+
+// batchDeviceVar returns the device-visibility variable to publish in the batch
+// environment, and whether to publish one at all (REQ-GPU-004).
+//
+// Nothing is published under `gpu.isolation: cgroup`: there the kernel confines
+// the job to its devices, so a mask would be redundant and a stale one would be
+// worse than none. Nothing is published for an unusable `gpu.vendor` either --
+// the config layer has already warned, and guessing a variable name is how a job
+// ends up masked to the wrong device.
+func batchDeviceVar(cfg *config.Config, gpus []string) (struct{ name, value string }, bool) {
+	var out struct{ name, value string }
+	if cfg == nil || cfg.GPU.Isolation == "cgroup" {
+		return out, false
+	}
+	write, _, err := cfg.GPU.DeviceVars()
+	if err != nil || write == "" {
+		return out, false
+	}
+	out.name, out.value = write, strings.Join(gpus, ",")
+	return out, true
+}
+
+// batchDeviceUnsets lists the device-visibility variables to remove from the
+// batch environment before the shim writes its own (REQ-GPU-004). The whole set
+// goes, including the one about to be written: an inherited CUDA_VISIBLE_DEVICES
+// must not survive under `gpu.vendor: amd`, where ROCR_VISIBLE_DEVICES filters
+// and renumbers the agent list FIRST and a leftover HIP-level mask then indexes
+// into the already-filtered list and selects the wrong device, silently.
+//
+// Removal, never assignment to empty: an empty value means ZERO devices to CUDA
+// and HIP alike. It is a no-op under cgroup isolation and for a job with no
+// granted devices, matching the rank rule.
+func batchDeviceUnsets(cfg *config.Config, gpus []string) []string {
+	if len(gpus) == 0 || cfg == nil || cfg.GPU.Isolation == "cgroup" {
+		return nil
+	}
+	_, drop, err := cfg.GPU.DeviceVars()
+	if err != nil {
+		return nil
+	}
+	return drop
+}

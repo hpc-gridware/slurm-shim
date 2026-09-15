@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -253,5 +254,76 @@ var _ = Describe("unrecognized granted device ids are reported [REQ-GPU-002]", f
 		Expect(m["SLURM_GPUS_ON_NODE"]).To(Equal("2"))
 		// SLURM documents this as global ids; a UUID map has none, so positions.
 		Expect(m["SLURM_JOB_GPUS"]).To(Equal("0,1"))
+	})
+})
+
+var _ = Describe("batch-scope device visibility [REQ-GPU-004]", func() {
+	// SLURM sets the device-visibility variable for the batch step from the job's
+	// allocation, so `python train.py` under sbatch with no srun anywhere sees its
+	// granted devices. Writing it only per rank left such a script seeing every
+	// device on the node, including ones granted to another job. Found on a GCP L4
+	// cluster (2026-09-15), where the batch scope reported cuda=[unset] while the
+	// rank under srun correctly received the granted UUID.
+	gpuJob := func(cfg *config.Config) *fabricator.Result {
+		return hostfileFab("ocs-worker2 2 all.q@ocs-worker2 0-1\n", nil,
+			xmlResponder("qstat_j_gpu2.xml", nil), cfg)
+	}
+	unsets := func(r *fabricator.Result) []string { return r.Unset }
+
+	It("exports CUDA_VISIBLE_DEVICES for the batch script under the default vendor", func() {
+		m := exportMap(gpuJob(testConfig()))
+		Expect(m).To(HaveKeyWithValue("CUDA_VISIBLE_DEVICES", "0,1"))
+		Expect(m).To(HaveKeyWithValue("SLURM_JOB_GPUS", "0,1"), "the job-level ids are unchanged")
+	})
+
+	It("clears an inherited mask before writing its own", func() {
+		// A value carried in from the submit environment must not survive: it would
+		// name devices this job was not granted.
+		r := gpuJob(testConfig())
+		Expect(unsets(r)).To(ContainElement("CUDA_VISIBLE_DEVICES"))
+		// The preamble is rendered before the exports, so the write still lands.
+		out := r.RenderExports()
+		Expect(strings.Index(out, "unset CUDA_VISIBLE_DEVICES")).
+			To(BeNumerically("<", strings.Index(out, "export CUDA_VISIBLE_DEVICES=")))
+	})
+
+	It("writes ROCR_VISIBLE_DEVICES and removes the NVIDIA names under vendor amd", func() {
+		// On ROCm the HIP-level masks index into the list ROCR_VISIBLE_DEVICES has
+		// already filtered, so a leftover CUDA or HIP mask selects the wrong device
+		// with no error at all.
+		cfg := testConfig()
+		cfg.GPU.Vendor = "amd"
+		r := gpuJob(cfg)
+		Expect(exportMap(r)).To(HaveKeyWithValue("ROCR_VISIBLE_DEVICES", "0,1"))
+		Expect(exportMap(r)).NotTo(HaveKey("CUDA_VISIBLE_DEVICES"))
+		Expect(unsets(r)).To(ContainElements(
+			"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"))
+	})
+
+	It("writes nothing under cgroup isolation, where the kernel is the enforcer", func() {
+		cfg := testConfig()
+		cfg.GPU.Isolation = "cgroup"
+		r := gpuJob(cfg)
+		m := exportMap(r)
+		Expect(m).NotTo(HaveKey("CUDA_VISIBLE_DEVICES"))
+		Expect(m).To(HaveKey("SLURM_JOB_GPUS"), "the job-level ids are still published")
+		Expect(unsets(r)).NotTo(ContainElement("CUDA_VISIBLE_DEVICES"),
+			"removal is a no-op under cgroup isolation")
+	})
+
+	It("writes nothing for a job with no granted devices", func() {
+		// A non-GPU PE: the gpu task policy refuses an allocation with no device.
+		r := hostfileFab("node001 2 all.q@node001\n",
+			map[string]string{"PE": "smp.pe"}, nil, testConfig())
+		Expect(exportMap(r)).NotTo(HaveKey("CUDA_VISIBLE_DEVICES"))
+		Expect(r.Unset).NotTo(ContainElement("HIP_VISIBLE_DEVICES"))
+	})
+
+	It("writes nothing for a vendor it cannot resolve", func() {
+		// config.Load has already warned; guessing a variable name here is how a
+		// job ends up masked to the wrong device.
+		cfg := testConfig()
+		cfg.GPU.Vendor = "intel"
+		Expect(exportMap(gpuJob(cfg))).NotTo(HaveKey("CUDA_VISIBLE_DEVICES"))
 	})
 })
