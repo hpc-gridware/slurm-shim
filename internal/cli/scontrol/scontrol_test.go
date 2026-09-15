@@ -137,6 +137,42 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		Expect(r.Calls[0].Args).To(Equal([]string{"-xml", "-u", "*"}))
 	})
 
+	It("reports every granted host, so it agrees with squeue about the same job", func() {
+		// Before this, the GE path rendered the master queue instance alone, so a
+		// three-node job read as one node here and as three in squeue. Users
+		// cross-check the two commands routinely.
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		r := &fake.Runner{Responder: func(_ string, args []string) fake.Response {
+			for _, a := range args {
+				if a == "-j" {
+					return fake.Response{Stdout: []byte(qstatDetail14)}
+				}
+			}
+			return fake.Response{Stdout: []byte(qstatRunning)}
+		}}
+		var out, errOut bytes.Buffer
+		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker[2,1],ocs-master"))
+		Expect(errOut.String()).To(BeEmpty())
+	})
+
+	It("falls back to the master host and says so when the granted list is missing", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		r := &fake.Runner{Responder: func(_ string, args []string) fake.Response {
+			for _, a := range args {
+				if a == "-j" {
+					return fake.Response{Exit: 1, Stderr: []byte("qmaster unreachable")}
+				}
+			}
+			return fake.Response{Stdout: []byte(qstatRunning)}
+		}}
+		var out, errOut bytes.Buffer
+		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker1"))
+		Expect(errOut.String()).To(ContainSubstring("node list unavailable"))
+		Expect(errOut.String()).To(ContainSubstring("no granted host list for 14"))
+	})
+
 	It("uses GE (not the local layout) when the requested id differs from the in-job layout", func() {
 		tmp := GinkgoT().TempDir()
 		GinkgoT().Setenv("TMPDIR", tmp)
@@ -304,8 +340,13 @@ var _ = Describe("scontrol dry run [SLURM_SHIM_DRY_RUN]", func() {
 			[]string{"show", "job", "4711"}, &out, &errBuf)
 
 		Expect(code).To(Equal(0))
-		Expect(inner.Calls).To(HaveLen(1))
-		Expect(inner.Calls[0].Name).To(Equal("qstat"))
+		// The point is that nothing it runs mutates the cluster, not how many
+		// read-only lookups it makes: show job reads the listing and the granted
+		// host list, and both are qstat.
+		Expect(inner.Calls).NotTo(BeEmpty())
+		for _, c := range inner.Calls {
+			Expect(c.Name).To(Equal("qstat"))
+		}
 		Expect(out.String()).To(ContainSubstring("JobId=4711"))
 	})
 })
@@ -324,3 +365,24 @@ const qstatShowJob = `<?xml version='1.0'?>
     </job_list>
   </queue_info>
 </job_info>`
+
+// qstatDetail14 is the `qstat -xml -j` view of job 14 from qstatRunning: three
+// granted hosts, in a grant order that is deliberately not alphabetical.
+const qstatDetail14 = `<?xml version='1.0'?>
+<detailed_job_info>
+  <djob_info>
+    <element>
+      <JB_job_number>14</JB_job_number>
+      <JB_ja_tasks>
+        <element>
+          <JAT_task_number>1</JAT_task_number>
+          <JAT_granted_destin_identifier_list>
+            <element><JG_qhostname>ocs-worker2</JG_qhostname></element>
+            <element><JG_qhostname>ocs-worker1</JG_qhostname></element>
+            <element><JG_qhostname>ocs-master</JG_qhostname></element>
+          </JAT_granted_destin_identifier_list>
+        </element>
+      </JB_ja_tasks>
+    </element>
+  </djob_info>
+</detailed_job_info>`

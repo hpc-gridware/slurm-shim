@@ -138,7 +138,21 @@ func showJob(runner gedata.Runner, args []string, stdout, stderr io.Writer) int 
 		if r.JobID != base || (task != "" && r.TaskID != task) {
 			continue
 		}
-		return renderGEJob(id, r, stdout)
+		// The plain view carries only the master queue instance, so on its own it
+		// reports a multi-node job as one node. squeue sources the granted hosts
+		// from the detail view; this command must give the same answer for the
+		// same job, because users cross-check the two. A failure here is not worth
+		// failing the record over: fall back to the master host, which is one host
+		// the job really is on, and say on stderr that the rest is missing.
+		hosts, hostErr := gedata.JobHosts(context.Background(), runner, id)
+		if hostErr != nil {
+			fmt.Fprintf(stderr, "scontrol: warning: node list unavailable: %v\n", hostErr)
+		}
+		granted := hosts[r.Key()]
+		if len(granted) == 0 && gedata.MapState(r.State) != "PD" {
+			fmt.Fprintf(stderr, "scontrol: warning: no granted host list for %s; showing the master host only\n", id)
+		}
+		return renderGEJob(id, r, granted, stdout)
 	}
 	fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
 	return 1
@@ -171,10 +185,15 @@ func renderLayoutJob(lay *layout.Layout, stdout io.Writer) int {
 }
 
 // renderGEJob renders the minimal record available from `qstat -xml`: the master
-// queue instance gives the partition (queue) and node; a pending job has none.
-func renderGEJob(id string, r gedata.JobRow, stdout io.Writer) int {
+// queue instance gives the partition (queue), and granted gives every host the
+// job holds, in the scheduler's grant order (never sorted, REQ-ENC-002 / SI-41).
+// A pending job has neither.
+func renderGEJob(id string, r gedata.JobRow, granted []string, stdout io.Writer) int {
 	queue, host, _ := strings.Cut(r.Queue, "@")
-	nodelist := host
+	nodelist := encoders.CompressNodelist(granted)
+	if nodelist == "" {
+		nodelist = host
+	}
 	if nodelist == "" {
 		nodelist = "(null)" // not yet scheduled onto a node
 	}

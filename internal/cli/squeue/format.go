@@ -1,11 +1,14 @@
 package squeue
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
@@ -75,8 +78,78 @@ func formatHeader(format string) string {
 	return render(tokenize(format), headerTitle)
 }
 
-func formatRow(format string, row gedata.JobRow, cfg *config.Config) string {
-	return render(tokenize(format), func(v byte) string { return rowValue(v, row, cfg) })
+// view is everything a row needs beyond the row itself: the config, the granted
+// host lists keyed by gedata.JobKey, and one clock reading shared by every row so
+// a long listing cannot show two different elapsed times for the same instant.
+// It is a struct rather than more positional parameters because every column
+// datum added so far has widened both the renderer and its call sites.
+type view struct {
+	cfg   *config.Config
+	hosts map[string][]string
+	now   time.Time
+}
+
+func (v view) formatRow(format string, row gedata.JobRow) string {
+	return render(tokenize(format), func(b byte) string { return v.rowValue(b, row) })
+}
+
+// hostVerbs are the format verbs whose value comes from the granted host list.
+// needsHosts gates the supplementary query on this set and rowValue reads the
+// hosts for exactly these verbs; format_test.go asserts the two agree, so a new
+// node column cannot be added to one without the other and end up always empty.
+var hostVerbs = []byte{'D', 'N', 'R'}
+
+// needsHosts reports whether a format asks for a column that requires the node
+// list, so squeue can skip the supplementary qstat when it does not.
+func needsHosts(format string) bool {
+	for _, t := range tokenize(format) {
+		if t.isField && bytes.IndexByte(hostVerbs, t.verb) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// started reports whether a job holds an allocation and has a running clock.
+// Grid Engine records a start time, and keeps the granted hosts, for states SLURM
+// calls SUSPENDED and COMPLETING as well as RUNNING -- and a site that implements
+// preemption with subordinate queues suspends jobs as a matter of routine, so
+// gating on RUNNING alone would make the normal appearance of a normal cluster
+// read as "never started, nowhere".
+func started(row gedata.JobRow) bool {
+	switch gedata.MapState(row.State) {
+	case "R", "S", "CG":
+		return true
+	}
+	return false
+}
+
+// hostsFor returns the hosts to render for a row. A job that has not started has
+// no allocation and gets none. For a started job whose hosts are missing -- the
+// supplementary query failed, or the job started between the two queries -- it
+// falls back to the master queue instance, which is one host the job really is
+// on. That single host is then the source for every node column of the row, so
+// the count and the list cannot contradict each other; degraded says when it
+// happened, and squeue reports it.
+func (v view) hostsFor(row gedata.JobRow) []string {
+	if h := v.hosts[row.Key()]; len(h) > 0 {
+		return h
+	}
+	if !started(row) {
+		return nil
+	}
+	if host := hostOf(row.Queue); host != "" {
+		return []string{host}
+	}
+	return nil
+}
+
+// degraded reports whether a started row's allocation had to be guessed because
+// the host map carried nothing for it. The guess is indistinguishable in stdout
+// from a correct single-node answer, so the caller warns on stderr instead of
+// letting it pass as fact.
+func (v view) degraded(row gedata.JobRow) bool {
+	return started(row) && len(v.hosts[row.Key()]) == 0
 }
 
 func headerTitle(verb byte) string {
@@ -108,15 +181,12 @@ func headerTitle(verb byte) string {
 	}
 }
 
-func rowValue(verb byte, row gedata.JobRow, cfg *config.Config) string {
+func (v view) rowValue(verb byte, row gedata.JobRow) string {
 	switch verb {
 	case 'i':
-		if row.TaskID != "" {
-			return row.JobID + "_" + row.TaskID
-		}
-		return row.JobID
+		return row.Key()
 	case 'P':
-		return partition(row.Queue, cfg)
+		return partition(row.Queue, v.cfg)
 	case 'j':
 		return row.Name
 	case 'u':
@@ -126,20 +196,69 @@ func rowValue(verb byte, row gedata.JobRow, cfg *config.Config) string {
 	case 'T':
 		return gedata.FullState(gedata.MapState(row.State))
 	case 'M':
-		return "0:00" // elapsed time is not carried in qstat -xml; placeholder
+		return squeueElapsed(row, v.now)
 	case 'D':
-		return "1" // node count requires a GE query the shim does not make here
-	case 'R':
-		if gedata.MapState(row.State) == "R" {
-			return hostOf(row.Queue)
+		if hosts := v.hostsFor(row); len(hosts) > 0 {
+			return strconv.Itoa(len(hosts))
 		}
-		return "(None)"
+		// A job that has not started holds no nodes. SLURM shows the node count it
+		// was asked for; the shim pins that count at submit only on clusters that
+		// support it, and qstat does not report it back, so 1 is the honest floor
+		// rather than a derived figure.
+		return "1"
+	case 'R':
+		if !started(row) {
+			// SLURM puts the scheduler's reason here for a job that is not running.
+			// Grid Engine's reason lives in a separate query this command does not
+			// make, so the column says only that there is no allocation to name.
+			return "(None)"
+		}
+		return nodelist(v.hostsFor(row))
 	case 'C':
 		return strconv.Itoa(row.Slots)
 	case 'N':
-		return hostOf(row.Queue)
+		return nodelist(v.hostsFor(row))
 	default:
 		return ""
+	}
+}
+
+// nodelist renders the hosts holding a job, compressed the way
+// SLURM_JOB_NODELIST is. The order is the scheduler's grant order and is never
+// sorted: REQ-ENC-002 as amended by SI-41 removed the sort option precisely
+// because a sorted encoding desynchronises a derived master address from rank-0
+// placement. The slice belongs to the caller's map, so this must not reorder it
+// in place either.
+func nodelist(hosts []string) string {
+	if len(hosts) == 0 {
+		return ""
+	}
+	return encoders.CompressNodelist(hosts)
+}
+
+// squeueElapsed is the TIME column: how long a job has been running. SLURM shows
+// 0:00 until a job starts, and squeue's own format is more compact than sacct's
+// (no leading zero on the hour, and no hour at all below one).
+func squeueElapsed(row gedata.JobRow, now time.Time) string {
+	if row.Start.IsZero() || !started(row) {
+		return "0:00"
+	}
+	d := now.Sub(row.Start)
+	if d < 0 {
+		d = 0
+	}
+	total := int64(d / time.Second)
+	days := total / 86400
+	h := (total % 86400) / 3600
+	m := (total % 3600) / 60
+	sec := total % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%d-%02d:%02d:%02d", days, h, m, sec)
+	case h > 0:
+		return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
+	default:
+		return fmt.Sprintf("%d:%02d", m, sec)
 	}
 }
 

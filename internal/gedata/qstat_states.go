@@ -21,6 +21,19 @@ type JobRow struct {
 	Submit time.Time
 }
 
+// Key is the id squeue renders for this row and the key JobHosts maps by.
+func (r JobRow) Key() string { return JobKey(r.JobID, r.TaskID) }
+
+// JobKey builds that id: the job id on its own, or "<job>_<task>" for one
+// element of an array. Producer and consumer of the host map both call it, so
+// the two cannot drift into a silent lookup miss.
+func JobKey(jobID, taskID string) string {
+	if taskID != "" {
+		return jobID + "_" + taskID
+	}
+	return jobID
+}
+
 // MapState maps a GE state code to a SLURM compact state (REQ-SQU-001, SI-05).
 // Order matters: deletion and error prefixes take precedence over the run/queue
 // letters they may accompany.
