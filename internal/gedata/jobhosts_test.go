@@ -78,42 +78,61 @@ var _ = Describe("granted exec hosts per job [REQ-SQU-002]", func() {
 		Expect(parse("qstat_j_two_queues_one_host.xml")["149"]).To(ConsistOf("ocs-worker2"))
 	})
 
-	It("uses the queue instance's host, not a resolved FQDN", func() {
-		// Caught by the e2e suite on a GCP cluster: JG_qhostname carried the fully
-		// qualified name while the queue instance, PE_HOSTFILE and therefore the
-		// job's own SLURM_JOB_NODELIST all used the short one. squeue named hosts
-		// the job never refers to. The two fields agree on a short-name cluster,
-		// so only a fixture with them deliberately disagreeing can pin this.
-		mixedForms := []byte(`<?xml version='1.0'?>
+	It("reduces a fully qualified granted host to the short name", func() {
+		// Caught by the e2e suite on a GCP cluster, where Grid Engine had
+		// registered its hosts by fully qualified name: BOTH JG_qhostname and the
+		// queue instance read the long form, while the job's own
+		// SLURM_JOB_NODELIST read the short one, because the layout reduces every
+		// PE_HOSTFILE host. squeue named hosts in a form the job never uses.
+		fqdnGrant := []byte(`<?xml version='1.0'?>
 <detailed_job_info><djob_info><element>
   <JB_job_number>31</JB_job_number>
   <JB_ja_tasks><element>
     <JAT_task_number>1</JAT_task_number>
     <JAT_granted_destin_identifier_list>
       <element>
-        <JG_qname>all.q@shimval-g1</JG_qname>
+        <JG_qname>all.q@shimval-g1.us-central1-b.c.example.internal</JG_qname>
         <JG_qhostname>shimval-g1.us-central1-b.c.example.internal</JG_qhostname>
       </element>
     </JAT_granted_destin_identifier_list>
   </element></JB_ja_tasks>
 </element></djob_info></detailed_job_info>`)
-		hosts, err := gedata.ParseJobHostsXML(mixedForms)
+		hosts, err := gedata.ParseJobHostsXML(fqdnGrant)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(hosts["31"]).To(Equal([]string{"shimval-g1"}))
 	})
 
-	It("falls back to the hostname field when there is no queue instance", func() {
-		noInstance := []byte(`<?xml version='1.0'?>
+	It("counts one host when two queues on it differ only past the domain", func() {
+		// Shortening must happen BEFORE de-duplication, or the same node arrives
+		// twice and the node count is wrong.
+		mixed := []byte(`<?xml version='1.0'?>
+<detailed_job_info><djob_info><element>
+  <JB_job_number>33</JB_job_number>
+  <JB_ja_tasks><element>
+    <JAT_task_number>1</JAT_task_number>
+    <JAT_granted_destin_identifier_list>
+      <element><JG_qhostname>node001.example.internal</JG_qhostname></element>
+      <element><JG_qhostname>node001</JG_qhostname></element>
+    </JAT_granted_destin_identifier_list>
+  </element></JB_ja_tasks>
+</element></djob_info></detailed_job_info>`)
+		hosts, err := gedata.ParseJobHostsXML(mixed)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(hosts["33"]).To(Equal([]string{"node001"}))
+	})
+
+	It("falls back to the queue instance when there is no hostname field", func() {
+		noHostname := []byte(`<?xml version='1.0'?>
 <detailed_job_info><djob_info><element>
   <JB_job_number>32</JB_job_number>
   <JB_ja_tasks><element>
     <JAT_task_number>1</JAT_task_number>
     <JAT_granted_destin_identifier_list>
-      <element><JG_qhostname>node001</JG_qhostname></element>
+      <element><JG_qname>all.q@node001.example.internal</JG_qname></element>
     </JAT_granted_destin_identifier_list>
   </element></JB_ja_tasks>
 </element></djob_info></detailed_job_info>`)
-		hosts, err := gedata.ParseJobHostsXML(noInstance)
+		hosts, err := gedata.ParseJobHostsXML(noHostname)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(hosts["32"]).To(Equal([]string{"node001"}))
 	})

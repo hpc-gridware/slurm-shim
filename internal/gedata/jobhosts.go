@@ -13,8 +13,8 @@ import (
 // tasks, in the order the scheduler granted them. Pass a job id to ask about one
 // job, or "" for every job the caller may see.
 //
-// The source is JAT_granted_destin_identifier_list in `qstat -xml -j`, whose
-// JG_qname carries the granted queue instance, host included and untruncated.
+// The source is JAT_granted_destin_identifier_list in `qstat -xml -j`, which
+// names each granted host in JG_qhostname, untruncated.
 //
 // The text view `qstat -g t` was used first and is unusable for this; two ways it
 // yields wrong hosts were reproduced on a live cluster. Its columns are split on
@@ -125,24 +125,22 @@ func ParseJobHostsXML(data []byte) (map[string][]string, error) {
 		for _, task := range job.Tasks {
 			var list []string
 			for _, g := range task.Granted {
-				// The QUEUE INSTANCE is the authoritative name form, not
-				// JG_qhostname. Both name the same machine, but JG_qhostname can
-				// carry the resolved FQDN while the queue instance carries the form
-				// the cluster actually uses everywhere else -- including
-				// PE_HOSTFILE, and therefore SLURM_JOB_NODELIST. Taking the
-				// hostname field made squeue report
-				// "shimval-g1.us-central1-b.c.<project>.internal" for a job whose
-				// own environment said "shimval-g1" (caught by the e2e suite on a
-				// GCP cluster, 2026-09-15). A user deriving a master address from
-				// `scontrol show hostnames "$(squeue -h -o %N -j ID)"` would then
-				// get names the job itself never uses. The two forms are identical
-				// on a short-name cluster, which is why the container fixtures
-				// could not show the difference.
-				host := hostFromQueueInstance(g.QName)
+				// Reduce to the SHORT name. Both JG_qhostname and the queue
+				// instance carry whatever form the cluster stores, and on a site
+				// where Grid Engine registered its hosts by fully qualified name
+				// that is the FQDN -- verified on a GCP cluster (2026-09-15), where
+				// both fields read "shimval-g1.us-central1-b.c.<project>.internal".
+				// The layout reduces every PE_HOSTFILE host the same way (see
+				// splitHostname), so SLURM_JOB_NODELIST is short there. Reporting
+				// the long form here would make squeue name hosts in a form the
+				// job's own environment never uses, and a master address derived
+				// from this column would not match rank 0's host.
+				host := strings.TrimSpace(g.QHostname)
 				if host == "" {
-					// Insurance for output that carries no queue instance.
-					host = strings.TrimSpace(g.QHostname)
+					// Older or partial output may carry only the queue instance.
+					host = hostFromQueueInstance(g.QName)
 				}
+				host, _ = splitHostname(host)
 				if host == "" {
 					continue
 				}
