@@ -56,9 +56,10 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		tokens = ParseDirectives(scriptBytes)
 	}
 	// Directive flags first, command line second so the command line wins.
+	nDirective := len(tokens)
 	tokens = append(tokens, args...)
 
-	opt, warns, err := parseFlags(tokens)
+	opt, warns, err := parseArgs(tokens, nDirective)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1

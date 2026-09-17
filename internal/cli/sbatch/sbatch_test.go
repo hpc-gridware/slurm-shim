@@ -89,6 +89,86 @@ var _ = Describe("quote-aware directive tokenizing [REQ-SBT-001]", func() {
 	It("handles single quotes", func() {
 		Expect(tokenizeDirective("--comment 'hello world' -N 2")).To(Equal([]string{"--comment", "hello world", "-N", "2"}))
 	})
+
+	It("ends a directive at an inline comment, as SLURM does", func() {
+		// The regression: `#SBATCH --ntasks-per-node=1   # one launcher per node`
+		// emitted "#", "one", ... as tokens. The first of them stopped flag
+		// parsing, so every later directive (--gpus-per-node) and every
+		// command-line flag was silently dropped -- the job ran without GPUs.
+		script := "#!/bin/bash\n" +
+			"#SBATCH --nodes=4            # node count\n" +
+			"#SBATCH --ntasks-per-node=1  # one launcher per node\n" +
+			"#SBATCH --gpus-per-node=2    # keep equal to nproc\n" +
+			"#SBATCH --job-name=a#b\n" +
+			"srun x\n"
+		tokens := ParseDirectives([]byte(script))
+		Expect(tokens).To(Equal([]string{"--nodes=4", "--ntasks-per-node=1", "--gpus-per-node=2", "--job-name=a"}))
+
+		opt, _, err := parseFlags(append(tokens, "--nodes=2", "job.sh"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.haveGPUs).To(BeTrue(), "--gpus-per-node survives the comments before it")
+		Expect(opt.gpus).To(Equal(2))
+		Expect(opt.nodes).To(Equal(2), "a command-line flag still overrides the directive")
+	})
+
+	It("consumes the value of an unsupported option inside the directives", func() {
+		// The regression: `#SBATCH --qos normal` made "normal" the job script, so
+		// every later directive and every command-line flag became a script
+		// argument. A directive block holds no script, so a bare word after an
+		// unsupported option can only be that option's value.
+		dirs := []string{"--qos", "normal", "-q", "high", "--comment", "run #3", "--gpus-per-node=2"}
+		opt, warns, err := parseArgs(append(dirs, "--nodes=2", "job.sh", "a1"), len(dirs))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.script).To(Equal("job.sh"))
+		Expect(opt.scriptArgs).To(Equal([]string{"a1"}))
+		Expect(opt.haveGPUs).To(BeTrue())
+		Expect(opt.gpus).To(Equal(2))
+		Expect(opt.nodes).To(Equal(2))
+		Expect(warns).To(ContainElements(
+			ContainSubstring("--qos"), ContainSubstring("-q"), ContainSubstring("--comment")))
+	})
+
+	It("never takes a command-line token as a directive's value", func() {
+		dirs := []string{"--some-boolean"}
+		opt, _, err := parseArgs(append(dirs, "job.sh"), len(dirs))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.script).To(Equal("job.sh"))
+	})
+
+	It("does not consume an option as an unsupported option's value", func() {
+		dirs := []string{"--hold", "-N", "3"}
+		opt, _, err := parseArgs(append(dirs, "job.sh"), len(dirs))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.nodes).To(Equal(3))
+		Expect(opt.script).To(Equal("job.sh"))
+	})
+
+	It("refuses a stray word in the directives instead of running it as the script", func() {
+		dirs := []string{"-N", "2", "extra", "--gpus-per-node=2"}
+		_, _, err := parseArgs(append(dirs, "job.sh"), len(dirs))
+		Expect(err).To(MatchError(ContainSubstring(`"extra"`)))
+		Expect(err).To(MatchError(ContainSubstring("--name=value")))
+	})
+
+	It("names heterogeneous-job separators instead of calling them stray", func() {
+		dirs := []string{"-N", "1", "hetjob", "-N", "2"}
+		_, _, err := parseArgs(append(dirs, "job.sh"), len(dirs))
+		Expect(err).To(MatchError(ContainSubstring("heterogeneous jobs (#SBATCH hetjob) are not supported")))
+	})
+
+	It("keeps the command line's own rules: its first bare word is the script", func() {
+		opt, warns, err := parseFlags([]string{"--some-flag", "job.sh", "arg"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.script).To(Equal("job.sh"))
+		Expect(opt.scriptArgs).To(Equal([]string{"arg"}))
+		Expect(warns).To(HaveLen(1))
+	})
+
+	It("keeps a quoted or escaped # as part of the value", func() {
+		Expect(tokenizeDirective(`--comment "run #3" --job-name=x\#1 # trailing`)).
+			To(Equal([]string{"--comment", "run #3", "--job-name=x#1"}))
+		Expect(tokenizeDirective("--comment='#tag'")).To(Equal([]string{"--comment=#tag"}))
+	})
 })
 
 var _ = Describe("wrapper shell escaping [REQ-SBT-004]", func() {

@@ -39,11 +39,18 @@ func ParseDirectives(script []byte) []string {
 // single and double quotes so a value with spaces (e.g. --job-name="my job")
 // stays one token. Quotes are removed from the emitted token. Backslash escapes
 // the next character outside single quotes.
+//
+// An unquoted, unescaped '#' starts a comment that runs to the end of the line,
+// as in SLURM's own directive parser: `#SBATCH -N 4   # node count` is common in
+// site templates. Emitting the comment's words as tokens was worse than noise --
+// the first of them is a positional argument, which ends flag parsing, so every
+// later directive and every command-line flag was silently dropped.
 func tokenizeDirective(s string) []string {
 	var tokens []string
 	var cur strings.Builder
 	inWord := false
 	var quote byte // 0, '\'' or '"'
+scan:
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
@@ -57,6 +64,8 @@ func tokenizeDirective(s string) []string {
 				cur.WriteByte(c)
 			}
 			inWord = true
+		case c == '#':
+			break scan
 		case c == '\'' || c == '"':
 			quote = c
 			inWord = true

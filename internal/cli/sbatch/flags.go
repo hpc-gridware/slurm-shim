@@ -153,11 +153,29 @@ var containerValueFlags = map[string]bool{
 	"container-entrypoint": true, "container-mount-home": true,
 }
 
-// parseFlags folds option tokens (from #SBATCH directives and/or the command
-// line) into options, returning warnings for unknown flags. The first non-flag
-// token is the job script; the rest are its arguments. Command-line tokens
-// should follow directive tokens so the command line wins on conflicts.
+// parseFlags folds command-line tokens into options, returning warnings for
+// unknown flags. The first non-flag token is the job script; the rest are its
+// arguments.
 func parseFlags(tokens []string) (options, []string, error) {
+	return parseArgs(tokens, 0)
+}
+
+// parseArgs is parseFlags for #SBATCH directive tokens followed by command-line
+// tokens: the first nDirective tokens come from directives, the rest from the
+// command line, which therefore wins on conflicts.
+//
+// A directive block never holds the job script, so two rules apply inside it
+// that cannot apply on the command line:
+//
+//   - A bare word after an unsupported option is that option's value
+//     (`#SBATCH --qos normal`), and is consumed with it.
+//   - Any other bare word is an error. Treating it as the script, as the
+//     command-line rules would, made every later directive and every
+//     command-line flag a script argument -- a job submitted without its GPU
+//     request, with nothing but an "unknown directive" warning to show for it.
+//
+// A directive's value is never taken from the command-line tokens.
+func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 	var opt options
 	var warns []string
 	warned := map[string]bool{}
@@ -170,10 +188,23 @@ func parseFlags(tokens []string) (options, []string, error) {
 		}
 		return "", false
 	}
+	// skipDirectiveValue consumes the bare word after an unsupported option when
+	// both come from the directives.
+	skipDirectiveValue := func() {
+		if i+1 < nDirective && !strings.HasPrefix(tokens[i+1], "-") {
+			i++
+		}
+	}
 
 	for ; i < len(tokens); i++ {
 		tok := tokens[i]
 		switch {
+		case i < nDirective && (tok == "-" || !strings.HasPrefix(tok, "-")):
+			if strings.EqualFold(tok, "hetjob") || strings.EqualFold(tok, "packjob") {
+				return opt, warns, fmt.Errorf("sbatch: error: heterogeneous jobs (#SBATCH %s) are not supported", tok)
+			}
+			return opt, warns, fmt.Errorf("sbatch: error: #SBATCH directives contain the stray word %q; "+
+				"write each option as --name=value", tok)
 		case opt.script != "":
 			opt.scriptArgs = append(opt.scriptArgs, tok)
 		case strings.HasPrefix(tok, "--"):
@@ -197,8 +228,12 @@ func parseFlags(tokens []string) (options, []string, error) {
 				// Other unknown space-form flags cannot have their arity inferred
 				// without the SLURM flag table (REQ-RUN-005, deferred) - clearml
 				// templates use the = form, avoiding the ambiguity.
-				if !hasVal && containerValueFlags[name] {
+				switch {
+				case hasVal:
+				case containerValueFlags[name]:
 					_, _ = next()
+				case i < nDirective:
+					skipDirectiveValue()
 				}
 				continue
 			}
@@ -230,6 +265,9 @@ func parseFlags(tokens []string) (options, []string, error) {
 				if !warned[string(flag)] {
 					warns = append(warns, "unknown directive -"+string(flag)+" ignored")
 					warned[string(flag)] = true
+				}
+				if len(tok) == 2 && i < nDirective {
+					skipDirectiveValue()
 				}
 				continue
 			}

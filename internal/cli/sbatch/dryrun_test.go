@@ -507,3 +507,32 @@ var _ = Describe("the dry run reports a pinned allocation rule [REQ-SBT-006] [RE
 		Expect(r.stderr).To(ContainSubstring("not enforced on partition \"batch\""))
 	})
 })
+
+var _ = Describe("directives the shim does not support [REQ-SBT-001]", func() {
+	write := func(body string) string {
+		p := filepath.Join(GinkgoT().TempDir(), "job.sh")
+		Expect(os.WriteFile(p, []byte(body), 0o600)).To(Succeed())
+		return p
+	}
+
+	It("keeps every directive after an unsupported option with a separate value", func() {
+		// Reproduced on a live cluster before the fix: the dry run reported the
+		// script as "normal", dropped --gpus-per-node, and exited 0.
+		script := write("#!/bin/bash\n#SBATCH --qos normal\n#SBATCH -N 2  # two nodes\n#SBATCH --gpus-per-node=2\nsrun x\n")
+		r := dryRunSbatch(&fake.Runner{}, "-p", "gpu", script)
+
+		Expect(r.code).To(Equal(0), r.stderr)
+		Expect(r.stderr).To(ContainSubstring("gpu=2"))
+		Expect(r.stderr).To(ContainSubstring("unknown directive --qos ignored"))
+		Expect(r.stderr).NotTo(ContainSubstring("normal"))
+	})
+
+	It("refuses a stray word in a directive, also in a dry run", func() {
+		script := write("#!/bin/bash\n#SBATCH -N 2 two\n#SBATCH --gpus-per-node=2\nsrun x\n")
+		r := dryRunSbatch(&fake.Runner{}, "-p", "gpu", script)
+
+		Expect(r.code).To(Equal(1))
+		Expect(r.stderr).To(ContainSubstring(`"two"`))
+		Expect(r.stderr).NotTo(ContainSubstring("qsub -terse"))
+	})
+})
