@@ -8,17 +8,52 @@ Submit any of these with the shim's `sbatch` (or plain `qsub`) inside a Grid
 Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 `scancel`, `scontrol`, `sinfo`) are on `PATH`.
 
-| Recipe | Stack | Pattern |
-|--------|-------|---------|
-| [`lightning/`](lightning/) | PyTorch Lightning (multi-node DDP) | `srun python train.py`; Lightning's `SLURMEnvironment` self-configures from the shim's env |
-| [`deepspeed/`](deepspeed/) | DeepSpeed (and any torch.distributed trainer) | `srun --ntasks-per-node=1 torchrun` per node |
-| [`ray/`](ray/) | Ray (Train / Tune / Serve, vLLM multi-node) | `srun` bootstraps a Ray head + workers |
-| [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling |
-| [`submitit/`](submitit/) | submitit (submit Python functions, arrays) | `sbatch`/`sacct`/`srun`; 0-based arrays, result-pickle tracking |
-| [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` |
-| [`hydra/`](hydra/) | Hydra (`--multirun` sweeps) | `hydra/launcher: submitit_slurm` -> one cluster job per sweep config; no code changes |
-| [`jax/`](jax/) | JAX (multi-process, multi-node) | `srun python train.py`; `jax.distributed.initialize()` auto-detects from five `SLURM_*` vars -- no PMI, no glue |
-| [`flax/`](flax/) | Flax (data-parallel training, multi-node) | same auto-detect, then one global `jax.sharding` mesh over every process's devices; gradients all-reduce across nodes |
+| Recipe | Stack | Pattern | GPU (verified on L4) |
+|--------|-------|---------|----------------------|
+| [`gpu-check/`](gpu-check/) | any GPU site | one line per rank: the GPUs granted vs. the GPUs reachable | ✅ [`gpu-check.sh`](gpu-check/gpu-check.sh) |
+| [`torchrun/`](torchrun/) | PyTorch (`torchrun`, NCCL, multi-node) | `srun --ntasks-per-node=1 torchrun`, one worker per GPU | ✅ [`torchrun-gpu.sh`](torchrun/torchrun-gpu.sh) |
+| [`lightning/`](lightning/) | PyTorch Lightning (multi-node DDP) | `srun python train.py`; Lightning's `SLURMEnvironment` self-configures from the shim's env | |
+| [`deepspeed/`](deepspeed/) | DeepSpeed (and any torch.distributed trainer) | `srun --ntasks-per-node=1 torchrun` per node | |
+| [`ray/`](ray/) | Ray (Train / Tune / Serve, vLLM multi-node) | `srun` bootstraps a Ray head + workers | |
+| [`clearml/`](clearml/) | clearml-agent (SLURM mode) | site `#SBATCH` template -> `sbatch` -> `squeue` polling | |
+| [`submitit/`](submitit/) | submitit (submit Python functions, arrays) | `sbatch`/`sacct`/`srun`; 0-based arrays, result-pickle tracking | |
+| [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` | |
+| [`hydra/`](hydra/) | Hydra (`--multirun` sweeps) | `hydra/launcher: submitit_slurm` -> one cluster job per sweep config; no code changes | |
+| [`jax/`](jax/) | JAX (multi-process, multi-node) | `srun python train.py`; `jax.distributed.initialize()` auto-detects from five `SLURM_*` vars -- no PMI, no glue | ✅ [`jax-gpu-check.sh`](jax/jax-gpu-check.sh) |
+| [`flax/`](flax/) | Flax (data-parallel training, multi-node) | same auto-detect, then one global `jax.sharding` mesh over every process's devices; gradients all-reduce across nodes | |
+
+A ✅ marks a GPU job that ran on real NVIDIA L4 nodes. Every other validation
+run recorded in these recipes was on the CPU test cluster.
+
+## GPU jobs
+
+The GPU examples above ran on 4 nodes with 1 and with 2 NVIDIA L4 each, on
+Rocky Linux 9 with Open Cluster Scheduler 9.1.5, torch 2.6.0+cu124,
+NCCL 2.21.5 and JAX 0.4.30.
+
+**What the site needs:**
+
+- **A GPU partition** backed by an RSMAP complex with `consumable HOST`
+  (`qconf -sc`). A per-slot `YES` complex multiplies the request by the slot
+  count, and the job never starts.
+- **One RSMAP id per device**, preferably the device UUID
+  ([Configuration](../../README.md#configuration)).
+- **A memory complex that does not cap address space.** It must never be
+  `h_vmem`, which kills CUDA at start-up ([Memory requests](../../README.md#memory-requests)).
+- **The same Python environment** at the same path on every node.
+- **Network:** the shim's port ranges, plus TCP between compute nodes for NCCL
+  ([Networking](../../README.md#networking-firewalled-clusters)).
+
+**How to request GPUs:** use `#SBATCH --gpus-per-node=N`, which means N per node.
+How many GPUs each task sees is covered in
+[Pick the right GPU-visibility model](#2-pick-the-right-gpu-visibility-model).
+
+**Where to start:** run [`gpu-check/`](gpu-check/) first, then [`torchrun/`](torchrun/).
+
+**The source line:** the GPU scripts do not source the shim's hook. They rely
+on the queue `starter_method` that `slurm-shim install --apply` sets up. On a
+site without one, add `. "$SGE_ROOT/slurm-shim/etc/slurm-shim-source-hook.sh"`
+as the first command, or enable `wrapper_mode`.
 
 ## The one thing to understand first
 

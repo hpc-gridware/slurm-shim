@@ -86,14 +86,19 @@ real installer against the Docker test cluster.
 #SBATCH --partition=gpu           # mapped to a GE queue + PE + slot count
 #SBATCH --nodes=4                 # feeds the slot count; GE's PE places the nodes
 #SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=8         # -> qsub -l gpu=8 (RSMAP complex, per node)
 #SBATCH --cpus-per-task=8
-# #SBATCH --gpus-per-node / --mem / --time / --array / --dependency ARE translated
-# (see the matrix); GPUs need a GPU-configured partition/PE with an RSMAP complex.
+# --mem / --time / --array / --dependency are translated too (see the matrix).
 
-srun torchrun --nnodes=4 --nproc-per-node=8 train.py
+head=$(scontrol show hostnames | head -n1)
+port=${MASTER_PORT:-$((20000 + SLURM_JOB_ID * 31 % 10000))}   # private to this job
+srun --ntasks-per-node=1 torchrun --nnodes=4 --nproc-per-node=8 \
+  --rdzv-id=$SLURM_JOB_ID --rdzv-backend=c10d --rdzv-endpoint=$head:$port train.py
 ```
 
-`sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE hook fabricates the `SLURM_*` variables and the queue's `starter_method` sources them before the script's first line. **The script needs no edit only because `slurm-shim install` wired `starter_method`.** On a site that has not, a job script must source `$SGE_ROOT/slurm-shim/etc/slurm-shim-source-hook.sh` itself, or the site enables `wrapper_mode` (see [Configuration](#configuration)); the recipes under [`docs/recipes/`](docs/recipes/) carry that line so they run either way.
+A runnable version, verified on multi-node NVIDIA L4, is in [`docs/recipes/torchrun/`](docs/recipes/torchrun/).
+
+`sbatch` maps this to `qsub -terse -q <queue> -pe <pe> <slots> ...` (partition, job name, output/error, workdir), prints `Submitted batch job <id>`, and at runtime the PE hook fabricates the `SLURM_*` variables and the queue's `starter_method` sources them before the script's first line. **The script needs no edit only because `slurm-shim install` wired `starter_method`.** On a site that has not, a job script must source `$SGE_ROOT/slurm-shim/etc/slurm-shim-source-hook.sh` itself, or the site enables `wrapper_mode` (see [Configuration](#configuration)); most recipes under [`docs/recipes/`](docs/recipes/) carry that line so they run either way, while the GPU examples rely on the starter.
 
 ## Try it without a cluster
 
@@ -102,7 +107,7 @@ One command stands up a real 3-node Open Cluster Scheduler cluster (in Docker) w
 ```bash
 make cluster-up          # clone quickinstall, boot OCS 9.1.5, install the shim
 make demo                # multi-node srun fan-out (per-rank SLURM_PROCID/nodelist)
-make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES (nvidia default) from a fake RSMAP grant
+make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant (needs cluster-up ARGS=--gpu)
 make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)
 ```
 
@@ -115,6 +120,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - Multi-node PyTorch **DDP/FSDP** via `sbatch` + `srun torchrun` — the core path.
 - Hugging Face **`accelerate launch`** and **torchrun** multi-node (env + `scontrol show hostnames`).
 - **DeepSpeed** and **Ray** (and multi-node vLLM) via the [`docs/recipes/`](docs/recipes/) launch patterns.
+- **GPU examples verified on multi-node NVIDIA L4** -- torchrun/NCCL, JAX, and a per-rank GPU check -- in [`docs/recipes/`](docs/recipes/README.md#gpu-jobs).
 - The full per-rank `SLURM_*` environment, including compressed nodelists and the per-rank device mask from GE RSMAP grants -- `CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`.
 
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
@@ -190,7 +196,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--export` | ✅ | SLURM default `ALL` -> `qsub -V` (full submit env forwarded, so `PATH`/`PYTHON_BIN` reach the job like on SLURM); `NONE` -> nothing; a `VAR=val` list -> `qsub -v` per entry; `ALL,VAR=val` composes. Newline-valued vars are flattened to spaces by GE |
 | `--exclusive` | ❌ | not translated: it means *all of whatever the node has*, and sbatch does not query per-host capacity. Since 9.1.5 the shim does pin slots-per-node per job, so ask for the width explicitly (`--ntasks-per-node=<cores>`), or use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or add an exclusive complex. Warn-and-ignored, with that advice in the warning |
 
-Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
+Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. A value written after such a directive (`#SBATCH --qos normal`) is ignored with it. A word in the directives that belongs to no option is an error, and so is `#SBATCH hetjob`. An unquoted `#` starts a comment, as in SLURM. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
 
 ### `srun` flags
 
@@ -212,7 +218,7 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 | Variable | Status |
 |---|---|
-| `SLURM_JOB_ID` / `SLURM_JOBID` | ✅ |
+| `SLURM_JOB_ID` / `SLURM_JOBID` | ✅ (in an array job every task shares the GE job id; use `SLURM_ARRAY_JOB_ID` + `SLURM_ARRAY_TASK_ID` for a per-task key) |
 | `SLURM_JOB_NODELIST` / `SLURM_NODELIST` | ✅ compressed hostlist (`node[001-003,007]`), PE_HOSTFILE first-seen order (not sorted) |
 | `SLURM_NNODES` / `SLURM_JOB_NUM_NODES` | ✅ |
 | `SLURM_NTASKS` / `SLURM_NPROCS` | ✅ |

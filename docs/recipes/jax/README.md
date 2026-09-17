@@ -198,3 +198,40 @@ All read by `jax.distributed.initialize()` before auto-detection, so they win:
   (verified to take precedence over the SLURM auto-detect path in jax 0.10.2).
 - Or pass `coordinator_address=` / `num_processes=` / `process_id=` /
   `local_device_ids=` explicitly to `initialize()`.
+
+## GPU: verified on NVIDIA L4
+
+[`jax-gpu-check.sh`](jax-gpu-check.sh) is the GPU job that ran. It uses the same
+auto-detection, one process per GPU, and GPUs requested with `--gpus-per-node`:
+
+```bash
+PYTHON_BIN=/shared/jax-cuda/bin/python sbatch jax-gpu-check.sh
+```
+
+Each process prints `ok=1` when it sees all `SLURM_NTASKS` processes and every
+process's devices, and exits non-zero otherwise, so a broken group shows as a
+`FAILED` job.
+
+Run on 4 nodes with 1 NVIDIA L4 each, on Rocky Linux 9 with Open Cluster
+Scheduler 9.1.5 and jax 0.4.30 (`jax[cuda12]`). Every process joined one group
+that sees all four GPUs. That run printed the lines below; the `ntasks` and `ok`
+fields and the exit code were added afterwards:
+
+```
+JAX pid=2 nproc=4 local=1 global=4
+JAX pid=1 nproc=4 local=1 global=4
+JAX pid=3 nproc=4 local=1 global=4
+JAX pid=0 nproc=4 local=1 global=4
+```
+
+What this covers, and what it does not:
+
+- **Verified:** `jax.distributed.initialize()` forming the group, and the device
+  counts, with 1 GPU per node.
+- **Not verified on GPU:** a cross-process collective, `jax-multinode.sh`, and
+  its `JAX_COORDINATOR_PORT` override. The caveat above still applies to them.
+- **Several GPUs per node:** set `--ntasks-per-node=N --gpus-per-node=N` and keep
+  `gpu.bind: none` (the default), so every process sees its node's whole grant and
+  JAX picks its device by `SLURM_LOCALID`. That selection by local rank was
+  verified on 2-GPU L4 nodes with torchrun ([`../torchrun/`](../torchrun/)),
+  not yet with JAX.
