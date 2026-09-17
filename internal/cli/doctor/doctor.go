@@ -183,6 +183,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return r.finish()
 	}
 	seenPE := map[string]bool{}
+	var peOrder []string              // PEs read successfully, in partition order
+	peForks := map[string]bool{}      // PE -> daemon_forks_slaves
+	peQueues := map[string][]string{} // PE -> readable queues that offer it
 	for _, n := range names {
 		p := cfg.Partitions[n]
 		q, err := admin.Queue(ctx, p.Queue)
@@ -201,6 +204,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		if !containsStr(q.PEList, p.PE) {
 			r.fail("queue %s does not offer pe %s (pe_list: %s)", p.Queue, p.PE, strings.Join(q.PEList, " "))
+		} else if !containsStr(peQueues[p.PE], p.Queue) {
+			peQueues[p.PE] = append(peQueues[p.PE], p.Queue)
 		}
 		if seenPE[p.PE] {
 			continue
@@ -211,30 +216,38 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			r.fail("pe %s: %v", p.PE, err)
 			continue
 		}
-		if !pe.ControlSlaves {
+		// srun's launch preflight is deliberately not run here: its only other
+		// finding, control_slaves, is checked just below, and running it too
+		// printed that failure twice.
+		if pe.ControlSlaves {
+			r.pass("pe %s control_slaves TRUE", p.PE)
+		} else {
 			r.fail("pe %s control_slaves FALSE: srun cannot launch steppers with qrsh -inherit", p.PE)
 		}
 		want := filepath.Join(prefix, "bin", "slurm-shim-env")
 		switch pe.StartProcArgs {
 		case want:
-			r.pass("pe %s start_proc_args -> this tree, control_slaves TRUE", p.PE)
+			r.pass("pe %s start_proc_args -> this tree", p.PE)
 		default:
 			r.fail("pe %s start_proc_args is %q, not this tree's slurm-shim-env", p.PE, pe.StartProcArgs)
 		}
-		// No queue here: doctor inspects the cluster, not a job. It reports
-		// the daemon_forks_slaves tradeoff unconditionally, because that is a
-		// standing property of the PE and this is the person who can change it.
-		// srun gets the conditional version, gated on the job's own queue
-		// actually setting a per-slot memory limit.
-		pf := launch.Preflight(ctx, runner, p.PE, "")
-		for _, e := range pf.Errors {
-			r.fail("pe %s: %s", p.PE, e)
+		peOrder = append(peOrder, p.PE)
+		peForks[p.PE] = pe.DaemonForksSlaves
+	}
+	// daemon_forks_slaves is judged once all partitions are read: whether FALSE
+	// can hurt depends on every queue that offers the PE.
+	for _, name := range peOrder {
+		var queues []queueLimits
+		for _, qn := range peQueues[name] {
+			limits, err := launch.ReadQueueMemoryLimits(ctx, runner, qn)
+			queues = append(queues, queueLimits{Queue: qn, Limits: limits, Err: err})
 		}
-		for _, w := range pf.Warnings {
-			r.warn("pe %s: %s", p.PE, w)
+		warns, pass := forksFindings(name, peForks[name], cfg.MemoryComplex, queues)
+		for _, w := range warns {
+			r.warn("pe %s: %s", name, w)
 		}
-		if peCfg, err := launch.PEConfig(ctx, runner, p.PE); err == nil {
-			r.warn("pe %s: %s", p.PE, launch.PEForksNote(peCfg, p.PE))
+		if pass != "" {
+			r.pass("%s", pass)
 		}
 	}
 	hosts, hostsErr := admin.ExecHosts(ctx)
