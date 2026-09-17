@@ -56,9 +56,11 @@ func Preflight(ctx context.Context, r gedata.Runner, peName, queue string) Prefl
 	// h_vmem/rss/data/stack cap exists, there is nothing to be multiplied or
 	// exceeded and nothing to say.
 	//
-	// `doctor` still describes the tradeoff unconditionally, via PEForksNote --
-	// that is the right place for a standing property of the cluster, read by
-	// the person who can change it.
+	// `doctor` applies the same rule to every queue that offers the PE
+	// (internal/cli/doctor/forks.go), and also warns when memory_complex is a
+	// per-slot limit -- a site setting, reported there once rather than here
+	// on every step of every job.
+	//
 	// The two branches are NOT symmetric, and treating them alike was wrong:
 	//
 	//   TRUE  -- concurrent srun steps will not run. A functional breakage of
@@ -69,11 +71,11 @@ func Preflight(ctx context.Context, r gedata.Runner, peName, queue string) Prefl
 	//            per-slot memory. With everything at INFINITY there is nothing
 	//            to exceed, and warning anyway (on every step of every job, in
 	//            the job's own output) is how a warning stops being read.
-	if strings.EqualFold(pe["daemon_forks_slaves"], "TRUE") {
-		res.Warnings = append(res.Warnings, PEForksNote(pe, peName))
+	if forks := strings.EqualFold(pe["daemon_forks_slaves"], "TRUE"); forks {
+		res.Warnings = append(res.Warnings, PEForksNote(forks, peName))
 	} else if limits := QueueMemoryLimits(ctx, r, queue); len(limits) > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("%s; queue %q sets %s",
-			PEForksNote(pe, peName), queue, strings.Join(limits, ", ")))
+			PEForksNote(forks, peName), queue, strings.Join(limits, ", ")))
 	}
 
 	// SI-51 (execd spool exposure) is DELIBERATELY NOT reported here.
@@ -128,12 +130,11 @@ func ParsePEConfig(data []byte) map[string]string {
 	return out
 }
 
-// PEForksNote describes the daemon_forks_slaves tradeoff for a PE. It always
-// returns a description, because the tradeoff always exists -- what varies is
-// whether it can hurt a given job, which is Preflight's business. doctor prints
-// this as a standing property of the cluster.
-func PEForksNote(pe map[string]string, peName string) string {
-	if strings.EqualFold(pe["daemon_forks_slaves"], "TRUE") {
+// PEForksNote describes one side of the daemon_forks_slaves tradeoff for a PE.
+// Whether that side can hurt is the caller's decision: Preflight asks it for a
+// job's queue, doctor for every queue that offers the PE.
+func PEForksNote(daemonForksSlaves bool, peName string) string {
+	if daemonForksSlaves {
 		return fmt.Sprintf("PE %q has daemon_forks_slaves TRUE: per-slot rlimits are "+
 			"multiplied by slot count, but execd is capped to one task per slave host "+
 			"(concurrent srun steps will not run)", peName)

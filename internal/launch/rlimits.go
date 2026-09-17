@@ -2,7 +2,9 @@ package launch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -20,6 +22,14 @@ var perSlotMemoryLimits = []string{
 	"h_stack", "s_stack",
 }
 
+// IsPerSlotMemoryLimit reports whether a complex name is one of the per-slot
+// memory rlimits. A memory_complex that is one of them makes every --mem
+// request such a limit: Grid Engine copies the job's request into the queue
+// instance's enforced limit at dispatch.
+func IsPerSlotMemoryLimit(name string) bool {
+	return slices.Contains(perSlotMemoryLimits, strings.ToLower(name))
+}
+
 // QueueMemoryLimits names the per-slot memory rlimits the queue actually sets,
 // ignoring the INFINITY default. An empty result means the queue imposes none,
 // so the SI-18 hazard cannot bite there.
@@ -31,18 +41,36 @@ var perSlotMemoryLimits = []string{
 // always printed carries no information, and this one printed into the job's
 // own output stream, between the ranks' lines.
 func QueueMemoryLimits(ctx context.Context, r gedata.Runner, queue string) []string {
-	if r == nil || queue == "" {
+	limits, err := ReadQueueMemoryLimits(ctx, r, queue)
+	if err != nil {
+		// Unreadable queue config is NOT evidence of no limits. Say nothing
+		// rather than assert safety we did not establish.
 		return nil
+	}
+	return limits
+}
+
+// ReadQueueMemoryLimits is QueueMemoryLimits with the read failure kept, for a
+// caller that reports "no limits" as a pass and so must not mistake an
+// unreadable queue for a safe one (doctor).
+func ReadQueueMemoryLimits(ctx context.Context, r gedata.Runner, queue string) ([]string, error) {
+	if r == nil || queue == "" {
+		return nil, errors.New("no queue to read")
 	}
 	// A queue INSTANCE (queue@host) is not a valid argument to qconf -sq.
 	if at := strings.IndexByte(queue, '@'); at >= 0 {
 		queue = queue[:at]
 	}
-	stdout, _, exit, err := r.Run(ctx, "qconf", "-sq", queue)
-	if err != nil || exit != 0 {
-		// Unreadable queue config is NOT evidence of no limits. Say nothing
-		// rather than assert safety we did not establish.
-		return nil
+	stdout, stderr, exit, err := r.Run(ctx, "qconf", "-sq", queue)
+	if err != nil {
+		return nil, err
+	}
+	if exit != 0 {
+		msg := strings.TrimSpace(string(stderr))
+		if msg == "" {
+			msg = fmt.Sprintf("qconf -sq %s exited %d", queue, exit)
+		}
+		return nil, errors.New(msg)
 	}
 
 	want := map[string]bool{}
@@ -62,5 +90,5 @@ func QueueMemoryLimits(ctx context.Context, r gedata.Runner, queue string) []str
 		found = append(found, fmt.Sprintf("%s=%s", fields[0], fields[1]))
 	}
 	sort.Strings(found)
-	return found
+	return found, nil
 }

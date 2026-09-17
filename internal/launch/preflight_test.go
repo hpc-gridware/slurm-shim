@@ -79,13 +79,9 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		}
 	})
 
-	It("still describes the tradeoff unconditionally for doctor", func() {
-		// doctor reports a standing property of the cluster to the person who
-		// can change it, so this one must NOT be conditional.
-		Expect(PEForksNote(map[string]string{"daemon_forks_slaves": "FALSE"}, "make")).
-			To(ContainSubstring("SI-18"))
-		Expect(PEForksNote(map[string]string{"daemon_forks_slaves": "TRUE"}, "make")).
-			To(ContainSubstring("concurrent srun steps will not run"))
+	It("describes each side of the tradeoff; when to print it is the caller's call", func() {
+		Expect(PEForksNote(false, "make")).To(ContainSubstring("SI-18"))
+		Expect(PEForksNote(true, "make")).To(ContainSubstring("concurrent srun steps will not run"))
 	})
 
 	It("does NOT report the spool exposure, which srun would print on every step", func() {
