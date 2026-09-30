@@ -65,7 +65,7 @@ clean:
 # --- Local OCS test cluster (reuses the quickinstall repo, unmodified) --------
 # Stand up a real 3-node Open Cluster Scheduler cluster with slurm-shim installed
 # and try it out. Needs Docker + Compose v2.
-#   make cluster-up [OCS_VERSION=9.1.5] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.5)
+#   make cluster-up [OCS_VERSION=9.1.6] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.6)
 #   make demo / demo-gpu / demo-flax                   submit a demo job, print output
 #   make demo-envcheck                                 diagnose the fabricated SLURM_* env
 #   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
@@ -91,7 +91,7 @@ demo-envcheck:
 #   make capture-fixtures             refresh fixtures for the running OCS version
 #   make e2e-matrix                   for each OCS_VERSION: down -v; up; e2e; capture
 E2E     := test/e2e
-E2E_OCS ?= 9.0.10 9.1.5
+E2E_OCS ?= 9.0.10 9.1.6
 .PHONY: e2e capture-fixtures e2e-matrix
 e2e:
 	$(E2E)/run.sh

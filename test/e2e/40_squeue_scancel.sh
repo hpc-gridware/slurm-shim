@@ -82,7 +82,18 @@ else
 fi
 
 # TIME must advance for a running job rather than sitting at the old 0:00.
-got_time="$(gridware "squeue -h -j '$mid' -o '%M' 2>/dev/null" | tr -d ' ')"
+#
+# Poll, don't sample once. The wait above ends as soon as qstat lists the MASTER
+# task, which it does while the job is still in state t, about a second before
+# its recorded start time; TIME then correctly reads 0:00 for the first seconds.
+# A single immediate sample failed every nightly run on fast CI runners while
+# passing on a laptop. The placeholder never advances, so polling still catches it.
+got_time=""
+for _ in $(seq 1 15); do
+  got_time="$(gridware "squeue -h -j '$mid' -o '%M' 2>/dev/null" | tr -d ' ')"
+  [ -n "$got_time" ] && [ "$got_time" != "0:00" ] && break
+  sleep 1
+done
 if [ -n "$got_time" ] && [ "$got_time" != "0:00" ]; then
   pass "squeue TIME reports elapsed run time ($got_time)"
 else
