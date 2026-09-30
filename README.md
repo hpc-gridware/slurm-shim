@@ -33,7 +33,8 @@ Two parts: a one-time site install by an Open Cluster Scheduler (fka Sun Grid En
 curl -fsSL https://github.com/hpc-gridware/slurm-shim/releases/latest/download/install.sh | sh
 
 # 1b. Or unpack the tarball yourself -- the same delivery model as OCS. Steps 2
-#     and 3 are then yours to run:
+#     and 3 are then yours to run. Download it (or _arm64) with SHA256SUMS from
+#     https://github.com/hpc-gridware/slurm-shim/releases/latest/download/slurm-shim_linux_amd64.tar.gz
 mkdir -p $SGE_ROOT/slurm-shim
 tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
 export PATH=$SGE_ROOT/slurm-shim/bin:$PATH   # this shell only; step 3 is the site-wide choice
@@ -105,7 +106,7 @@ A runnable version, verified on multi-node NVIDIA L4, is in [`docs/recipes/torch
 One command stands up a real 3-node Open Cluster Scheduler cluster (in Docker) with slurm-shim installed, then runs a job that shows `srun` fanning ranks across nodes. Only Docker + a Go toolchain are needed:
 
 ```bash
-make cluster-up          # clone quickinstall, boot OCS 9.1.5, install the shim
+make cluster-up          # clone quickinstall, boot OCS 9.1.6, install the shim
 make demo                # multi-node srun fan-out (per-rank SLURM_PROCID/nodelist)
 make demo-gpu            # per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant (needs cluster-up ARGS=--gpu)
 make cluster-down        # stop (add ARGS=-v to also wipe the OCS install)

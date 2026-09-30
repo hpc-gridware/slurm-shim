@@ -91,7 +91,7 @@ demo-envcheck:
 #   make capture-fixtures             refresh fixtures for the running OCS version
 #   make e2e-matrix                   for each OCS_VERSION: down -v; up; e2e; capture
 E2E     := test/e2e
-E2E_OCS ?= 9.0.10 9.1.6
+E2E_OCS ?= 9.0.10 9.1.4 9.1.5 9.1.6
 .PHONY: e2e capture-fixtures e2e-matrix
 e2e:
 	$(E2E)/run.sh

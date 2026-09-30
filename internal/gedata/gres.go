@@ -64,9 +64,13 @@ type detailedJobXML struct {
 type gruXML struct {
 	Name string `xml:"GRU_name"`
 	Host string `xml:"GRU_host"`
-	Map  []struct {
-		Value string `xml:"RESL_value"`
-	} `xml:"GRU_resource_map_list>element"`
+	// Each device entry is matched by any element name: OCS up to 9.1.5 writes
+	// <element>, 9.1.6 writes <granted_rsmap_ids>.
+	Map struct {
+		Entries []struct {
+			Value string `xml:"RESL_value"`
+		} `xml:",any"`
+	} `xml:"GRU_resource_map_list"`
 }
 
 // ParseGrantedGPUsXML extracts the granted GPUs for the named complex from
@@ -85,8 +89,8 @@ func ParseGrantedGPUsXML(data []byte, complexName string) ([]HostGPUs, error) {
 				}
 				// One RESL element is one granted device id (RESL_amount is 1
 				// for RSMAP GPU ids).
-				raw := make([]string, 0, len(gru.Map))
-				for _, m := range gru.Map {
+				raw := make([]string, 0, len(gru.Map.Entries))
+				for _, m := range gru.Map.Entries {
 					raw = append(raw, m.Value)
 				}
 				devices, unknown := DeviceTokens(raw)

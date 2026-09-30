@@ -35,6 +35,17 @@ var _ = Describe("granted GPU parsing [REQ-GPU-001]", func() {
 			}))
 		})
 
+		// OCS 9.1.6 renamed each device entry from <element> to
+		// <granted_rsmap_ids>. Matching only <element> silently found no GPUs,
+		// and since the parse did not fail, the plain fallback never ran either.
+		It("parses the OCS 9.1.6 granted_rsmap_ids entries", func() {
+			hosts, err := gedata.ParseGrantedGPUsXML(readFixture("qstat_j_gpu2_9.1.6.xml"), "gpu")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hosts).To(Equal([]gedata.HostGPUs{
+				{Host: "ocs-worker1", Devices: []string{"0", "1"}},
+			}))
+		})
+
 		It("ignores resources whose complex name does not match", func() {
 			hosts, err := gedata.ParseGrantedGPUsXML(readFixture("qstat_j_gpu2.xml"), "mps")
 			Expect(err).NotTo(HaveOccurred())

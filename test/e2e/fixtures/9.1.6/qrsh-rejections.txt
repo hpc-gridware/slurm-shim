@@ -1,0 +1,2 @@
+# qrsh -inherit against a non-existent job (job-race-shaped stderr):
+error: "qrsh" called with option "-inherit", but "JOB_ID" not set in environment

@@ -26,6 +26,8 @@ Requested with `qsub -l gpu=N`. The granted map is exposed three ways:
    the multi-host-safe source. Under `.../JB_ja_tasks/element`:
    `JAT_granted_resources_list/element/{GRU_name, GRU_amount, GRU_host,
    GRU_resource_map_list/element/RESL_value}`. One `element` per host.
+   OCS 9.1.6 names the device entries `granted_rsmap_ids` instead of `element`
+   (`qstat_j_gpu2_9.1.6.xml`), so the parser accepts any entry name.
 
 IMPORTANT: this OCS build's `qstat` has **no `-json` flag** (only `-xml`), so the
 JSON view REQ-GPU-001/SI-19 prefers is unavailable here. `qstat -xml -j` carries
