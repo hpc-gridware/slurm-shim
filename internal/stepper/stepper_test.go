@@ -1,10 +1,12 @@
 package stepper
 
 import (
+	"os/exec"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gexec"
 
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
 )
@@ -13,6 +15,22 @@ func TestStepper(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Stepper Suite")
 }
+
+// shimBin is the real slurm-shim binary, for specs that must observe how the
+// stepper process itself exits (signal_test.go).
+var shimBin string
+
+var _ = SynchronizedBeforeSuite(func() []byte {
+	p, err := gexec.Build("github.com/hpc-gridware/slurm-shim/cmd/slurm-shim")
+	Expect(err).NotTo(HaveOccurred())
+	return []byte(p)
+}, func(data []byte) {
+	shimBin = string(data)
+})
+
+var _ = SynchronizedAfterSuite(func() {}, func() {
+	gexec.CleanupBuildArtifacts()
+})
 
 var _ = Describe("cpu list parsing", func() {
 	DescribeTable("parses ranges and singletons [REQ-STP-002]",
@@ -139,5 +157,19 @@ var _ = Describe("rank device variable [REQ-GPU-004]", func() {
 		spec := proto.StepSpec{Env: []string{"HOME=/h"}, GPUEnvVar: "NOPE"}
 		_, err := rankEnv(spec, withGPUs, "node001")
 		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("rank exit codes [REQ-RUN-022]", func() {
+	run := func(script string) error { return exec.Command("sh", "-c", script).Run() }
+
+	It("reports a clean exit as 0 and an exit status as itself", func() {
+		Expect(exitCode(run("exit 0"))).To(Equal(0))
+		Expect(exitCode(run("exit 3"))).To(Equal(3))
+	})
+
+	It("reports a rank killed by signal S as 128+S, never as -1", func() {
+		Expect(exitCode(run("kill -TERM $$"))).To(Equal(143))
+		Expect(exitCode(run("kill -KILL $$"))).To(Equal(137))
 	})
 })

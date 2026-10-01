@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -102,6 +103,66 @@ var _ = Describe("srun end-to-end over the local launcher", func() {
 			`if [ "$SLURM_PROCID" = "0" ]; then exit 5; else sleep 60; fi`)
 		Eventually(sess, "30s").Should(gexec.Exit(5))
 		Expect(time.Since(start)).To(BeNumerically("<", 30*time.Second))
+	})
+
+	It("reports a rank killed by a signal as 128+S, not success, without -K [REQ-RUN-022]", func() {
+		tmp := twoByEight()
+		sess := runSrun(tmp, "--kill-on-bad-exit=0", "-n", "2", "sh", "-c",
+			`if [ "$SLURM_PROCID" = "0" ]; then kill -TERM $$; fi`)
+		Eventually(sess, "30s").Should(gexec.Exit(143))
+	})
+
+	It("SIGKILLs a rank that ignores SIGTERM over the control channel under -K [REQ-STP-004]", func() {
+		// The escalation must reach the ranks through the stepper, never by
+		// killing the stepper's launcher handle: under qrsh -inherit that makes
+		// the pe task die by signal and qmaster deletes the whole job.
+		tmp := twoByEight()
+		pidDir := filepath.Join(tmp, "pids")
+		Expect(os.Mkdir(pidDir, 0o700)).To(Succeed())
+		// -K explicitly (not the config default); rank 0 waits so the other rank's
+		// TERM trap is in place before the kill fan-out can reach it.
+		sess := runSrun(tmp, "-K", "-N", "2", "sh", "-c",
+			`if [ "$SLURM_PROCID" = "0" ]; then sleep 1; exit 5; fi; trap "" TERM; echo $$ > `+pidDir+`/$SLURM_PROCID; exec sleep 60`)
+		// SIGTERM is ignored; the SIGKILL stage follows killEscalation (10s).
+		Eventually(sess, "30s").Should(gexec.Exit(5))
+
+		entries, err := os.ReadDir(pidDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(entries).To(HaveLen(1))
+		data, err := os.ReadFile(filepath.Join(pidDir, entries[0].Name()))
+		Expect(err).NotTo(HaveOccurred())
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() error { return syscall.Kill(pid, 0) }, "5s").Should(MatchError(syscall.ESRCH),
+			"the rank that ignored SIGTERM must be gone")
+	})
+
+	It("escalates to SIGKILL when srun itself gets SIGTERM and the ranks ignore it [REQ-RUN-021]", func() {
+		// scancel/timeout send srun SIGTERM. Forwarding it alone would leave srun
+		// waiting forever on a rank that ignores it; the escalation bounds it.
+		tmp := twoByEight()
+		pidDir := filepath.Join(tmp, "pids")
+		Expect(os.Mkdir(pidDir, 0o700)).To(Succeed())
+		sess := runSrun(tmp, "-N", "2", "sh", "-c",
+			`trap "" TERM; echo $$ > `+pidDir+`/$SLURM_PROCID; exec sleep 60`)
+		Eventually(func() int {
+			entries, _ := os.ReadDir(pidDir)
+			return len(entries)
+		}, "15s").Should(Equal(2))
+
+		sess.Signal(syscall.SIGTERM)
+
+		// SIGTERM is ignored; the SIGKILL stage follows killEscalation (10s).
+		Eventually(sess, "30s").Should(gexec.Exit(137))
+		entries, err := os.ReadDir(pidDir)
+		Expect(err).NotTo(HaveOccurred())
+		for _, e := range entries {
+			data, err := os.ReadFile(filepath.Join(pidDir, e.Name()))
+			Expect(err).NotTo(HaveOccurred())
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() error { return syscall.Kill(pid, 0) }, "5s").Should(MatchError(syscall.ESRCH))
+		}
 	})
 
 	It("writes per-rank output files from a %-pattern [REQ-RUN-003]", func() {

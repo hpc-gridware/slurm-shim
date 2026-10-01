@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
@@ -50,7 +51,6 @@ type QrshLauncher struct {
 type childProc interface {
 	settle(d time.Duration) (exited bool, stderrTail string)
 	Wait() error
-	Kill() error
 }
 
 // Start launches one stepper on host and, on an early GE rejection, retries per
@@ -225,14 +225,12 @@ type qrshHandle struct {
 
 func (h *qrshHandle) Host() string { return h.host }
 func (h *qrshHandle) Wait() error  { return h.proc.Wait() }
-func (h *qrshHandle) Kill() error  { return h.proc.Kill() }
 
 // spawnQrsh is the production childProc: it runs `qrsh <args>` with env, teeing
 // the child's stderr to tee while also buffering a bounded tail for rejection
 // classification.
 func spawnQrsh(ctx context.Context, args, env []string, tee io.Writer) (childProc, error) {
-	cmd := exec.CommandContext(ctx, gedata.ResolveCommand("qrsh"), args...)
-	cmd.Env = env
+	cmd := qrshCommand(ctx, args, env)
 	buf := &tailBuffer{limit: 8192}
 	if tee != nil {
 		cmd.Stderr = io.MultiWriter(tee, buf)
@@ -243,6 +241,21 @@ func spawnQrsh(ctx context.Context, args, env []string, tee io.Writer) (childPro
 		return nil, err
 	}
 	return &execProc{cmd: cmd, stderr: buf, done: waitCh(cmd)}, nil
+}
+
+// qrshCommand builds the `qrsh -inherit` client command. The client gets its own
+// process group: ending it by ANY signal (a terminal Ctrl-C, a script's
+// `kill 0` or `timeout`) makes the remote shepherd SIGKILL the pe task, and
+// qmaster then deletes the whole job (failed 100). In its own group only srun
+// receives such signals, and srun forwards them over the control channel.
+//
+// ctx must never be cancelled while the stepper runs: CommandContext would
+// SIGKILL the client with the same effect. srun passes context.Background().
+func qrshCommand(ctx context.Context, args, env []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, gedata.ResolveCommand("qrsh"), args...)
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
 }
 
 func waitCh(cmd *exec.Cmd) chan error {
@@ -281,13 +294,6 @@ func (p *execProc) Wait() error {
 	}
 	p.mu.Unlock()
 	return <-p.done
-}
-
-func (p *execProc) Kill() error {
-	if p.cmd.Process != nil {
-		return p.cmd.Process.Kill()
-	}
-	return nil
 }
 
 // tailBuffer keeps only the last `limit` bytes written, so a long-running

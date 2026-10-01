@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
 
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
 )
@@ -21,11 +22,13 @@ type Launcher interface {
 	Start(ctx context.Context, host string, envelope proto.Envelope, token string) (Handle, error)
 }
 
-// Handle is a launched stepper's lifecycle.
+// Handle is a launched stepper's lifecycle. It deliberately has no Kill: under
+// tight integration the handle is the local `qrsh -inherit` client, and killing
+// it makes the remote pe task die by signal, which deletes the whole job. Steps
+// are stopped over the control channel instead.
 type Handle interface {
 	Host() string
 	Wait() error
-	Kill() error
 }
 
 // LocalLauncher spawns the stepper as a local subprocess (the master host's own
@@ -48,6 +51,11 @@ func (l LocalLauncher) Start(_ context.Context, host string, env proto.Envelope,
 	cmd := exec.Command(l.Self, "stepper", "--envelope", arg)
 	cmd.Env = append(os.Environ(), "SLURM_SHIM_TOKEN="+token)
 	cmd.Stderr = l.Stderr
+	// Own process group, like the qrsh client: a terminal Ctrl-C reaches srun
+	// only, and srun forwards it to every stepper alike. In srun's group the
+	// local stepper would take a single SIGINT as its own termination (TERM, then
+	// KILL) and end the master's ranks, where SLURM just forwards the SIGINT.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -61,10 +69,3 @@ type localHandle struct {
 
 func (h *localHandle) Host() string { return h.host }
 func (h *localHandle) Wait() error  { return h.cmd.Wait() }
-
-func (h *localHandle) Kill() error {
-	if h.cmd.Process != nil {
-		return h.cmd.Process.Kill()
-	}
-	return nil
-}

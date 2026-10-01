@@ -68,12 +68,10 @@ var _ = Describe("qrsh rejection classifier [REQ-RUN-024]", func() {
 type fakeProc struct {
 	exits  bool
 	stderr string
-	killed bool
 }
 
 func (p *fakeProc) settle(time.Duration) (bool, string) { return p.exits, p.stderr }
 func (p *fakeProc) Wait() error                         { return nil }
-func (p *fakeProc) Kill() error                         { p.killed = true; return nil }
 
 // scriptedLauncher builds a QrshLauncher whose spawn returns the given procs in
 // order, with a virtual clock so retry deadlines are deterministic.
@@ -143,5 +141,15 @@ var _ = Describe("QrshLauncher.Start retry policy [REQ-RUN-024]", func() {
 		_, err := l.Start(context.Background(), "node002", env, "tok")
 		Expect(err).To(MatchError(ContainSubstring("failed")))
 		Expect(*calls).To(Equal(1))
+	})
+})
+
+var _ = Describe("qrsh client process group", func() {
+	It("starts the client in its own process group, so group-wide signals reach srun only", func() {
+		// A signal that ends the qrsh -inherit client makes the remote pe task
+		// die by SIGKILL, and qmaster then deletes the whole job.
+		cmd := qrshCommand(context.Background(), []string{"-inherit"}, nil)
+		Expect(cmd.SysProcAttr).NotTo(BeNil())
+		Expect(cmd.SysProcAttr.Setpgid).To(BeTrue())
 	})
 })

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -46,7 +49,7 @@ var _ = Describe("launcher factory [REQ-RUN-012, REQ-RUN-013]", func() {
 
 var _ = Describe("execProc real process lifecycle", func() {
 	// newExecProc mirrors spawnQrsh for an arbitrary command so the real
-	// settle/Wait/Kill/tailBuffer paths are exercised without a qrsh binary.
+	// settle/Wait/tailBuffer paths are exercised without a qrsh binary.
 	newExecProc := func(name string, args ...string) *execProc {
 		cmd := exec.Command(name, args...)
 		buf := &tailBuffer{limit: 8192}
@@ -66,8 +69,7 @@ var _ = Describe("execProc real process lifecycle", func() {
 		p := newExecProc("sh", "-c", "sleep 1; exit 0")
 		exited, _ := p.settle(50 * time.Millisecond)
 		Expect(exited).To(BeFalse())
-		Expect(p.Kill()).To(Succeed())
-		_ = p.Wait()
+		Expect(p.Wait()).To(Succeed())
 	})
 
 	It("Wait returns the process exit error", func() {
@@ -89,5 +91,25 @@ var _ = Describe("QrshLauncher context cancellation", func() {
 		env := proto.Envelope{JobID: 4711, StepID: 1, Host: "node002", NodeID: 1, Dial: "127.0.0.1:5000"}
 		_, err := l.Start(ctx, "node002", env, "tok")
 		Expect(err).To(MatchError(ContainSubstring("cancelled")))
+	})
+})
+
+var _ = Describe("local stepper process group", func() {
+	It("starts the master's stepper in its own process group", func() {
+		// A terminal Ctrl-C must reach srun only, which forwards it to every
+		// stepper alike; in srun's group the local stepper would end its ranks.
+		self := filepath.Join(GinkgoT().TempDir(), "fake-shim")
+		Expect(os.WriteFile(self, []byte("#!/bin/sh\nexec sleep 5\n"), 0o700)).To(Succeed())
+
+		h, err := LocalLauncher{Self: self, Stderr: io.Discard}.Start(context.Background(), "node001", proto.Envelope{}, "token")
+		Expect(err).NotTo(HaveOccurred())
+		lh := h.(*localHandle)
+		DeferCleanup(func() { _ = lh.cmd.Process.Kill(); _ = h.Wait() })
+
+		pid := lh.cmd.Process.Pid
+		pgid, err := syscall.Getpgid(pid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pgid).To(Equal(pid))
+		Expect(pgid).NotTo(Equal(syscall.Getpgrp()))
 	})
 })

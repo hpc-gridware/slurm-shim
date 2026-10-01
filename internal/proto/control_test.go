@@ -51,6 +51,27 @@ var _ = Describe("Control channel [REQ-CHN-002]", func() {
 		Expect(proto.DecodeInt32(got.Payload)).To(Equal(int32(7)))
 	})
 
+	It("drops an authenticated stepper nobody accepted as soon as the server closes", func() {
+		// srun aborting a launch closes the server; a stepper waiting for its
+		// StepSpec must see EOF at once, not after helloTimeout (10s).
+		client, err := proto.Dial(srv.Addr(), token, "node002")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = client.Close() }()
+		// Let the server authenticate it; nothing ever calls Accept.
+		time.Sleep(100 * time.Millisecond)
+
+		Expect(srv.Close()).To(Succeed())
+
+		dropped := make(chan error, 1)
+		go func() { _, err := client.Recv(); dropped <- err }()
+		Eventually(dropped, "1s").Should(Receive(HaveOccurred()))
+	})
+
+	It("can be closed twice", func() {
+		Expect(srv.Close()).To(Succeed())
+		Expect(srv.Close()).To(Succeed())
+	})
+
 	It("rejects a connection presenting the wrong token [REQ-CHN-002]", func() {
 		client, err := proto.Dial(srv.Addr(), "wrong-token", "attacker")
 		Expect(err).NotTo(HaveOccurred())

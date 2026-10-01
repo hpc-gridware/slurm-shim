@@ -11,6 +11,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -54,6 +55,10 @@ type Server struct {
 	token    string
 	accepted chan *Conn
 	errc     chan error
+
+	done      chan struct{} // closed by Close
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Listen opens a control listener bound to addr (use "127.0.0.1:0" for a local
@@ -68,6 +73,7 @@ func Listen(addr, token string) (*Server, error) {
 		token:    token,
 		accepted: make(chan *Conn),
 		errc:     make(chan error, 1),
+		done:     make(chan struct{}),
 	}
 	go s.acceptLoop()
 	return s, nil
@@ -147,6 +153,10 @@ func (s *Server) authenticate(nc net.Conn) {
 	c := &Conn{Host: host, nc: nc, writer: NewFrameWriter(nc), reader: fr}
 	select {
 	case s.accepted <- c:
+	case <-s.done:
+		// The server closed (srun aborted the launch): drop the stepper now, so
+		// it stops waiting for a StepSpec that will never come.
+		_ = nc.Close()
 	case <-time.After(helloTimeout):
 		_ = nc.Close()
 	}
@@ -157,13 +167,22 @@ func (s *Server) Accept(ctx context.Context) (*Conn, error) {
 	select {
 	case c := <-s.accepted:
 		return c, nil
+	case <-s.done:
+		return nil, net.ErrClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// Close stops the listener.
-func (s *Server) Close() error { return s.ln.Close() }
+// Close stops the listener and drops every authenticated connection that was
+// not accepted yet. It is safe to call more than once.
+func (s *Server) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.done)
+		s.closeErr = s.ln.Close()
+	})
+	return s.closeErr
+}
 
 // Dial connects to srun's control channel and authenticates as host. The
 // returned Conn is ready to receive the StepSpec.

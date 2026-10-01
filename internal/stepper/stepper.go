@@ -12,8 +12,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,8 +26,41 @@ import (
 // dies (a local default; the configurable kill_wait is applied srun-side).
 const killWait = 5 * time.Second
 
+// exitTerminated is the stepper's exit code after a terminating signal
+// (128+SIGTERM). Under tight integration the stepper is a Grid Engine pe task,
+// and a pe task that dies BY a signal makes qmaster delete the whole job
+// (failed 100), killing the rest of the batch script. So the stepper traps the
+// catchable terminating signals, stops its ranks, and exits with this code.
+const exitTerminated = 143
+
+// terminatingSignals are the catchable signals that would otherwise kill the
+// stepper with the Go runtime default. SIGKILL cannot be trapped.
+var terminatingSignals = []os.Signal{syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT}
+
 // Run is the stepper entry point: `slurm-shim stepper --envelope <base64>`.
 func Run(args []string, stderr io.Writer) int {
+	// Trap before anything else, so no window exists in which a signal kills the
+	// pe task. Until the stepper runs ranks there is nothing to stop: exit at once.
+	// The trap is never removed (no signal.Stop): the process exits right after
+	// Run, and restoring the default action would reopen that window.
+	var active atomic.Pointer[stepper]
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, terminatingSignals...)
+	// A write to a broken stdout/stderr must fail with EPIPE instead of killing
+	// the stepper by SIGPIPE. Notify, not Ignore: a handled signal is reset to
+	// the default in the ranks the stepper execs, an ignored one would be
+	// inherited by user programs. The channel is never read; sends are dropped.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
+	go func() {
+		for range sigs {
+			s := active.Load()
+			if s == nil {
+				os.Exit(exitTerminated)
+			}
+			s.terminateOnSignal()
+		}
+	}()
+
 	fs := flag.NewFlagSet("stepper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envArg := fs.String("envelope", "", "base64(JSON) routing envelope")
@@ -71,6 +106,7 @@ func Run(args []string, stderr io.Writer) int {
 	}
 
 	s := &stepper{conn: conn, spec: spec, host: env.Host, self: self, stderr: stderr}
+	active.Store(s)
 	return s.run()
 }
 
@@ -84,6 +120,8 @@ type stepper struct {
 	mu      sync.Mutex
 	procs   []*rankProc
 	killSig syscall.Signal // latched terminating signal for ranks still spawning
+
+	signaled atomic.Bool // a terminating signal stopped this stepper
 }
 
 type rankProc struct {
@@ -126,7 +164,27 @@ func (s *stepper) run() int {
 			maxCode = res.code
 		}
 	}
+	if s.signaled.Load() {
+		return exitTerminated
+	}
 	return maxCode
+}
+
+// terminateOnSignal stops the ranks after the stepper itself was signalled. run
+// then returns exitTerminated once every rank has been reaped, so the stepper
+// exits with a code rather than by the signal.
+func (s *stepper) terminateOnSignal() {
+	if s.signaled.CompareAndSwap(false, true) {
+		go s.terminate()
+	}
+}
+
+// terminate stops every rank: SIGTERM, then SIGKILL after killWait for ranks
+// that ignore it.
+func (s *stepper) terminate() {
+	s.killAll(syscall.SIGTERM)
+	time.Sleep(killWait)
+	s.killAll(syscall.SIGKILL)
 }
 
 type rankResult struct {
@@ -286,9 +344,7 @@ func (s *stepper) readControl() {
 	for {
 		f, err := s.conn.Recv()
 		if err != nil {
-			s.killAll(syscall.SIGTERM)
-			time.Sleep(killWait)
-			s.killAll(syscall.SIGKILL)
+			s.terminate()
 			return
 		}
 		switch f.Type {
@@ -303,10 +359,12 @@ func (s *stepper) readControl() {
 func (s *stepper) forwardSignal(sig syscall.Signal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sig == syscall.SIGTERM || sig == syscall.SIGKILL {
+	if sig == syscall.SIGKILL || (sig == syscall.SIGTERM && s.killSig == 0) {
 		// Latch it: the kill can race rank spawning under load, so a rank that
 		// registers after this must be killed too (spawn checks killSig). Both
-		// sides run under s.mu, so no rank can slip through unsignaled.
+		// sides run under s.mu, so no rank can slip through unsignaled. The latch
+		// only escalates: a later SIGTERM (overlapping terminate calls, or srun
+		// forwarding one after its SIGKILL stage) must not downgrade a SIGKILL.
 		s.killSig = sig
 	}
 	for _, p := range s.procs {
@@ -401,12 +459,18 @@ func indexByte(s string, b byte) int {
 	return -1
 }
 
+// exitCode maps a rank's wait result to its exit code. A rank killed by signal S
+// is reported as 128+S, as SLURM does (REQ-RUN-022): ExitCode() returns -1 for
+// it, which srun's max-code aggregation would treat as success.
 func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return 128 + int(ws.Signal())
+		}
 		return ee.ExitCode()
 	}
 	return 1

@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
@@ -197,17 +199,39 @@ type supervisor struct {
 
 	mu            sync.Mutex
 	conns         []*proto.Conn
-	handles       []launch.Handle
 	killTriggered bool
 	firstBadCode  int
 	maxCode       int
+
+	escalation sync.Once // the SIGKILL/abandon stages are armed at most once
+
+	// Signal state across the launch (signals.go). Until connected, a received
+	// signal cannot be forwarded: the first terminating one is kept in
+	// interruptSig and closes interrupted, so the launch aborts.
+	connected    bool
+	interruptSig syscall.Signal
+	interrupted  chan struct{}
 }
 
-// killEscalation bounds how long srun waits for a kill-on-bad-exit fan-out to
-// drain before force-killing the stepper handles, so an unkillable or slow-to-die
-// rank cannot hang srun indefinitely (SLURM's UnkillableStepTimeout analogue).
+// killEscalation is the interval between the stages of a kill-on-bad-exit
+// fan-out: SIGTERM, then SIGKILL over the control channel, then abandoning the
+// steppers that still have not reported (SLURM's UnkillableStepTimeout
+// analogue), so a rank that refuses to die cannot hang srun.
+//
+// srun never kills a stepper's launcher handle. Under tight integration that
+// handle is the local `qrsh -inherit` client, and killing it makes the remote pe
+// task die by signal, which qmaster answers by deleting the whole job (failed
+// 100), taking the rest of the batch script with it. Every stage therefore works
+// through the control channel, and the stepper always exits with a code.
+//
 // A var, not a const, so tests can shorten it.
 var killEscalation = 10 * time.Second
+
+// stepperExitWait bounds how long srun waits for the stepper processes to exit
+// once every rank has reported or been abandoned. A stepper on an unreachable
+// host never exits; srun leaves it to Grid Engine's job cleanup rather than
+// hanging.
+var stepperExitWait = 15 * time.Second
 
 func (s *supervisor) launch() int {
 	token, err := proto.NewToken()
@@ -255,11 +279,19 @@ func (s *supervisor) launch() int {
 		}
 	}
 
+	// From here on, srun must not die by a signal's default action (signals.go).
+	s.interrupted = make(chan struct{})
+	s.installSignals()
+
 	// Launch one stepper per participating host. The master host (layout index 0)
 	// always launches locally (REQ-RUN-012); it need not be step-node 0 when -w
 	// selects a subset that still includes it.
 	var handles []launch.Handle
 	for ni, node := range s.plan.Nodes {
+		if sig := s.launchInterrupted(); sig != 0 {
+			s.abortLaunch(srv, nil, handles)
+			return 128 + int(sig)
+		}
 		launcher := launch.Launcher(master)
 		if node.LayoutIndex != 0 {
 			launcher = slave
@@ -274,7 +306,7 @@ func (s *supervisor) launch() int {
 		h, err := launcher.Start(context.Background(), node.Host, env, token)
 		if err != nil {
 			errln(s.stderr, fmt.Sprintf("srun: error: launching stepper on %s: %v", node.Host, err))
-			s.killHandles(handles)
+			s.abortLaunch(srv, nil, handles)
 			return exitLauncher
 		}
 		handles = append(handles, h)
@@ -284,16 +316,35 @@ func (s *supervisor) launch() int {
 	conns := map[string]*proto.Conn{}
 	acceptCtx, cancel := context.WithTimeout(context.Background(), s.cfg.LaunchTimeout.Duration)
 	defer cancel()
+	// An interrupt ends the wait for connections. Cancelling this context is
+	// safe: it only bounds Accept, never a launched qrsh client.
+	go func() {
+		select {
+		case <-s.interrupted:
+			cancel()
+		case <-acceptCtx.Done():
+		}
+	}()
 	for range s.plan.Nodes {
+		// Checked before every Accept: a signal that arrived during a slow Start
+		// (qrsh's settle wait) must not be outrun by connections already queued.
+		if sig := s.launchInterrupted(); sig != 0 {
+			s.abortLaunch(srv, conns, handles)
+			return 128 + int(sig)
+		}
 		c, err := srv.Accept(acceptCtx)
 		if err != nil {
+			if sig := s.launchInterrupted(); sig != 0 {
+				s.abortLaunch(srv, conns, handles)
+				return 128 + int(sig)
+			}
 			errln(s.stderr, "srun: error: stepper did not connect within launch_timeout")
 			if remote {
 				errln(s.stderr, "srun: the control channel is listening on "+srv.Addr()+
 					"; if this cluster filters traffic between nodes, that port range must be "+
 					"open to this host (run `slurm-shim ports` for the exact rules)")
 			}
-			s.killHandles(handles)
+			s.abortLaunch(srv, conns, handles)
 			return exitLauncher
 		}
 		conns[c.Host] = c
@@ -306,29 +357,85 @@ func (s *supervisor) launch() int {
 		payload, err := proto.EncodeSpec(spec)
 		if err != nil {
 			errln(s.stderr, "srun: error: encoding spec: "+err.Error())
+			s.abortLaunch(srv, conns, handles)
 			return 1
 		}
 		if err := conns[node.Host].Send(proto.Frame{Type: proto.FrameSpec, Payload: payload}); err != nil {
 			errln(s.stderr, "srun: error: sending spec: "+err.Error())
+			s.abortLaunch(srv, conns, handles)
 			return exitLauncher
 		}
 	}
 
+	// A signal that arrived before this point is not forwarded: the steppers may
+	// not have spawned their ranks yet, and a SIGINT sent then would be lost
+	// (the stepper latches only SIGTERM/SIGKILL for ranks still spawning, and
+	// that was observed live). Abort instead: the closed channels make every
+	// stepper terminate whatever it started and exit with a code. The check and
+	// `connected` change under one lock, so no signal falls between them.
 	s.mu.Lock()
-	for _, c := range conns {
-		s.conns = append(s.conns, c)
+	pending := s.interruptSig
+	if pending == 0 {
+		for _, c := range conns {
+			s.conns = append(s.conns, c)
+		}
+		s.connected = true
 	}
-	s.handles = handles // for the kill-escalation watchdog
 	s.mu.Unlock()
+	if pending != 0 {
+		s.abortLaunch(srv, conns, handles)
+		return 128 + int(pending)
+	}
 
 	s.demux = mux.NewDemux(s.stdout, s.stderr, s.opt.label)
 	code := s.supervise(conns)
 
 	_ = s.demux.Flush()
-	for _, h := range handles {
-		_ = h.Wait()
-	}
+	s.waitHandles(handles)
 	return code
+}
+
+// abortLaunch ends a step that failed before supervision started. Closing the
+// listener and the accepted channels makes every started stepper exit with a
+// code (a stepper still dialling is refused; a connected one loses its channel;
+// an authenticated one nobody accepted is dropped after helloTimeout, which is
+// shorter than stepperExitWait). srun then waits for them, so no qrsh client is
+// left behind writing its stderr into the pipe of an srun that has exited: a
+// SIGPIPE there would kill the client, and the remote pe task with it.
+func (s *supervisor) abortLaunch(srv *proto.Server, conns map[string]*proto.Conn, handles []launch.Handle) {
+	_ = srv.Close()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	s.waitHandles(handles)
+}
+
+// waitHandles waits for the stepper processes to exit, at most stepperExitWait,
+// and names the hosts whose stepper is still running when it gives up.
+func (s *supervisor) waitHandles(handles []launch.Handle) {
+	done := make([]chan struct{}, len(handles))
+	for i, h := range handles {
+		done[i] = make(chan struct{})
+		go func(h launch.Handle, d chan struct{}) { _ = h.Wait(); close(d) }(h, done[i])
+	}
+	deadline := time.After(stepperExitWait)
+	for i := range handles {
+		select {
+		case <-done[i]:
+		case <-deadline:
+			var left []string
+			for j := i; j < len(handles); j++ {
+				select {
+				case <-done[j]:
+				default:
+					left = append(left, handles[j].Host())
+				}
+			}
+			errln(s.stderr, fmt.Sprintf("srun: warning: stepper on %s did not exit within %s; "+
+				"its task keeps its slot until the job's cleanup", strings.Join(left, ","), stepperExitWait))
+			return
+		}
+	}
 }
 
 // supervise reads frames from every stepper connection until all ranks have
@@ -360,8 +467,6 @@ func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
 		}(host, c)
 	}
 	go func() { readers.Wait(); close(events) }()
-
-	s.installSignals(conns)
 
 	hostReported := map[string]int{}
 	for ev := range events {
@@ -420,32 +525,43 @@ func (s *supervisor) recordExit(code int) {
 			s.killTriggered = true
 			errln(s.stderr, fmt.Sprintf("srun: error: task exited with code %d, killing remaining tasks (kill-on-bad-exit)", code))
 			s.broadcast(proto.Frame{Type: proto.FrameSig, Payload: proto.EncodeInt32(int32(syscallSIGTERM))})
-			// Bound the wait: if a rank refuses to die, force-kill the stepper
-			// handles so supervise (and h.Wait) unblock instead of hanging forever.
-			time.AfterFunc(killEscalation, s.forceKill)
+			s.armEscalation()
 		}
 	}
 }
 
-// forceKill terminates the stepper handles. supervise then observes the closed
-// control channels as EOF and synthesizes the missing ranks' exits, and launch's
-// h.Wait returns because the processes are gone.
-func (s *supervisor) forceKill() {
-	s.mu.Lock()
-	handles := s.handles
-	s.mu.Unlock()
-	s.killHandles(handles)
+// armEscalation bounds a termination that srun started (kill-on-bad-exit, or a
+// forwarded SIGTERM/SIGHUP): a rank that ignores SIGTERM gets SIGKILL, and a
+// stepper that still does not report is abandoned (killEscalation).
+func (s *supervisor) armEscalation() {
+	s.escalation.Do(func() { time.AfterFunc(killEscalation, s.escalate) })
 }
 
-func (s *supervisor) broadcast(f proto.Frame) {
+// escalate is the second kill-on-bad-exit stage: SIGKILL over the control
+// channel, which the stepper forwards to its ranks' process groups before
+// reporting their exits and exiting with a code. The third stage follows.
+func (s *supervisor) escalate() {
+	s.broadcast(proto.Frame{Type: proto.FrameSig, Payload: proto.EncodeInt32(int32(syscallSIGKILL))})
+	time.AfterFunc(killEscalation, s.abandon)
+}
+
+// abandon is the last kill-on-bad-exit stage: close every control channel.
+// supervise observes the closed channels as EOF and synthesizes the missing
+// ranks' exits; a stepper that is still alive sees its channel drop, stops its
+// ranks, and exits with a code. A channel whose stepper already finished is
+// closed harmlessly.
+func (s *supervisor) abandon() {
 	for _, c := range s.conns {
-		_ = c.Send(f)
+		_ = c.Close()
 	}
 }
 
-func (s *supervisor) killHandles(handles []launch.Handle) {
-	for _, h := range handles {
-		_ = h.Kill()
+// broadcast sends f to every stepper. s.conns is written once, before supervise
+// starts, and never changes afterwards, so it is read without s.mu: recordExit
+// calls broadcast while holding s.mu.
+func (s *supervisor) broadcast(f proto.Frame) {
+	for _, c := range s.conns {
+		_ = c.Send(f)
 	}
 }
 
