@@ -23,6 +23,7 @@ checks=(
   32_par_allocation
   40_squeue_scancel
   41_kill_escalation
+  42_liveness
   50_scontrol
   60_gpu
   61_gpu_vendor

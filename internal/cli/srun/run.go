@@ -438,6 +438,25 @@ func (s *supervisor) waitHandles(handles []launch.Handle) {
 	}
 }
 
+// watchRemoteHosts lets the kernel detect a remote stepper's host going away
+// (REQ-CHN-004 as amended): a channel to a crashed, powered-off or partitioned
+// host fails with a timeout after ping_deadline, and supervise counts that
+// host's ranks as failed. A suspended or merely slow stepper keeps its host
+// answering, so it is never mistaken for a lost one. The master's own stepper
+// is local: losing that host means losing srun itself.
+func (s *supervisor) watchRemoteHosts(conns map[string]*proto.Conn) {
+	if s.cfg.PingDeadline.Duration <= 0 || s.cfg.PingInterval.Duration <= 0 {
+		return
+	}
+	for _, n := range s.plan.Nodes {
+		if c := conns[n.Host]; c != nil && n.LayoutIndex != 0 {
+			if err := c.SetLiveness(s.cfg.PingDeadline.Duration, s.cfg.PingInterval.Duration); err != nil {
+				errln(s.stderr, fmt.Sprintf("srun: warning: cannot watch node %s for loss: %v", n.Host, err))
+			}
+		}
+	}
+}
+
 // supervise reads frames from every stepper connection until all ranks have
 // reported, aggregating output and exit codes.
 func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
@@ -449,7 +468,10 @@ func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
 		host string
 		f    proto.Frame
 		eof  bool
+		lost bool // the channel timed out: the stepper's host stopped answering
 	}
+	s.watchRemoteHosts(conns)
+
 	events := make(chan event, 64)
 	var readers sync.WaitGroup
 	for host, c := range conns {
@@ -459,7 +481,7 @@ func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
 			for {
 				f, err := c.Recv()
 				if err != nil {
-					events <- event{host: host, eof: true}
+					events <- event{host: host, eof: true, lost: proto.IsLivenessTimeout(err)}
 					return
 				}
 				events <- event{host: host, f: f}
@@ -471,13 +493,19 @@ func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
 	hostReported := map[string]int{}
 	for ev := range events {
 		if ev.eof {
+			if ev.lost && hostReported[ev.host] < perHostExpected[ev.host] {
+				errln(s.stderr, fmt.Sprintf("srun: error: lost node %s: it stopped answering for %s; "+
+					"its tasks are treated as failed", ev.host, s.cfg.PingDeadline.Duration))
+			}
 			// A stepper closed before reporting all its ranks: synthesize
 			// failures for the missing ones (REQ-RUN-027, SI-08).
 			for hostReported[ev.host] < perHostExpected[ev.host] {
 				hostReported[ev.host]++
 				reported++
 				s.recordExit(1)
-				errln(s.stderr, fmt.Sprintf("srun: error: stepper on %s exited without reporting a rank", ev.host))
+				if !ev.lost {
+					errln(s.stderr, fmt.Sprintf("srun: error: stepper on %s exited without reporting a rank", ev.host))
+				}
 			}
 			if reported >= total {
 				break

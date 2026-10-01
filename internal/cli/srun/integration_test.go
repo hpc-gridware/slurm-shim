@@ -2,6 +2,7 @@ package srun_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -165,6 +166,37 @@ var _ = Describe("srun end-to-end over the local launcher", func() {
 		}
 	})
 
+	DescribeTable("survives a suspend longer than every liveness timeout [REQ-APX-005]",
+		func(whole bool) {
+			// GE suspend SIGSTOPs srun and the steppers (whole job), or only srun
+			// (its queue instance alone, a debugger, Ctrl-Z). Either way the hosts'
+			// kernels keep answering, so nothing may be declared lost or stopped.
+			tmp := twoByEight()
+			Expect(os.WriteFile(filepath.Join(tmp, "config.yaml"), []byte(
+				"launcher: local\nping_interval: 1s\nping_deadline: 3s\norphan_grace: 2s\n"), 0o600)).To(Succeed())
+			sess := runSrun(tmp, "-N", "2", "sh", "-c", "echo up; sleep 12")
+			Eventually(func() int { return strings.Count(string(sess.Out.Contents()), "up") }, "15s").Should(Equal(2))
+
+			stopped := []int{sess.Command.Process.Pid}
+			if whole {
+				stopped = append(stopped, descendants(sess.Command.Process.Pid)...)
+				Expect(len(stopped)).To(BeNumerically(">=", 5), "srun, 2 steppers and 2 ranks")
+			}
+			for _, pid := range stopped {
+				_ = syscall.Kill(pid, syscall.SIGSTOP)
+			}
+			time.Sleep(5 * time.Second) // longer than ping_deadline and orphan_grace
+			for i := len(stopped) - 1; i >= 0; i-- {
+				_ = syscall.Kill(stopped[i], syscall.SIGCONT)
+			}
+
+			Eventually(sess, "30s").Should(gexec.Exit(0))
+			Expect(string(sess.Err.Contents())).NotTo(ContainSubstring("lost"))
+		},
+		Entry("the whole job", true),
+		Entry("only srun", false),
+	)
+
 	It("writes per-rank output files from a %-pattern [REQ-RUN-003]", func() {
 		tmp := twoByEight()
 		pat := filepath.Join(tmp, "out.%t.log")
@@ -179,3 +211,33 @@ var _ = Describe("srun end-to-end over the local launcher", func() {
 		}
 	})
 })
+
+// descendants lists every process below pid (children first by depth), so a
+// spec can suspend a whole step the way Grid Engine does.
+func descendants(pid int) []int {
+	out, err := exec.Command("ps", "-A", "-o", "pid=", "-o", "ppid=").Output()
+	Expect(err).NotTo(HaveOccurred())
+	children := map[int][]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		c, err1 := strconv.Atoi(f[0])
+		p, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil {
+			children[p] = append(children[p], c)
+		}
+	}
+	var all []int
+	queue := []int{pid}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		for _, c := range children[p] {
+			all = append(all, c)
+			queue = append(queue, c)
+		}
+	}
+	return all
+}

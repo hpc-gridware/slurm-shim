@@ -395,3 +395,38 @@ var _ = Describe("removed keys [todo 079]", func() {
 		Expect(warns).To(ContainElement(ContainSubstring("install --apply")))
 	})
 })
+
+var _ = Describe("control-channel liveness timings [REQ-CHN-004]", func() {
+	parse := func(doc string) (*config.Config, []string) {
+		cfg, warns, err := config.Parse([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		return cfg, warns
+	}
+
+	It("defaults to a stepper that stops before srun declares its node lost", func() {
+		cfg, warns := parse("")
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.OrphanGrace.Duration).To(BeNumerically("<", cfg.PingDeadline.Duration))
+	})
+
+	It("falls back to the default for a non-positive ping_interval", func() {
+		cfg, warns := parse("ping_interval: 0s\n")
+		Expect(warns).To(ContainElement(ContainSubstring("ping_interval 0s is not positive")))
+		Expect(cfg.PingInterval).To(Equal(config.Default().PingInterval))
+	})
+
+	It("warns when lost-node detection is switched off", func() {
+		_, warns := parse("ping_deadline: 0s\n")
+		Expect(warns).To(ContainElement(ContainSubstring("never declare a lost node")))
+	})
+
+	It("warns when the stepper would stop after srun gives up", func() {
+		_, warns := parse("ping_deadline: 30s\norphan_grace: 2m\n")
+		Expect(warns).To(ContainElement(ContainSubstring("not shorter than ping_deadline")))
+	})
+
+	It("warns when the probe interval allows fewer than two probes", func() {
+		_, warns := parse("ping_interval: 40s\n")
+		Expect(warns).To(ContainElement(ContainSubstring("fewer than two probes")))
+	})
+})

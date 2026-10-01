@@ -313,6 +313,10 @@ func (s *supervisor) stepSpec(base []string, ni int) proto.StepSpec {
 		Label:      s.opt.label,
 		ExportNone: s.opt.exportSpec == "NONE",
 		GPUEnvVar:  envVar,
+		// How long the stepper waits for srun's host before stopping its ranks
+		// (REQ-CHN-004); zero disables it.
+		OrphanGraceMS:  s.cfg.OrphanGrace.Duration.Milliseconds(),
+		PingIntervalMS: s.cfg.PingInterval.Duration.Milliseconds(),
 	}
 	for _, r := range s.plan.Ranks {
 		if r.StepNodeIndex != ni {

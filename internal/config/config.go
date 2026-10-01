@@ -233,12 +233,20 @@ type Config struct {
 	// which only works where nothing filters traffic between nodes. Replaces the
 	// never-read `control_port`, which could not have supported concurrent steps
 	// on one host anyway.
-	ControlPortBase  int      `yaml:"control_port_base"`
-	ControlPortRange int      `yaml:"control_port_range"`
-	PingInterval     Duration `yaml:"ping_interval"`
-	PingDeadline     Duration `yaml:"ping_deadline"`
-	OrphanGrace      Duration `yaml:"orphan_grace"`
-	QacctDeadline    Duration `yaml:"qacct_deadline"`
+	ControlPortBase  int `yaml:"control_port_base"`
+	ControlPortRange int `yaml:"control_port_range"`
+	// Control-channel liveness (REQ-CHN-004), checked by the kernel through TCP
+	// keepalive and TCP_USER_TIMEOUT, so a stopped or slow process never counts
+	// as lost: only a crashed, powered-off or partitioned host does.
+	// ping_interval is the keepalive probe interval. ping_deadline is how long a
+	// remote stepper's host may stop answering before srun declares the node
+	// lost and fails its tasks. orphan_grace is how long srun's host may stop
+	// answering before a stepper stops its ranks; it is shorter than
+	// ping_deadline, so a stale stepper has stopped before srun gives up on it.
+	PingInterval  Duration `yaml:"ping_interval"`
+	PingDeadline  Duration `yaml:"ping_deadline"`
+	OrphanGrace   Duration `yaml:"orphan_grace"`
+	QacctDeadline Duration `yaml:"qacct_deadline"`
 
 	JobNameSanitize   bool   `yaml:"job_name_sanitize"`
 	HookMissingEnv    string `yaml:"hook_missing_env"`
@@ -301,9 +309,9 @@ func Default() *Config {
 		// SLURM's SrunPortRange is the analogous setting.
 		ControlPortBase:   61000,
 		ControlPortRange:  440,
-		PingInterval:      Duration{10 * time.Second},
-		PingDeadline:      Duration{30 * time.Second},
-		OrphanGrace:       Duration{3 * time.Minute},
+		PingInterval:      Duration{5 * time.Second},
+		PingDeadline:      Duration{60 * time.Second},
+		OrphanGrace:       Duration{45 * time.Second},
 		QacctDeadline:     Duration{30 * time.Second},
 		JobNameSanitize:   true,
 		HookMissingEnv:    "continue",
@@ -417,6 +425,7 @@ func validate(cfg *Config) []string {
 		cfg.QstatTimeout = Default().QstatTimeout
 	}
 	warnings = append(warnings, validatePorts(cfg)...)
+	warnings = append(warnings, validateLiveness(cfg)...)
 
 	names := make([]string, 0, len(cfg.Partitions))
 	for name := range cfg.Partitions {
@@ -498,6 +507,42 @@ func knownKeys() map[string]bool {
 		}
 	}
 	return ks
+}
+
+// validateLiveness checks the control-channel liveness timings. A zero
+// ping_deadline or orphan_grace switches that side off on purpose; anything
+// that would switch it off by accident, or make it fire in the wrong order, is
+// reported. Warnings only, like the rest of validate.
+func validateLiveness(cfg *Config) []string {
+	var warnings []string
+	def := Default()
+	if cfg.PingInterval.Duration <= 0 {
+		warnings = append(warnings, fmt.Sprintf("ping_interval %s is not positive; using %s",
+			cfg.PingInterval.Duration, def.PingInterval.Duration))
+		cfg.PingInterval = def.PingInterval
+	}
+	deadline, grace, interval := cfg.PingDeadline.Duration, cfg.OrphanGrace.Duration, cfg.PingInterval.Duration
+	if deadline < 0 || grace < 0 {
+		warnings = append(warnings, "negative ping_deadline/orphan_grace; using the defaults")
+		cfg.PingDeadline, cfg.OrphanGrace = def.PingDeadline, def.OrphanGrace
+		deadline, grace = def.PingDeadline.Duration, def.OrphanGrace.Duration
+	}
+	if deadline == 0 {
+		warnings = append(warnings, "ping_deadline is 0: srun will never declare a lost node, "+
+			"and a step on a dead host hangs until the job ends")
+	}
+	if deadline > 0 && grace > 0 && grace >= deadline {
+		warnings = append(warnings, fmt.Sprintf("orphan_grace %s is not shorter than ping_deadline %s: "+
+			"a stale stepper may keep running after srun has declared its node lost", grace, deadline))
+	}
+	for _, t := range []time.Duration{deadline, grace} {
+		if t > 0 && 2*interval > t {
+			warnings = append(warnings, fmt.Sprintf("ping_interval %s leaves fewer than two probes within %s; "+
+				"a single lost packet may count as a lost host", interval, t))
+			break
+		}
+	}
+	return warnings
 }
 
 // nestedKeyWarnings reports misspelled keys INSIDE a known block.
