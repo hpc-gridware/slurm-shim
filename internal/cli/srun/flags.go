@@ -17,6 +17,10 @@ import (
 
 // options are the parsed srun invocation.
 type options struct {
+	// elastic is --x-elastic (on, off, auto, or "" for the job's/site's
+	// default): whether this step replaces a lost node with a hot spare.
+	elastic string
+
 	req         plan.StepRequest
 	command     []string
 	label       bool
@@ -107,6 +111,10 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		overlap   = fs.Bool("overlap", false, "")
 		noKill    = fs.Bool("no-kill", false, "")
 		exclusive = fs.Bool("exclusive", false, "")
+		// Hot spares: --x-elastic picks whether this step replaces a lost node
+		// with a spare. --x-spares belongs to sbatch, which grants the spares.
+		elastic = fs.String("x-elastic", "", "")
+		spares  = fs.String("x-spares", "", "")
 	)
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"
@@ -115,6 +123,15 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		return nil, err
 	}
 
+	if *spares != "" {
+		return nil, fmt.Errorf("srun: error: --x-spares is granted per job: pass it to sbatch (or a #SHIM line); " +
+			"srun --x-elastic picks whether a step uses them")
+	}
+	switch strings.ToLower(*elastic) {
+	case "", config.ElasticAuto, config.ElasticOn, config.ElasticOff:
+	default:
+		return nil, fmt.Errorf("srun: error: --x-elastic=%q: expected on, off or auto", *elastic)
+	}
 	if *mpi != "" && *mpi != "none" {
 		return nil, fmt.Errorf("srun: error: --mpi=%s is not supported; use native mpirun for MPI", *mpi)
 	}
@@ -139,6 +156,7 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		gpuBind:     *gpuBind,
 		testOnly:    *testOnly,
 		pty:         *pty,
+		elastic:     strings.ToLower(*elastic),
 		partition:   *partition,
 		jobName:     *jobName,
 	}

@@ -21,6 +21,8 @@ checks=(
   30_sbatch
   31_sbatch_resources
   32_par_allocation
+  33_spares
+  34_spares_torchrun
   40_squeue_scancel
   41_kill_escalation
   42_liveness

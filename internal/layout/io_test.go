@@ -3,9 +3,11 @@ package layout_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -280,4 +282,52 @@ var _ = Describe("layout migration fidelity and strictness [REQ-LAY-005]", func(
 		Entry("a nodes value that is not an array",
 			func(d map[string]any) { d["nodes"] = 3.0 }, "nodes: expected an array"),
 	)
+})
+
+var _ = Describe("layout Update", func() {
+	It("serializes concurrent read-modify-write updates so none is lost", func() {
+		// Several srun steps in one job can each record a hot-spare swap at once.
+		dir := GinkgoT().TempDir()
+		Expect(layout.Write(dir, &layout.Layout{SchemaVersion: layout.SchemaVersion})).To(Succeed())
+
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				defer GinkgoRecover()
+				Expect(layout.Update(dir, func(l *layout.Layout) error {
+					l.Lost = append(l.Lost, fmt.Sprintf("node%02d", i))
+					return nil
+				})).To(Succeed())
+			}(i)
+		}
+		wg.Wait()
+
+		l, err := layout.Read(filepath.Join(dir, layout.LayoutFile))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(l.Lost).To(HaveLen(20))
+	})
+
+	It("leaves the file untouched when the update fails", func() {
+		dir := GinkgoT().TempDir()
+		Expect(layout.Write(dir, &layout.Layout{SchemaVersion: layout.SchemaVersion, Lost: []string{"a"}})).To(Succeed())
+
+		err := layout.Update(dir, func(l *layout.Layout) error {
+			l.Lost = append(l.Lost, "b")
+			return errors.New("no spare left")
+		})
+		Expect(err).To(MatchError("no spare left"))
+		l, _ := layout.Read(filepath.Join(dir, layout.LayoutFile))
+		Expect(l.Lost).To(Equal([]string{"a"}))
+	})
+
+	It("omits the hot-spare fields from a job without spares", func() {
+		dir := GinkgoT().TempDir()
+		Expect(layout.Write(dir, &layout.Layout{SchemaVersion: layout.SchemaVersion})).To(Succeed())
+		data, err := os.ReadFile(filepath.Join(dir, layout.LayoutFile))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).NotTo(ContainSubstring("spares"))
+		Expect(string(data)).NotTo(ContainSubstring("swaps"))
+	})
 })

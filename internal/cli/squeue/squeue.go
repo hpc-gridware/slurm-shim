@@ -80,7 +80,7 @@ func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr
 	// listing over it -- a supplementary query is not worth a non-zero exit.
 	v := view{cfg: cfg, now: time.Now()}
 	if needsHosts(opt.format) {
-		h, err := gedata.JobHosts(context.Background(), runner, opt.jobID)
+		h, err := gedata.JobAllocations(context.Background(), runner, opt.jobID)
 		if err != nil {
 			fmt.Fprintf(stderr, "squeue: warning: node list unavailable: %v\n", err)
 		} else {

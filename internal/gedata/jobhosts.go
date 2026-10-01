@@ -6,12 +6,30 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"slices"
+	"strconv"
 	"strings"
 )
 
-// JobHosts maps a job key (see JobKey) to the exec hosts holding that job's
-// tasks, in the order the scheduler granted them. Pass a job id to ask about one
-// job, or "" for every job the caller may see.
+// JobAllocation is one job's granted hosts split into the hosts that run its
+// tasks and its hot spares (sbatch --x-spares). Swaps recorded by srun (spare
+// replacing a lost node) are already applied: a swapped-in spare is in Hosts and
+// the host it replaced is in Lost.
+type JobAllocation struct {
+	Hosts  []string
+	Spares []string
+	Lost   []string
+}
+
+// SwapsContextKey is the job-context key under which srun records hot-spare swaps
+// ("lost:spare" pairs joined by '+'; qalter -ac splits values on commas).
+const SwapsContextKey = "shim.swaps"
+
+// JobAllocations maps a job key (see JobKey) to the exec hosts holding that
+// job's tasks, in the order the scheduler granted them, split into task hosts
+// and hot spares (see JobAllocation): the spare count comes from the job's
+// SLURM_SHIM_SPARES (set by sbatch), the swaps from its shim.swaps context.
+// Pass a job id to ask about one job, or "" for every job the caller may see.
 //
 // The source is JAT_granted_destin_identifier_list in `qstat -xml -j`, which
 // names each granted host in JG_qhostname, untruncated.
@@ -29,7 +47,7 @@ import (
 // A job that has not started carries no task element at all and simply does not
 // appear in the result (verified on OCS 9.1.5); callers render that as unknown
 // rather than as a host.
-func JobHosts(ctx context.Context, r Runner, jobID string) (map[string][]string, error) {
+func JobAllocations(ctx context.Context, r Runner, jobID string) (map[string]JobAllocation, error) {
 	// qstat -j has no -u selector (it ignores one), so the only narrowing
 	// available is by job. "*" asks for every job, which is what a listing of all
 	// users needs anyway.
@@ -49,7 +67,7 @@ func JobHosts(ctx context.Context, r Runner, jobID string) (map[string][]string,
 		}
 		return nil, fmt.Errorf("qstat -xml -j: exit %d: %s", exit, stderr)
 	}
-	hosts, err := ParseJobHostsXML(out)
+	hosts, err := ParseJobAllocationsXML(out)
 	if err != nil {
 		// A qstat that exits 0 while writing to stderr has still said something
 		// about why its output is unreadable; report it instead of discarding it.
@@ -81,8 +99,10 @@ func baseJobID(jobID string) string {
 // question for the go-clusterscheduler v9.1 package.
 type grantedJobsXML struct {
 	Jobs []struct {
-		JobID string `xml:"JB_job_number"`
-		Tasks []struct {
+		JobID   string        `xml:"JB_job_number"`
+		Env     []variableXML `xml:"JB_env_list>job_sublist"`
+		Context []variableXML `xml:"JB_context>context_list"`
+		Tasks   []struct {
 			TaskNumber string `xml:"JAT_task_number"`
 			Granted    []struct {
 				QHostname string `xml:"JG_qhostname"`
@@ -92,13 +112,19 @@ type grantedJobsXML struct {
 	} `xml:"djob_info>element"`
 }
 
-// ParseJobHostsXML extracts the granted hosts per job from `qstat -xml -j`.
+type variableXML struct {
+	Name  string `xml:"VA_variable"`
+	Value string `xml:"VA_value"`
+}
+
+// ParseJobAllocationsXML extracts the granted hosts per job from `qstat -xml -j`,
+// split into task hosts and hot spares.
 //
 // Hosts keep the order the scheduler granted them and are never sorted: the
 // nodelist encoding is first-seen order (REQ-ENC-002, as amended by SI-41),
 // because a sorted encoding desynchronises a derived master address from rank-0
 // placement.
-func ParseJobHostsXML(data []byte) (map[string][]string, error) {
+func ParseJobAllocationsXML(data []byte) (map[string]JobAllocation, error) {
 	// qstat answers a selector that matches nothing with an <unknown_jobs>
 	// document whose entries are wrapped in a literal "<>" element. That is not
 	// well-formed XML and no unmarshaller can read it, so recognise the root
@@ -108,7 +134,7 @@ func ParseJobHostsXML(data []byte) (map[string][]string, error) {
 		return nil, fmt.Errorf("parse qstat -xml -j: %w", err)
 	}
 	if root == "unknown_jobs" {
-		return map[string][]string{}, nil
+		return map[string]JobAllocation{}, nil
 	}
 
 	var doc grantedJobsXML
@@ -116,7 +142,7 @@ func ParseJobHostsXML(data []byte) (map[string][]string, error) {
 		return nil, fmt.Errorf("parse qstat -xml -j: %w", err)
 	}
 
-	hosts := map[string][]string{}
+	hosts := map[string]JobAllocation{}
 	for _, job := range doc.Jobs {
 		id := strings.TrimSpace(job.JobID)
 		if id == "" {
@@ -157,13 +183,78 @@ func ParseJobHostsXML(data []byte) (map[string][]string, error) {
 			// Also key by the bare job id when the job has a single task, which is
 			// how a job that is not an array appears; that bare key is the one a
 			// non-array row looks up, and an array row never asks for it.
-			hosts[JobKey(id, strings.TrimSpace(task.TaskNumber))] = list
+			alloc := splitAllocation(list, job.Env, job.Context)
+			hosts[JobKey(id, strings.TrimSpace(task.TaskNumber))] = alloc
 			if len(job.Tasks) == 1 {
-				hosts[id] = list
+				hosts[id] = alloc
 			}
 		}
 	}
 	return hosts, nil
+}
+
+// splitAllocation takes the job's hot spares off the end of its grant -- the
+// fabricator's rule: the last SLURM_SHIM_SPARES hosts -- and applies the swaps
+// srun recorded, so a view from outside the job matches the layout inside it.
+// A swap applies only when its lost host is one of the job's nodes and its spare
+// still an unused spare of this grant: a requeued job may still carry the swaps of
+// its previous run (ClearSwaps is best-effort), which name other hosts.
+func splitAllocation(granted []string, env, context []variableXML) JobAllocation {
+	k := 0
+	for _, v := range env {
+		if v.Name == "SLURM_SHIM_SPARES" {
+			k, _ = strconv.Atoi(strings.TrimSpace(v.Value))
+		}
+	}
+	if k <= 0 || k >= len(granted) {
+		return JobAllocation{Hosts: granted}
+	}
+	n := len(granted) - k
+	a := JobAllocation{
+		Hosts:  append([]string(nil), granted[:n]...),
+		Spares: append([]string(nil), granted[n:]...),
+	}
+	for _, v := range context {
+		if v.Name != SwapsContextKey {
+			continue
+		}
+		for _, pair := range strings.Split(v.Value, "+") {
+			lost, spare, _ := strings.Cut(pair, ":")
+			i, j := slices.Index(a.Hosts, lost), slices.Index(a.Spares, spare)
+			if i < 0 || j < 0 {
+				continue
+			}
+			a.Hosts[i] = spare
+			a.Lost = append(a.Lost, lost)
+			a.Spares = append(a.Spares[:j], a.Spares[j+1:]...)
+		}
+	}
+	return a
+}
+
+// RecordSwaps stores the job's hot-spare swaps ("lost:spare" pairs, in order) in
+// its job context, so squeue and scontrol outside the job can show them. qalter
+// -ac on a running job works only from a submit host; the caller treats failure
+// as best-effort.
+func RecordSwaps(ctx context.Context, r Runner, jobID string, pairs []string) error {
+	return runQalter(ctx, r, "-ac", SwapsContextKey+"="+strings.Join(pairs, "+"), jobID)
+}
+
+// ClearSwaps removes recorded swaps, so a requeued job does not show the swaps
+// of its previous run.
+func ClearSwaps(ctx context.Context, r Runner, jobID string) error {
+	return runQalter(ctx, r, "-dc", SwapsContextKey, jobID)
+}
+
+func runQalter(ctx context.Context, r Runner, args ...string) error {
+	_, errOut, exit, err := r.Run(ctx, "qalter", args...)
+	if err != nil {
+		return err
+	}
+	if exit != 0 {
+		return fmt.Errorf("qalter: exit %d: %s", exit, strings.TrimSpace(string(errOut)))
+	}
+	return nil
 }
 
 // xmlRootElement returns the name of a document's root element.

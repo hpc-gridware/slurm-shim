@@ -272,7 +272,7 @@ func (s *supervisor) baseEnv() []string {
 	default:
 		env = append(minimalEnv(), splitKV(spec)...)
 	}
-	return dedupEnv(s.dropForeignDeviceVars(env), s.stepShadows())
+	return dedupEnv(s.dropForeignDeviceVars(s.withElasticEnv(env)), s.stepShadows())
 }
 
 // stepShadows are the step-scoped SLURM_* values that shadow the job-level ones.
@@ -294,6 +294,16 @@ func (s *supervisor) stepShadows() []string {
 	}
 	if uniform(counts) {
 		shadows = append(shadows, "SLURM_NTASKS_PER_NODE="+strconv.Itoa(counts[0]))
+	}
+	// After a hot-spare swap the batch shell's job node list still names the lost
+	// host; steps see the job's current nodes instead, as scontrol does.
+	if len(s.lay.Swaps) > 0 {
+		hosts := make([]string, len(s.lay.Nodes))
+		for i, n := range s.lay.Nodes {
+			hosts[i] = n.Host
+		}
+		nodelist := encoders.CompressNodelist(hosts)
+		shadows = append(shadows, "SLURM_JOB_NODELIST="+nodelist, "SLURM_NODELIST="+nodelist)
 	}
 	if len(s.lay.Nodes) > 0 && s.lay.Nodes[0].IP != "" {
 		shadows = append(shadows, "SLURM_LAUNCH_NODE_IPADDR="+s.lay.Nodes[0].IP)

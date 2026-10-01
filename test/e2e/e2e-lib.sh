@@ -99,3 +99,73 @@ sbatch_submit() {
   gridware "rm -f '$out'"
   gridware "sbatch $* --output='$out' '$script'" | awk '/Submitted batch job/{print $NF}'
 }
+
+# failed_field <jobid> prints the leading code of qacct's `failed` field once the
+# job reaches accounting (it carries a ": description" suffix when non-zero).
+# Empty if the job never shows up within 90s.
+failed_field() {
+  for _ in $(seq 1 45); do
+    local f
+    f="$(gridware "qacct -j '$1' 2>/dev/null | awk '/^failed/{print \$2; exit}'" || true)"
+    [ -n "$f" ] && { echo "$f"; return 0; }
+    sleep 2
+  done
+}
+
+# partition <container> [log-suffix] cuts a node off the network (docker
+# backend): it remembers the container's network and IP, then disconnects it.
+# heal reconnects it with the same IP; it is a no-op when nothing is
+# partitioned, so it is safe to call twice and from an EXIT trap.
+PARTITIONED="" PARTITION_NET="" PARTITION_IP=""
+partition() {
+  PARTITIONED=$1
+  read -r PARTITION_NET PARTITION_IP < <(docker inspect "$1" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{end}}')
+  log "partitioning $1 ($PARTITION_NET $PARTITION_IP)${2:-}"
+  docker network disconnect "$PARTITION_NET" "$1"
+}
+heal() {
+  [ -n "$PARTITIONED" ] && [ -n "$PARTITION_NET" ] &&
+    docker network connect --ip "$PARTITION_IP" "$PARTITION_NET" "$PARTITIONED" >/dev/null 2>&1
+  PARTITIONED=""
+}
+
+# fast_liveness_config <path> copies the cell's shim config to <path>, owned by
+# the job user, with short liveness timers: a stale stepper gives up after 10s,
+# srun declares a node lost after 15s. Jobs use it via SLURM_SHIM_CONFIG.
+fast_liveness_config() {
+  local cfg=$1 kv k v
+  manager "cp $CELL_DIR/slurm-shim/config.yaml $cfg && chown $JOB_USER $cfg"
+  for kv in ping_interval:2s orphan_grace:10s ping_deadline:15s; do
+    k=${kv%%:*} v=${kv#*:}
+    manager "grep -q '^$k:' $cfg && sed -i 's/^$k:.*/$k: $v/' $cfg || echo '$k: $v' >> $cfg"
+  done
+}
+
+# require_spares_cluster skips the check (and finishes) unless the cluster can
+# run a hot-spare test: docker backend (the lost node is partitioned), 3 exec
+# nodes (2 nodes + 1 spare) and OCS 9.1.5+ (spares need qsub -par).
+require_spares_cluster() {
+  if [ "$BACKEND" != docker ]; then
+    skip "partitions a node with docker network disconnect (backend is $BACKEND)"
+    finish
+  fi
+  if [ "${EXEC_NODES:-0}" -lt 3 ]; then
+    skip "needs 3 exec nodes for 2 nodes + 1 spare (cluster has ${EXEC_NODES:-0})"
+    finish
+  fi
+  local ocs
+  ocs="$(ocs_version)"
+  if ! version_ge "${ocs:-0}" 9.1.5; then
+    skip "hot spares need qsub -par, OCS 9.1.5+ (cluster runs ${ocs:-unknown})"
+    finish
+  fi
+}
+
+# wait_host_up <host> waits (bounded, 60s) until no queue instance on host is
+# in state u, so a partitioned node is healthy again for the next check.
+wait_host_up() {
+  for _ in $(seq 1 30); do
+    manager "qstat -f | grep '@$1 ' | grep -q ' u'" || break
+    sleep 2
+  done
+}

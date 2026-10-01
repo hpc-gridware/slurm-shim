@@ -98,6 +98,24 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 
 	rule := resolveAllocationRule(runner, cfg, opt, part, slots, stderr)
 
+	// A partition default applies only to jobs that can take spares; the user never
+	// asked for them, so a job that cannot is submitted without them, not refused.
+	if !opt.haveSpares && part.Spares > 0 {
+		if why := cannotTakeSpares(rule); why != "" {
+			fmt.Fprintf(stderr, "sbatch: warning: partition %s defaults to %d spare(s), but this job cannot "+
+				"take them (%s); submitting without spares\n", opt.partition, part.Spares, why)
+		} else {
+			opt.spares = part.Spares
+		}
+	}
+	if opt.spares > 0 {
+		slots, rule, err = withSpares(cfg, opt, slots, rule)
+		if err != nil {
+			fmt.Fprintln(stderr, err.Error())
+			return 1
+		}
+	}
+
 	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots, rule)
 	for _, w := range qwarns {
 		fmt.Fprintln(stderr, "sbatch: warning: "+w)

@@ -67,6 +67,18 @@ func InstallTree(src, prefix string) error {
 			return fmt.Errorf("install: chmod %s: %w", dst, err)
 		}
 	}
+	// Reference drain scripts for hot-spare swaps (docs/install). Optional: a
+	// payload without them installs as before.
+	if !same {
+		for _, rel := range []string{"share/drain-load-sensor.sh", "share/drain-qmod-helper.sh"} {
+			if _, err := os.Stat(filepath.Join(src, rel)); err != nil {
+				continue
+			}
+			if err := copyFile(filepath.Join(src, rel), filepath.Join(prefix, rel), 0o755); err != nil {
+				return err
+			}
+		}
+	}
 	// Relative links, so bin/ copies as a unit (README Quickstart).
 	for _, c := range Commands {
 		link := filepath.Join(prefix, "bin", c)

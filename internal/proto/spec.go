@@ -70,6 +70,10 @@ type StepSpec struct {
 	// its ranks. Zero disables it.
 	OrphanGraceMS  int64 `json:"orphan_grace_ms,omitempty"`
 	PingIntervalMS int64 `json:"ping_interval_ms,omitempty"`
+	// AppendOutput opens per-rank output files for append instead of truncating
+	// them: a hot-spare relaunch continues the output the lost node's ranks
+	// already wrote rather than erasing it.
+	AppendOutput bool `json:"append_output,omitempty"`
 }
 
 // DeviceIDs are one rank's granted device ids. They marshal as JSON numbers when

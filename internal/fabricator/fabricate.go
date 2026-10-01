@@ -84,10 +84,77 @@ func Fabricate(opts Options) (*Result, error) {
 	res.Warnings = append(res.Warnings,
 		discoverGPUs(qctx, opts.Runner, cfg, e, e.get("JOB_ID"), nodes.hosts)...)
 
+	// Hot spares come off before any geometry is derived: the task policy, the
+	// rank map and every SLURM_* node variable describe the active nodes only.
+	nodes, spares, warn := splitSpares(e, nodes)
+	if warn != "" {
+		res.Warnings = append(res.Warnings, warn)
+	}
+
 	if err := assemble(qctx, res, e, cfg, opts, nodes); err != nil {
 		return nil, err
 	}
+	// A requeued job starts over with all its spares: drop the previous run's
+	// recorded swaps, so squeue/scontrol outside the job do not show them.
+	// Best-effort (qalter needs a submit host); the layout is the truth.
+	if len(spares) > 0 && opts.Runner != nil {
+		_ = gedata.ClearSwaps(qctx, opts.Runner, e.get("JOB_ID"))
+	}
+	addSpares(res, spares)
 	return res, nil
+}
+
+// addSpares puts the hot spares into the layout and SLURM_X_SPARE_NODELIST; a job
+// without spares gets neither.
+func addSpares(res *Result, spares []nodeInfo) {
+	if len(spares) == 0 {
+		return
+	}
+	res.Layout.Spares = spareNodes(spares)
+	names := make([]string, len(spares))
+	for i, h := range spares {
+		names[i] = h.Name
+	}
+	res.Exports = append(res.Exports, KV{Key: "SLURM_X_SPARE_NODELIST", Value: encoders.CompressNodelist(names)})
+}
+
+// splitSpares takes the hot spares (sbatch --x-spares, carried into the job as
+// SLURM_SHIM_SPARES) off the end of the grant: the last k hosts in PE_HOSTFILE
+// order. Never the master, nodes[0] (REQ-LAY-002), which runs the batch script
+// and srun. The grant order is not re-sorted (REQ-ENC-002), so the active nodes
+// and MASTER_ADDR stay exactly what they would be without spares. Each spare keeps
+// the GPU grant discovered for it, ready for the node it may replace.
+func splitSpares(e envReader, ns nodeSet) (nodeSet, []nodeInfo, string) {
+	k := e.intDefault("SLURM_SHIM_SPARES", 0)
+	if k <= 0 {
+		return ns, nil, ""
+	}
+	if k >= len(ns.hosts) {
+		return ns, nil, fmt.Sprintf("SLURM_SHIM_SPARES=%d leaves no node besides the master in a %d-node grant; "+
+			"running without spares", k, len(ns.hosts))
+	}
+	n := len(ns.hosts) - k
+	spares := append([]nodeInfo(nil), ns.hosts[n:]...)
+	ns.hosts = ns.hosts[:n:n]
+	return ns, spares, ""
+}
+
+// spareNodes renders the spares for the layout. Index is the position within
+// Spares; a spare only gets a node index when it replaces a lost node.
+func spareNodes(spares []nodeInfo) []layout.Node {
+	nodes := make([]layout.Node, len(spares))
+	for i, h := range spares {
+		nodes[i] = layout.Node{
+			Index:          i,
+			Host:           h.Name,
+			FQDN:           h.FQDN,
+			IP:             h.ip,
+			Slots:          h.Slots,
+			ProcessorRange: h.ProcessorRange,
+			GPUs:           h.gpus,
+		}
+	}
+	return nodes
 }
 
 // assemble derives the geometry, layout and Table A exports from a resolved

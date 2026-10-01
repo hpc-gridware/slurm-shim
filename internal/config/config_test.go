@@ -430,3 +430,52 @@ var _ = Describe("control-channel liveness timings [REQ-CHN-004]", func() {
 		Expect(warns).To(ContainElement(ContainSubstring("fewer than two probes")))
 	})
 })
+
+var _ = Describe("hot spares", func() {
+	parse := func(doc string) (*config.Config, []string) {
+		cfg, warns, err := config.Parse([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		return cfg, warns
+	}
+
+	It("defaults to elastic torchrun steps, no cap and no drain", func() {
+		cfg, warns := parse("")
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.Elastic).To(Equal(config.ElasticAuto))
+		Expect(cfg.MaxSpares).To(Equal(0))
+		Expect(cfg.DrainCommand).To(BeEmpty())
+		Expect(cfg.DrainTimeout.Duration).To(BeNumerically(">", 0))
+	})
+
+	It("reads the hot-spare settings and a partition default", func() {
+		cfg, warns := parse(`elastic: "ON"
+max_spares: 2
+drain_command: [touch, "/shared/drain/{host}"]
+drain_timeout: 5s
+partitions:
+  train: {queue: all.q, pe: gpu.pe, slots: per-task, spares: 1}
+`)
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.Elastic).To(Equal(config.ElasticOn), "case-insensitive")
+		Expect(cfg.MaxSpares).To(Equal(2))
+		Expect(cfg.DrainCommand).To(Equal([]string{"touch", "/shared/drain/{host}"}))
+		Expect(cfg.DrainTimeout.Duration.Seconds()).To(Equal(5.0))
+		Expect(cfg.Partitions["train"].Spares).To(Equal(1))
+	})
+
+	It("falls back with a warning on values it cannot use", func() {
+		cfg, warns := parse(`elastic: sometimes
+max_spares: -1
+partitions:
+  train: {queue: all.q, pe: gpu.pe, slots: per-task, spares: -2}
+`)
+		Expect(cfg.Elastic).To(Equal(config.ElasticAuto))
+		Expect(cfg.MaxSpares).To(Equal(0))
+		Expect(cfg.Partitions["train"].Spares).To(Equal(0))
+		Expect(warns).To(ContainElements(
+			ContainSubstring(`unknown elastic "sometimes"`),
+			ContainSubstring("max_spares -1 is negative"),
+			ContainSubstring(`partition "train": spares -2 is negative`),
+		))
+	})
+})

@@ -26,22 +26,9 @@ if [ "${EXEC_NODES:-0}" -lt 3 ]; then
   finish
 fi
 
-failed_field() {
-  for _ in $(seq 1 45); do
-    local f
-    f="$(gridware "qacct -j '$1' 2>/dev/null | awk '/^failed/{print \$2; exit}'" || true)"
-    [ -n "$f" ] && { echo "$f"; return 0; }
-    sleep 2
-  done
-}
-
-target="" net="" ip="" id="" job=""
-reconnect() {
-  [ -n "$target" ] && [ -n "$net" ] && docker network connect --ip "$ip" "$net" "$target" >/dev/null 2>&1
-  target=""
-}
+target="" id="" job=""
 cleanup() {
-  reconnect || true
+  heal
   [ -n "$id" ] && gridware "qdel $id" >/dev/null 2>&1 || true
   rm -f "$job"
 }
@@ -50,11 +37,7 @@ trap cleanup EXIT
 # Short timers for the test, via the job's own config copy:
 # the stepper gives up after 10s, srun after 15s.
 cfg=$JOB_HOME/e2e-42-config.yaml
-manager "cp $CELL_DIR/slurm-shim/config.yaml $cfg && chown $JOB_USER $cfg"
-for kv in ping_interval:2s orphan_grace:10s ping_deadline:15s; do
-  k=${kv%%:*} v=${kv#*:}
-  manager "grep -q '^$k:' $cfg && sed -i 's/^$k:.*/$k: $v/' $cfg || echo '$k: $v' >> $cfg"
-done
+fast_liveness_config "$cfg"
 
 job="$(mktemp)"
 cat >"$job" <<EOF
@@ -93,9 +76,7 @@ if [ -z "$target" ]; then
   fail "the step's ranks never started on a slave other than $MASTER"
   finish
 fi
-read -r net ip < <(docker inspect "$target" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{end}}')
-log "partitioning $target ($net $ip)"
-docker network disconnect "$net" "$target"
+partition "$target"
 
 # srun must notice and return while the host is still partitioned.
 for _ in $(seq 1 45); do
@@ -112,7 +93,7 @@ for _ in $(seq 1 15); do
 done
 assert_eq "$rank_left" "gone" "the stale stepper on the partitioned host stopped its rank"
 part_host=$target
-reconnect
+heal
 
 res="$(jobout "$id" "$out")"
 assert_contains "$res" "lost node $part_host" "srun declares the partitioned node lost"
@@ -133,9 +114,6 @@ assert_eq "$(failed_field "$id")" "0" "qacct failed is 0, not 100: no pe task di
 id=""
 
 # Leave the host healthy for the next check.
-for _ in $(seq 1 30); do
-  manager "qstat -f | grep '@$part_host ' | grep -q ' u'" || break
-  sleep 2
-done
+wait_host_up "$part_host"
 
 finish

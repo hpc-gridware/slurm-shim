@@ -18,17 +18,6 @@ if [ "${EXEC_NODES:-0}" -lt 2 ]; then
   finish
 fi
 
-# failed_field <jobid> prints the leading code of qacct's `failed` field once the
-# job reaches accounting (it carries a ": description" suffix when non-zero).
-failed_field() {
-  for _ in $(seq 1 45); do
-    local f
-    f="$(gridware "qacct -j '$1' 2>/dev/null | awk '/^failed/{print \$2; exit}'" || true)"
-    [ -n "$f" ] && { echo "$f"; return 0; }
-    sleep 2
-  done
-}
-
 job="$(mktemp)"
 ids=""
 # Remove the job script, and never leave a job holding nodes for the next check.

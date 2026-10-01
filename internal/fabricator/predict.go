@@ -69,8 +69,15 @@ func Predict(opts Options, nodes []PredictedNode) (*Result, error) {
 		}
 	}
 
+	// The same spare split as Fabricate, so a dry run of an --x-spares job reports
+	// the active nodes and the spares the job will really see.
+	ns, spares, warn := splitSpares(e, ns)
+	if warn != "" {
+		res.Warnings = append(res.Warnings, warn)
+	}
 	if err := assemble(context.Background(), res, e, cfg, opts, ns); err != nil {
 		return nil, err
 	}
+	addSpares(res, spares)
 	return res, nil
 }
