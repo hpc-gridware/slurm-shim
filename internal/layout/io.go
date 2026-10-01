@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 )
 
 // StateDirFor returns the per-job state directory under tmpdir, refusing an
@@ -220,4 +221,32 @@ func stringifyGPUs(obj any) error {
 	}
 	m["gpus"] = out
 	return nil
+}
+
+// LockFile serializes read-modify-write updates of the layout (Update).
+const LockFile = "layout.lock"
+
+// Update re-reads the layout under an exclusive lock, applies fn, and writes the
+// result atomically. Concurrent steps in one job (several srun at once) can then
+// both change the layout -- a hot-spare swap -- without one overwriting the
+// other's change. fn sees the current file, not a caller's stale copy; an error
+// from fn leaves the file untouched.
+func Update(dir string, fn func(*Layout) error) error {
+	f, err := os.OpenFile(filepath.Join(dir, LockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	// Closing the descriptor releases the lock.
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	l, err := Read(filepath.Join(dir, LayoutFile))
+	if err != nil {
+		return err
+	}
+	if err := fn(l); err != nil {
+		return err
+	}
+	return Write(dir, l)
 }

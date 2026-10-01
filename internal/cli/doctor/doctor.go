@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,7 +41,8 @@ func CompatNotes(b gedata.OCSBuild) []string {
 		notes = append(notes,
 			fmt.Sprintf("sacct ExitCode for parallel jobs is 0 regardless of outcome below OCS %s (%s); this is %s",
 				AccountingFixRelease, AccountingFixStamp, b),
-			"--nodes/--ntasks-per-node are not enforced (qsub -par needs OCS 9.1.5); the PE's allocation_rule places the nodes")
+			"--nodes/--ntasks-per-node are not enforced (qsub -par needs OCS 9.1.5); the PE's allocation_rule places the nodes",
+			"sbatch --x-spares (hot spare nodes) is refused: it needs qsub -par (OCS 9.1.5)")
 	}
 	return notes
 }
@@ -253,6 +255,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	hosts, hostsErr := admin.ExecHosts(ctx)
 	if hostsErr == nil {
 		r.info("%d exec host(s): %s -- each must have %s at the same path", len(hosts), strings.Join(hosts, " "), prefix)
+		if submit, err := admin.SubmitHosts(ctx); err == nil {
+			if missing := notIn(hosts, submit); len(missing) > 0 {
+				r.warn("exec host(s) %s are not submit hosts: a hot-spare swap in a job whose master runs there "+
+					"is not recorded (qalter needs a submit host), so squeue/scontrol outside the job keep "+
+					"showing the lost node", strings.Join(missing, " "))
+			}
+		}
 	}
 
 	// -- gpu isolation --------------------------------------------------------
@@ -285,6 +294,40 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if cfg.ControlPortBase == 0 {
 		r.warn("control_port_base is 0: srun binds an ephemeral port no firewall rule can describe")
 	}
+	if cfg.PingDeadline.Duration > 0 {
+		r.info("lost nodes: a remote node whose host stops answering is declared lost after ping_deadline %s; "+
+			"a stepper that loses srun's host stops its tasks after orphan_grace %s",
+			cfg.PingDeadline.Duration, cfg.OrphanGrace.Duration)
+	} else {
+		r.warn("ping_deadline is 0: a step on a node that crashes or drops off the network hangs until the job ends")
+	}
+	// qmaster_params is read by qmaster only, so only the global value counts.
+	if global, _, err := readConf(ctx, runner, ""); err != nil {
+		r.info("ENABLE_RESCHEDULE_SLAVE: unknown (%v)", err)
+	} else if paramEnabled(global["qmaster_params"], "ENABLE_RESCHEDULE_SLAVE") {
+		r.fail("qmaster_params sets ENABLE_RESCHEDULE_SLAVE: losing any slave host reschedules the whole job, " +
+			"so a lost node can never be handled by the step (or replaced by a hot spare)")
+	}
+	if hostsErr != nil {
+		r.info("ENABLE_ADDGRP_KILL: unknown (exec host list: %v)", hostsErr)
+	} else if missing, err := addgrpKillMissing(ctx, runner, hosts); err != nil {
+		r.info("ENABLE_ADDGRP_KILL: unknown (%v)", err)
+	} else if len(missing) > 0 {
+		r.warn("execd_params lacks ENABLE_ADDGRP_KILL=TRUE on exec host(s) %s: when a job ends while one of its "+
+			"hosts is unreachable, srun's qrsh -inherit client to that host outlives the job (execd kills by "+
+			"process group only)", strings.Join(missing, " "))
+	} else {
+		r.pass("execd_params sets ENABLE_ADDGRP_KILL on every exec host")
+	}
+	drain := "not set (a swapped-out node is not drained)"
+	if len(cfg.DrainCommand) > 0 {
+		drain = strings.Join(cfg.DrainCommand, " ")
+	}
+	maxSpares := "no cap"
+	if cfg.MaxSpares > 0 {
+		maxSpares = strconv.Itoa(cfg.MaxSpares)
+	}
+	r.info("hot spares (sbatch --x-spares): elastic %s, max_spares %s, drain_command %s", cfg.Elastic, maxSpares, drain)
 
 	// -- security -------------------------------------------------------------
 	r.section("security")
@@ -293,7 +336,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	} else {
 		r.pass("execd spool is not traversable by other users (step tokens stay private)")
 	}
-	if daemon := rshDaemon(ctx, runner); daemon != "" && !strings.EqualFold(daemon, "builtin") {
+	if daemon := globalConf(ctx, runner, "rsh_daemon"); daemon != "" && !strings.EqualFold(daemon, "builtin") {
 		r.warn("rsh_daemon is %q, not builtin: srun --pty sessions get the environment but may have no terminal", daemon)
 	} else if daemon != "" {
 		r.pass("rsh_daemon builtin")
@@ -335,19 +378,92 @@ func memSemantics(scope string) string {
 	return "filters hosts on free memory but is not enforced"
 }
 
-// rshDaemon reads the cluster's rsh_daemon from qconf -sconf, "" if unknown.
-func rshDaemon(ctx context.Context, r gedata.Runner) string {
-	out, _, exit, err := r.Run(ctx, "qconf", "-sconf")
-	if err != nil || exit != 0 {
+// globalConf reads one value of the cluster's global configuration (qconf
+// -sconf), "" if unknown.
+func globalConf(ctx context.Context, r gedata.Runner, key string) string {
+	conf, _, err := readConf(ctx, r, "")
+	if err != nil {
 		return ""
 	}
+	return conf[key]
+}
+
+// readConf reads the global configuration (host "") or a host's local one
+// (qconf -sconf <host>) as key -> value. found is false when the host has no
+// local configuration, which is normal: the global one applies to it.
+func readConf(ctx context.Context, r gedata.Runner, host string) (conf map[string]string, found bool, err error) {
+	args := []string{"-sconf"}
+	if host != "" {
+		args = append(args, host)
+	}
+	out, errOut, exit, err := r.Run(ctx, "qconf", args...)
+	if err != nil {
+		return nil, false, err
+	}
+	if exit != 0 {
+		msg := strings.TrimSpace(string(out) + " " + string(errOut))
+		if host != "" && strings.Contains(msg, "not defined") {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("qconf %s: exit %d: %s", strings.Join(args, " "), exit, msg)
+	}
+	conf = map[string]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) >= 2 && f[0] == "rsh_daemon" {
-			return f[1]
+		if len(f) >= 2 && !strings.HasPrefix(f[0], "#") {
+			conf[f[0]] = strings.Join(f[1:], " ")
 		}
 	}
-	return ""
+	return conf, true, nil
+}
+
+// addgrpKillMissing lists the exec hosts on which execd_params does not turn
+// ENABLE_ADDGRP_KILL on. A host's local execd_params replaces the global one
+// as a whole, so the global value counts only for hosts without their own.
+func addgrpKillMissing(ctx context.Context, r gedata.Runner, hosts []string) ([]string, error) {
+	global, _, err := readConf(ctx, r, "")
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	for _, h := range hosts {
+		local, found, err := readConf(ctx, r, h)
+		if err != nil {
+			return nil, err
+		}
+		params := global["execd_params"]
+		if lp := local["execd_params"]; found && lp != "" && !strings.EqualFold(lp, "NONE") {
+			params = lp
+		}
+		if !paramEnabled(params, "ENABLE_ADDGRP_KILL") {
+			missing = append(missing, h)
+		}
+	}
+	return missing, nil
+}
+
+// paramEnabled reports whether a qmaster_params/execd_params list turns the
+// boolean switch name on (given bare, or as =1/=true). Entries are comma- or
+// space-separated.
+func paramEnabled(params, name string) bool {
+	for _, p := range strings.FieldsFunc(params, func(c rune) bool { return c == ',' || c == ' ' || c == '\t' }) {
+		key, val, hasVal := strings.Cut(p, "=")
+		if strings.EqualFold(key, name) {
+			return !hasVal || strings.EqualFold(val, "true") || val == "1"
+		}
+	}
+	return false
+}
+
+// notIn returns the entries of xs that are not in set.
+func notIn(xs, set []string) []string {
+	var out []string
+	for _, x := range xs {
+		if !containsStr(set, x) {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func containsStr(xs []string, s string) bool {

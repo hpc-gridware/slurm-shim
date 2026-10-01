@@ -85,7 +85,7 @@ func formatHeader(format string) string {
 // datum added so far has widened both the renderer and its call sites.
 type view struct {
 	cfg   *config.Config
-	hosts map[string][]string
+	hosts map[string]gedata.JobAllocation
 	now   time.Time
 }
 
@@ -132,7 +132,7 @@ func started(row gedata.JobRow) bool {
 // the count and the list cannot contradict each other; degraded says when it
 // happened, and squeue reports it.
 func (v view) hostsFor(row gedata.JobRow) []string {
-	if h := v.hosts[row.Key()]; len(h) > 0 {
+	if h := v.hosts[row.Key()].Hosts; len(h) > 0 {
 		return h
 	}
 	if !started(row) {
@@ -149,7 +149,7 @@ func (v view) hostsFor(row gedata.JobRow) []string {
 // from a correct single-node answer, so the caller warns on stderr instead of
 // letting it pass as fact.
 func (v view) degraded(row gedata.JobRow) bool {
-	return started(row) && len(v.hosts[row.Key()]) == 0
+	return started(row) && len(v.hosts[row.Key()].Hosts) == 0
 }
 
 func headerTitle(verb byte) string {

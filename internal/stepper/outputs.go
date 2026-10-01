@@ -27,7 +27,7 @@ func (s *stepper) openOutputs() ([]*outputFiles, error) {
 	}
 	for i, r := range s.spec.Ranks {
 		if r.StdoutFile != "" {
-			f, err := os.Create(r.StdoutFile)
+			f, err := openOutput(r.StdoutFile, s.spec.AppendOutput)
 			if err != nil {
 				return fail(fmt.Errorf("opening %s: %w", r.StdoutFile, err))
 			}
@@ -35,7 +35,7 @@ func (s *stepper) openOutputs() ([]*outputFiles, error) {
 			created = append(created, f)
 		}
 		if r.StderrFile != "" {
-			f, err := os.Create(r.StderrFile)
+			f, err := openOutput(r.StderrFile, s.spec.AppendOutput)
 			if err != nil {
 				return fail(fmt.Errorf("opening %s: %w", r.StderrFile, err))
 			}
@@ -64,4 +64,17 @@ func closeAll2(files []*os.File) {
 	for _, f := range files {
 		_ = f.Close()
 	}
+}
+
+// openOutput creates or truncates a rank output file, or appends to it for a
+// hot-spare relaunch, which continues what the lost node's ranks wrote.
+func openOutput(path string, appendOutput bool) (*os.File, error) {
+	// Always O_APPEND: after a hot-spare swap a stale stepper may still write to
+	// the same file as its replacement, and a private offset would overwrite the
+	// replacement's lines.
+	flags := os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	if !appendOutput {
+		flags |= os.O_TRUNC
+	}
+	return os.OpenFile(path, flags, 0o666)
 }

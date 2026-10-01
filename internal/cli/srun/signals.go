@@ -70,9 +70,8 @@ func (s *supervisor) forward(sig syscall.Signal) {
 		s.mu.Unlock()
 		return
 	}
-	conns := s.conns
 	s.mu.Unlock()
-	for _, c := range conns {
+	for _, c := range s.allConns() {
 		_ = c.Send(proto.Frame{Type: proto.FrameSig, Payload: proto.EncodeInt32(int32(sig))})
 	}
 	if sig == syscall.SIGTERM || sig == syscall.SIGHUP {

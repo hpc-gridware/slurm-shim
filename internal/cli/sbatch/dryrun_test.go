@@ -536,3 +536,33 @@ var _ = Describe("directives the shim does not support [REQ-SBT-001]", func() {
 		Expect(r.stderr).NotTo(ContainSubstring("qsub -terse"))
 	})
 })
+
+var _ = Describe("the dry run predicts hot spares (--x-spares)", func() {
+	var script string
+
+	BeforeEach(func() {
+		script = filepath.Join(GinkgoT().TempDir(), "train.sh")
+		Expect(os.WriteFile(script, []byte("#!/bin/bash\nsrun hostname\n"), 0o700)).To(Succeed())
+	})
+
+	It("reports the active nodes and the spare as the job will see them", func() {
+		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
+			"-p", "gpu", "-N", "2", "--x-spares=1", script)
+
+		Expect(r.code).To(Equal(0), r.stderr)
+		Expect(r.stderr).To(ContainSubstring("-pe gpu.pe 3 -par 1"))
+		Expect(r.stdout).To(ContainSubstring("SLURM_NNODES=2\n"))
+		Expect(r.stdout).To(ContainSubstring("SLURM_NTASKS=2\n"))
+		Expect(r.stdout).To(ContainSubstring("SLURM_X_SPARE_NODELIST=<spare hosts from the grant>\n"))
+	})
+
+	It("ignores a spare count inherited from the submit environment", func() {
+		GinkgoT().Setenv("SLURM_SHIM_SPARES", "1")
+		r := dryRunSbatch(parQconfPE("allocation_rule $fill_up\ncontrol_slaves TRUE\n"),
+			"-p", "gpu", "-N", "2", script)
+
+		Expect(r.code).To(Equal(0), r.stderr)
+		Expect(r.stdout).To(ContainSubstring("SLURM_NNODES=2\n"))
+		Expect(r.stdout).NotTo(ContainSubstring("SLURM_X_SPARE_NODELIST"))
+	})
+})

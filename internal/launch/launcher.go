@@ -6,6 +6,7 @@ package launch
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -21,6 +22,21 @@ type Launcher interface {
 	// the envelope; Start returns once the process is running.
 	Start(ctx context.Context, host string, envelope proto.Envelope, token string) (Handle, error)
 }
+
+// ErrHostUnusable marks a start failure that points at the host itself (its
+// execd never accepted the task), as opposed to one that would fail the same way
+// on any host (spawning qrsh, slots held by other steps, a misconfiguration).
+// Only the former may cost a hot spare: errors.Is(err, ErrHostUnusable).
+var ErrHostUnusable = errors.New("host unusable")
+
+// HostError marks err as pointing at the host (ErrHostUnusable), keeping its
+// message.
+func HostError(err error) error { return hostError{err} }
+
+type hostError struct{ error }
+
+func (e hostError) Unwrap() error        { return e.error }
+func (e hostError) Is(target error) bool { return target == ErrHostUnusable }
 
 // Handle is a launched stepper's lifecycle. It deliberately has no Kill: under
 // tight integration the handle is the local `qrsh -inherit` client, and killing

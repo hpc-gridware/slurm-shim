@@ -144,15 +144,15 @@ func showJob(runner gedata.Runner, args []string, stdout, stderr io.Writer) int 
 		// same job, because users cross-check the two. A failure here is not worth
 		// failing the record over: fall back to the master host, which is one host
 		// the job really is on, and say on stderr that the rest is missing.
-		hosts, hostErr := gedata.JobHosts(context.Background(), runner, id)
+		allocs, hostErr := gedata.JobAllocations(context.Background(), runner, id)
 		if hostErr != nil {
 			fmt.Fprintf(stderr, "scontrol: warning: node list unavailable: %v\n", hostErr)
 		}
-		granted := hosts[r.Key()]
-		if len(granted) == 0 && gedata.MapState(r.State) != "PD" {
+		alloc := allocs[r.Key()]
+		if len(alloc.Hosts) == 0 && gedata.MapState(r.State) != "PD" {
 			fmt.Fprintf(stderr, "scontrol: warning: no granted host list for %s; showing the master host only\n", id)
 		}
-		return renderGEJob(id, r, granted, stdout)
+		return renderGEJob(id, r, alloc, stdout)
 	}
 	fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
 	return 1
@@ -170,7 +170,7 @@ func renderLayoutJob(lay *layout.Layout, stdout io.Writer) int {
 	for i, n := range lay.Nodes {
 		hosts[i] = n.Host
 	}
-	printFields(stdout, [][2]string{
+	fields := [][2]string{
 		{"JobId", strconv.FormatInt(lay.Job.JobID, 10)},
 		{"JobName", lay.Job.Name},
 		{"JobState", "RUNNING"},
@@ -180,24 +180,45 @@ func renderLayoutJob(lay *layout.Layout, stdout io.Writer) int {
 		{"Partition", lay.Job.Partition},
 		{"UserId", fmt.Sprintf("%s(%d)", lay.Job.User, lay.Job.UID)},
 		{"WorkDir", lay.Job.SubmitDir},
-	})
+	}
+	spares := make([]string, len(lay.Spares))
+	for i, n := range lay.Spares {
+		spares[i] = n.Host
+	}
+	fields = append(fields, spareFields(spares, lay.Lost)...)
+	printFields(stdout, fields)
 	return 0
+}
+
+// spareFields renders a hot-spare job's spares and the nodes they replaced. It
+// returns nothing for a job with neither, so every other record is unchanged.
+func spareFields(spares, swapped []string) [][2]string {
+	if len(spares) == 0 && len(swapped) == 0 {
+		return nil
+	}
+	list := func(hosts []string) string {
+		if len(hosts) == 0 {
+			return "(null)"
+		}
+		return encoders.CompressNodelist(hosts)
+	}
+	return [][2]string{{"SpareNodes", list(spares)}, {"SwappedNodes", list(swapped)}}
 }
 
 // renderGEJob renders the minimal record available from `qstat -xml`: the master
 // queue instance gives the partition (queue), and granted gives every host the
 // job holds, in the scheduler's grant order (never sorted, REQ-ENC-002 / SI-41).
 // A pending job has neither.
-func renderGEJob(id string, r gedata.JobRow, granted []string, stdout io.Writer) int {
+func renderGEJob(id string, r gedata.JobRow, alloc gedata.JobAllocation, stdout io.Writer) int {
 	queue, host, _ := strings.Cut(r.Queue, "@")
-	nodelist := encoders.CompressNodelist(granted)
+	nodelist := encoders.CompressNodelist(alloc.Hosts)
 	if nodelist == "" {
 		nodelist = host
 	}
 	if nodelist == "" {
 		nodelist = "(null)" // not yet scheduled onto a node
 	}
-	printFields(stdout, [][2]string{
+	fields := [][2]string{
 		{"JobId", id},
 		{"JobName", r.Name},
 		{"JobState", gedata.FullState(gedata.MapState(r.State))},
@@ -205,7 +226,9 @@ func renderGEJob(id string, r gedata.JobRow, granted []string, stdout io.Writer)
 		{"NumTasks", strconv.Itoa(r.Slots)},
 		{"Partition", queue},
 		{"UserId", r.User},
-	})
+	}
+	fields = append(fields, spareFields(alloc.Spares, alloc.Lost)...)
+	printFields(stdout, fields)
 	return 0
 }
 

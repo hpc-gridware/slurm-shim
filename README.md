@@ -195,6 +195,8 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--dependency` | ⚠️ | GE has one primitive, `-hold_jid`, which releases when every predecessor **finishes**. Only `afterany` means exactly that. `after` is *start*-gated in SLURM, so it becomes a wait-for-exit here (it will never release on a long-lived predecessor); `afterok`/`aftercorr` are approximated (they run anyway on failure, and `aftercorr` loses its per-element pairing); `afternotok` is inverted outright; `singleton` and the `+time` offset form yield no id, so **nothing is held**. Every one of those warns at submit time |
 | `--signal` | ✅ | `qsub -notify -r y` (GE sends SIGUSR2 before a kill/reschedule -- submitit's preempt signal -- and the job is rerunnable), plus `-l s_rt=h_rt-lead` as an early SIGUSR1 warning. With `scancel --signal`/`scontrol requeue` -> `qmod -rj`, this makes submitit checkpoint-then-requeue work |
 | `--export` | ✅ | SLURM default `ALL` -> `qsub -V` (full submit env forwarded, so `PATH`/`PYTHON_BIN` reach the job like on SLURM); `NONE` -> nothing; a `VAR=val` list -> `qsub -v` per entry; `ALL,VAR=val` composes. Newline-valued vars are flattened to spaces by GE |
+| `--x-spares` | ✅ shim extension | `k` hot-spare nodes: `k` more nodes of the same width (`-pe ... (N+k)*per-node -par per-node`), kept idle until one replaces a lost node. Needs `--nodes` of 2 or more, OCS 9.1.5+. Also as a partition default (`spares: 1`) and on a `#SHIM` line. See [Hot spare nodes](#hot-spare-nodes) |
+| `--x-elastic` | ✅ shim extension | `auto` (default: torchrun steps), `on`, `off`: which steps replace a lost node with a spare |
 | `--exclusive` | ❌ | not translated: it means *all of whatever the node has*, and sbatch does not query per-host capacity. Since 9.1.5 the shim does pin slots-per-node per job, so ask for the width explicitly (`--ntasks-per-node=<cores>`), or use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or add an exclusive complex. Warn-and-ignored, with that advice in the warning |
 
 Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. A value written after such a directive (`#SBATCH --qos normal`) is ignored with it. A word in the directives that belongs to no option is an error, and so is `#SBATCH hetjob`. An unquoted `#` starts a comment, as in SLURM. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
@@ -210,6 +212,7 @@ Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) a
 | `-o/--output`, `-e/--error` (`%j %J %t %n %N %s %%` patterns) | ✅ |
 | `-l/--label`, `-K/--kill-on-bad-exit`, `-J/--job-name`, `-D/--chdir`, `--quiet`, `-v`, `-V` | ✅ |
 | `--pty` (outside an allocation) | ✅ interactive session via `qrsh`; with `-p/--partition`, `-N/-n/--ntasks-per-node/-c`, `--time`, `--mem`, `--gres`/`--gpus`, `-A/--account`, `-J`. `--qos` warned (no GE analogue). See [Interactive sessions](#interactive-sessions) |
+| `--x-elastic=auto\|on\|off` | ✅ shim extension: whether this step replaces a lost node with a [hot spare](#hot-spare-nodes) |
 | `--mpi=none` | ✅ (no-op) |
 | `--mpi=<anything else>` (e.g. `pmix`) | ❌ (hard-errors by design — no PMI/PMIx; see below) |
 
@@ -230,13 +233,36 @@ This is the strongest area — the fabricated environment is the whole point, an
 | `SLURM_GPUS_ON_NODE` / `SLURM_JOB_GPUS` (+ the per-rank device mask) | ✅ (from GE RSMAP grant. The mask is `CUDA_VISIBLE_DEVICES` under `gpu.vendor: nvidia` and `ROCR_VISIBLE_DEVICES` under `amd` -- exactly one is written, and the other vendor's variables are removed from the rank environment rather than left to layer on top; `gpu.isolation: cgroup` passes GE's masking through instead) |
 | `SLURM_MEM_PER_NODE` | ✅ (from the job's requested memory complex) |
 | `SLURM_SUBMIT_DIR` / `SLURM_SUBMIT_HOST` / `SLURM_JOB_PARTITION` | ✅ |
+| `SLURM_X_SPARE_NODELIST` | ✅ shim extension: the job's [hot spares](#hot-spare-nodes); they are not in `SLURM_JOB_NODELIST` |
 | `MASTER_ADDR` / `MASTER_PORT` | ⚠️ off by default (`export_master_addr: false`) — derive in your job script, or enable in config |
 
 ### srun semantics
 
 - `srun` launches one process per task over **`qrsh -inherit` tight integration**: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
 - **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
+- **Lost nodes.** The control channel has kernel liveness (TCP keepalive and, on Linux, `TCP_USER_TIMEOUT`). A node whose host stops answering -- crash, power loss, network partition -- is declared lost after `ping_deadline` (60 s) and its tasks count as failed, so `srun` never hangs on a dead host. A suspended or slow step keeps its hosts answering and is never touched. A stepper that loses `srun`'s host stops its tasks after `orphan_grace` (45 s).
 - **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach` and `salloc`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
+
+### Hot spare nodes
+
+A job submitted with `--x-spares=k` survives the loss of up to `k` nodes without leaving `RUNNING`. The spares are granted with the job and kept idle; when a step loses a node, `srun` relaunches that node's tasks on a spare -- same ranks, the spare's own GPUs -- and torchrun's elastic agent re-forms the group. No requeue, no new prolog, no dataset warm-up. SLURM has no equivalent: a running job there can shrink, not grow.
+
+```bash
+#!/bin/bash
+#SBATCH --nodes=4 --ntasks-per-node=1 --gpus-per-node=8
+#SHIM --x-spares=1                    # a #SHIM line: real SLURM ignores it
+MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -1)
+srun torchrun --nnodes=4 --nproc-per-node=8 --max-restarts=3 \
+     --rdzv-backend=c10d --rdzv-endpoint=$MASTER_ADDR:29500 train.py
+```
+
+- `SLURM_JOB_NODELIST`/`SLURM_NNODES` name the 4 active nodes; `SLURM_X_SPARE_NODELIST` names the spare.
+- On a loss, stderr gets `srun: node <old> lost; tasks <ranks> relaunched on <spare> (1/1 spares used)`, and later steps run on the replacement. `scontrol show job` shows `SpareNodes=` and `SwappedNodes=`.
+- Elastic steps: torchrun by default (`--x-elastic=on` for anything that can take a restarted peer). Once the spares are used up, a further loss fails the step as without spares.
+- Use `--max-restarts` of at least the spare count and a c10d rendezvous on the master host; `srun` warns otherwise. It also sets `TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1`, without which torch 2.4+ never hands a late-joining node its workers' master address. Checkpoint regularly: the workers restart from the last checkpoint.
+- Optional `drain_command` (config) takes a swapped-out node out of service. Two reference scripts ship in `share/`: a load sensor that alarms a host marked in a group-writable directory, and a sudo `qmod -d` helper that drains only a host of the caller's own running job.
+- Spares cover nodes lost while the step runs. A node that is already unreachable when the step starts usually costs the step rather than a spare: its `qrsh -inherit` launch blocks instead of failing fast.
+- Not covered: losing the master node (it runs the batch script), MPI jobs, and reusing a failed node in the same job.
 
 ### Interactive sessions
 
@@ -363,6 +389,7 @@ succeeds). It enforces nothing.
 - Enforced GPU device isolation (`gpu.isolation: cgroup`) requires Gridware Cluster
   Scheduler, with each RSMAP instance declaring its `devices`; `slurm-shim doctor`
   checks every host. Under `gpu.isolation: shim` the device mask is advisory.
+- **Lost-node detection takes `ping_deadline`** (60 s by default). Only remote nodes are watched: if `srun`'s own host or the qmaster host is cut off, nothing is detected until it comes back, and a hot spare cannot be started without qmaster. With kill-on-bad-exit off, a lost node fails only its own tasks.
 - PyTorch Lightning requires a **homogeneous** allocation (it raises if `SLURM_NTASKS_PER_NODE` is absent with `ntasks>1`); the fabricator warns on non-uniform per-node counts.
 
 ## Requirements
@@ -372,6 +399,7 @@ succeeds). It enforces nothing.
 - A **parallel environment** with `control_slaves TRUE` for multi-node jobs (the shim's preflight checks this). On **OCS 9.1.5+** its `allocation_rule` no longer has to match the job shape — the shim overrides it per job — so one PE covers every *placement*. It does not cover every *task policy*: `task_policy` is keyed on the PE, so a site needing both `slot` and `node` semantics still configures one PE per policy. 🚧 A `docs/pe-setup.md` guide is planned; the reference hook scripts are in [`docs/install/`](docs/install/).
 - The PE's `start_proc_args` pointed at `slurm-shim-env` (fabricates the environment per job) and the queue's `starter_method` pointed at `slurm-shim-starter` (sources it into every job, so scripts need no edit). The starter runs as the job user for every job in that queue, so the install tree must be root-owned and not group/world-writable. A failing fabrication fails that job with exit 1; it does not error the queue instance. Native Open Cluster Scheduler jobs in the same queue start as they would without the starter: it honours the `SGE_STARTER_SHELL_*` contract the scheduler hands a `starter_method` (`shell_start_mode`, the `-S`/queue shell, login shells), including the `argv[0]=-<shell>` login-shell convention (set through bash's `exec -a`; without bash, `-l` where the shell accepts it).
 - The per-job state lives under the job's `$TMPDIR`. Both the fabricator and the hook refuse a `TMPDIR` or state directory that is not the job's own private directory (a co-tenant can pre-create the predictable `/tmp/<job>.<task>.<queue>` path), and the job owner reclaims its `TMPDIR` by stripping group/world write. Setting the queue's `tmpdir` to a directory only root can create entries in removes that exposure entirely.
+- **Recommended: `execd_params ENABLE_ADDGRP_KILL=TRUE`.** When a job ends while one of its hosts is unreachable, `srun`'s `qrsh -inherit` client to that host is still waiting on it; execd removes it at job end only with this switch. Set it globally or in each exec host's local configuration; `slurm-shim doctor` names the hosts without it. Do not set `qmaster_params ENABLE_RESCHEDULE_SLAVE`: it requeues the whole job on any slave loss (doctor fails it).
 - Runtime deps: only the GE client tools (`qrsh`, `qstat`, `qsub`, `qdel`, `qconf`, `qmod`, `qacct`, `qhost`) and the config file. The binary is static (CGO off, `osusergo`/`netgo`).
 
 ### Networking (firewalled clusters)
@@ -425,6 +453,7 @@ The shim reads a YAML file at `$SLURM_SHIM_CONFIG`, else `/etc/slurm-shim/config
 ```yaml
 partitions:                       # SLURM --partition -> GE queue + PE + slots
   gpu:   {queue: gpu.q, pe: gpu.pe, slots: "per-task"}   # per-task = ntasks * cpus_per_task
+  # train: {queue: gpu.q, pe: gpu.pe, slots: "per-task", spares: 1}  # default hot spares
   batch: {queue: all.q, pe: smp.pe, slots: "16"}          # or a fixed slot count
   # Opt one partition out when its PE's allocation_rule IS the site policy:
   # smp: {queue: all.q, pe: smp.pe, slots: "per-task", allocation_rule_override: never}
@@ -447,6 +476,12 @@ memory_complex: mem_free          # scheduling filter + source for SLURM_MEM_PER
                                   # advisory; h_vmem caps ADDRESS SPACE and breaks CUDA
 export_master_addr: false         # set true to publish MASTER_ADDR/MASTER_PORT
 launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)
+ping_interval: 5s                 # keepalive probe interval on the control channel
+ping_deadline: 60s                # a node silent this long is lost; its tasks fail
+orphan_grace: 45s                 # a stepper cut off from srun's host stops its tasks
+elastic: auto                     # hot spares: auto (torchrun steps) | on | off
+max_spares: 0                     # cap on --x-spares per job (0 = no cap)
+drain_command: []                 # run after a swap, e.g. [touch, "/shared/drain/{host}"]
 # Fallback when the site cannot wire a queue starter_method: sbatch submits a
 # shim-generated wrapper that fabricates, then execs the stored original script
 # verbatim. Only covers jobs submitted through this sbatch (not qsub, not

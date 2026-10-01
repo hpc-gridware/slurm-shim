@@ -118,6 +118,42 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		Expect(s).To(ContainSubstring("UserId=alice(1000)"))
 	})
 
+	It("shows a hot-spare job's spares and the nodes they replaced", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("TMPDIR", tmp)
+		lay := &layout.Layout{
+			SchemaVersion: layout.SchemaVersion,
+			Job:           layout.Job{JobID: 42, Name: "train", User: "u", UID: 1000},
+			Nodes:         []layout.Node{{Index: 0, Host: "node001"}, {Index: 1, Host: "node003"}},
+			Spares:        []layout.Node{{Host: "node004"}},
+			Lost:          []string{"node002"},
+			Swaps:         []layout.Swap{{Lost: "node002", Spare: "node003"}},
+			Tasks:         layout.Tasks{NTasks: 2},
+		}
+		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
+		var buf bytes.Buffer
+		Expect(run(&fake.Runner{}, []string{"show", "job", "42"}, &buf, io.Discard)).To(Equal(0))
+		out := buf.String()
+		Expect(out).To(ContainSubstring("NodeList=node[001,003]"))
+		Expect(out).To(ContainSubstring("NumNodes=2"))
+		Expect(out).To(ContainSubstring("SpareNodes=node004"))
+		Expect(out).To(ContainSubstring("SwappedNodes=node002"))
+	})
+
+	It("adds no spare fields to a job without spares", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("TMPDIR", tmp)
+		lay := &layout.Layout{
+			SchemaVersion: layout.SchemaVersion,
+			Job:           layout.Job{JobID: 42},
+			Nodes:         []layout.Node{{Index: 0, Host: "node001"}},
+		}
+		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
+		var buf bytes.Buffer
+		Expect(run(&fake.Runner{}, []string{"show", "job", "42"}, &buf, io.Discard)).To(Equal(0))
+		Expect(buf.String()).NotTo(ContainSubstring("SpareNodes"))
+	})
+
 	It("looks the job up in GE when there is no local layout", func() {
 		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir()) // no fabricated layout here
 		r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response {
@@ -153,6 +189,26 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		var out, errOut bytes.Buffer
 		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker[2,1],ocs-master"))
+		Expect(out.String()).NotTo(ContainSubstring("SpareNodes"), "a job without spares keeps its record")
+		Expect(out.String()).NotTo(ContainSubstring("SwappedNodes"))
+		Expect(errOut.String()).To(BeEmpty())
+	})
+
+	It("shows a hot-spare job's spares and swaps from GE, outside the job", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		r := &fake.Runner{Responder: func(_ string, args []string) fake.Response {
+			for _, a := range args {
+				if a == "-j" {
+					return fake.Response{Stdout: []byte(qstatDetail14Spares)}
+				}
+			}
+			return fake.Response{Stdout: []byte(qstatRunning)}
+		}}
+		var out, errOut bytes.Buffer
+		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
+		Expect(out.String()).To(ContainSubstring("NodeList=node[001,003]"))
+		Expect(out.String()).To(ContainSubstring("SpareNodes=node004"))
+		Expect(out.String()).To(ContainSubstring("SwappedNodes=node002"))
 		Expect(errOut.String()).To(BeEmpty())
 	})
 
@@ -380,6 +436,34 @@ const qstatDetail14 = `<?xml version='1.0'?>
             <element><JG_qhostname>ocs-worker2</JG_qhostname></element>
             <element><JG_qhostname>ocs-worker1</JG_qhostname></element>
             <element><JG_qhostname>ocs-master</JG_qhostname></element>
+          </JAT_granted_destin_identifier_list>
+        </element>
+      </JB_ja_tasks>
+    </element>
+  </djob_info>
+</detailed_job_info>`
+
+// qstatDetail14Spares is job 14 as a hot-spare job: four granted hosts, the last
+// two spares (SLURM_SHIM_SPARES=2), and srun's recorded swap of node002 for node003.
+const qstatDetail14Spares = `<?xml version='1.0'?>
+<detailed_job_info>
+  <djob_info>
+    <element>
+      <JB_job_number>14</JB_job_number>
+      <JB_env_list>
+        <job_sublist><VA_variable>SLURM_SHIM_SPARES</VA_variable><VA_value>2</VA_value></job_sublist>
+      </JB_env_list>
+      <JB_context>
+        <context_list><VA_variable>shim.swaps</VA_variable><VA_value>node002:node003</VA_value></context_list>
+      </JB_context>
+      <JB_ja_tasks>
+        <element>
+          <JAT_task_number>1</JAT_task_number>
+          <JAT_granted_destin_identifier_list>
+            <element><JG_qhostname>node001</JG_qhostname></element>
+            <element><JG_qhostname>node002</JG_qhostname></element>
+            <element><JG_qhostname>node003</JG_qhostname></element>
+            <element><JG_qhostname>node004</JG_qhostname></element>
           </JAT_granted_destin_identifier_list>
         </element>
       </JB_ja_tasks>

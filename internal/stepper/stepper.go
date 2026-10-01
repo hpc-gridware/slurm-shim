@@ -57,7 +57,7 @@ func Run(args []string, stderr io.Writer) int {
 			if s == nil {
 				os.Exit(exitTerminated)
 			}
-			s.terminateOnSignal()
+			s.stopSelf()
 		}
 	}()
 
@@ -121,7 +121,7 @@ type stepper struct {
 	procs   []*rankProc
 	killSig syscall.Signal // latched terminating signal for ranks still spawning
 
-	signaled atomic.Bool // a terminating signal stopped this stepper
+	stopped atomic.Bool // a terminating signal stopped this stepper
 }
 
 type rankProc struct {
@@ -144,6 +144,16 @@ func (s *stepper) run() int {
 
 	_ = s.conn.Send(proto.Frame{Type: proto.FrameReady, Payload: []byte(s.host)})
 
+	// Let the kernel notice srun's host going away (REQ-CHN-004): the channel
+	// then fails and readControl stops the ranks. A stopped or slow srun keeps its
+	// host answering, so a suspended step is never stopped this way.
+	if s.spec.OrphanGraceMS > 0 && s.spec.PingIntervalMS > 0 {
+		if err := s.conn.SetLiveness(time.Duration(s.spec.OrphanGraceMS)*time.Millisecond,
+			time.Duration(s.spec.PingIntervalMS)*time.Millisecond); err != nil {
+			errln(s.stderr, "stepper: warning: cannot watch srun's host: "+err.Error())
+		}
+	}
+
 	// Start the control reader (signals, liveness, srun-death detection).
 	go s.readControl()
 
@@ -164,17 +174,17 @@ func (s *stepper) run() int {
 			maxCode = res.code
 		}
 	}
-	if s.signaled.Load() {
+	if s.stopped.Load() {
 		return exitTerminated
 	}
 	return maxCode
 }
 
-// terminateOnSignal stops the ranks after the stepper itself was signalled. run
-// then returns exitTerminated once every rank has been reaped, so the stepper
-// exits with a code rather than by the signal.
-func (s *stepper) terminateOnSignal() {
-	if s.signaled.CompareAndSwap(false, true) {
+// stopSelf stops the ranks because the stepper itself was signalled. run then
+// returns exitTerminated once every rank has been reaped, so the stepper exits
+// with a code rather than by the signal.
+func (s *stepper) stopSelf() {
+	if s.stopped.CompareAndSwap(false, true) {
 		go s.terminate()
 	}
 }
@@ -344,6 +354,9 @@ func (s *stepper) readControl() {
 	for {
 		f, err := s.conn.Recv()
 		if err != nil {
+			if proto.IsLivenessTimeout(err) {
+				errln(s.stderr, "stepper: error: lost contact with srun's host; stopping ranks")
+			}
 			s.terminate()
 			return
 		}

@@ -99,7 +99,7 @@ func (l QrshLauncher) Start(ctx context.Context, host string, env proto.Envelope
 		switch classifyRejection(tail) {
 		case rejectJobRace:
 			if now().After(raceDeadline) {
-				return nil, fmt.Errorf("qrsh launch on %s kept failing (job not yet known to execd): %s", host, oneLine(tail))
+				return nil, HostError(fmt.Errorf("qrsh launch on %s kept failing (job not yet known to execd): %s", host, oneLine(tail)))
 			}
 			sleep(jobRaceBackoff)
 		case rejectSlots:

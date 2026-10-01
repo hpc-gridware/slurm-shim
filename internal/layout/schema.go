@@ -33,6 +33,24 @@ type Layout struct {
 	Tasks         Tasks      `json:"tasks"`
 	Rendezvous    Rendezvous `json:"rendezvous"`
 	Launcher      string     `json:"launcher"`
+
+	// Hot spares (sbatch --x-spares). Spares are granted hosts kept out of Nodes,
+	// so no step places ranks on them until one replaces a lost node: the swap
+	// rewrites Nodes in place (the spare takes the lost node's index), moves the
+	// spare out of Spares, and records the lost host and the swap. Additive and
+	// omitted when empty, so a job without spares writes exactly the v2 file and
+	// a reader that ignores these fields still places ranks correctly.
+	Spares []Node   `json:"spares,omitempty"`
+	Lost   []string `json:"lost,omitempty"`
+	Swaps  []Swap   `json:"swaps,omitempty"`
+}
+
+// Swap records one spare replacing a lost node.
+type Swap struct {
+	Lost  string `json:"lost"`
+	Spare string `json:"spare"`
+	Step  int    `json:"step"`
+	Unix  int64  `json:"unix"`
 }
 
 // Job carries the job-scoped identity and provenance (Table A sources).

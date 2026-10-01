@@ -120,16 +120,17 @@ ARCH     ?= $(shell go env GOARCH)
 # target once produced a macOS binary inside a file called ...linux_arm64.tar.gz.
 payload:
 	rm -rf $(PAYLOAD)
-	install -d $(PAYLOAD)/bin $(PAYLOAD)/etc
+	install -d $(PAYLOAD)/bin $(PAYLOAD)/etc $(PAYLOAD)/share
 	GOOS=linux GOARCH=$(ARCH) CGO_ENABLED=0 go build -tags osusergo,netgo -trimpath \
 	  -ldflags "$(LDFLAGS)" -o $(PAYLOAD)/bin/slurm-shim ./cmd/slurm-shim
 	install -m 0755 docs/install/slurm-shim-starter.sh $(PAYLOAD)/bin/slurm-shim-starter
 	install -m 0644 docs/install/slurm-shim-source-hook.sh $(PAYLOAD)/etc/slurm-shim-source-hook.sh
+	install -m 0755 docs/install/drain-load-sensor.sh docs/install/drain-qmod-helper.sh $(PAYLOAD)/share/
 	@for l in $(LINKS); do ln -sf slurm-shim $(PAYLOAD)/bin/$$l; done
 	install -m 0755 scripts/install.sh dist/install.sh
 
 tarball: payload
-	tar -C $(PAYLOAD) -czf dist/slurm-shim_linux_$(ARCH).tar.gz bin etc
+	tar -C $(PAYLOAD) -czf dist/slurm-shim_linux_$(ARCH).tar.gz bin etc share
 
 checksums:
 	cd dist && (command -v sha256sum >/dev/null && sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz 2>/dev/null) > SHA256SUMS && cat SHA256SUMS

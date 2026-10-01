@@ -2,6 +2,7 @@ package launch
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -125,6 +126,7 @@ var _ = Describe("QrshLauncher.Start retry policy [REQ-RUN-024]", func() {
 		l, _ := scriptedLauncher(procs, 20*time.Second)
 		_, err := l.Start(context.Background(), "node002", env, "tok")
 		Expect(err).To(MatchError(ContainSubstring("job not yet known")))
+		Expect(errors.Is(err, ErrHostUnusable)).To(BeTrue(), "the host's execd never took the task: it may cost a spare")
 	})
 
 	It("retries slot exhaustion under its own bound then gives up [SI-55]", func() {
@@ -133,6 +135,7 @@ var _ = Describe("QrshLauncher.Start retry policy [REQ-RUN-024]", func() {
 		l, _ := scriptedLauncher(procs, 6*time.Minute)
 		_, err := l.Start(context.Background(), "node002", env, "tok")
 		Expect(err).To(MatchError(ContainSubstring("slots unavailable")))
+		Expect(errors.Is(err, ErrHostUnusable)).To(BeFalse(), "other steps hold the slots; the host is fine")
 	})
 
 	It("fails immediately on a fatal rejection", func() {
@@ -140,6 +143,7 @@ var _ = Describe("QrshLauncher.Start retry policy [REQ-RUN-024]", func() {
 		l, calls := scriptedLauncher(procs, time.Second)
 		_, err := l.Start(context.Background(), "node002", env, "tok")
 		Expect(err).To(MatchError(ContainSubstring("failed")))
+		Expect(errors.Is(err, ErrHostUnusable)).To(BeFalse(), "a misconfiguration fails on every host")
 		Expect(*calls).To(Equal(1))
 	})
 })

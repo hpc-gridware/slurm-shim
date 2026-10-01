@@ -395,3 +395,87 @@ var _ = Describe("removed keys [todo 079]", func() {
 		Expect(warns).To(ContainElement(ContainSubstring("install --apply")))
 	})
 })
+
+var _ = Describe("control-channel liveness timings [REQ-CHN-004]", func() {
+	parse := func(doc string) (*config.Config, []string) {
+		cfg, warns, err := config.Parse([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		return cfg, warns
+	}
+
+	It("defaults to a stepper that stops before srun declares its node lost", func() {
+		cfg, warns := parse("")
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.OrphanGrace.Duration).To(BeNumerically("<", cfg.PingDeadline.Duration))
+	})
+
+	It("falls back to the default for a non-positive ping_interval", func() {
+		cfg, warns := parse("ping_interval: 0s\n")
+		Expect(warns).To(ContainElement(ContainSubstring("ping_interval 0s is not positive")))
+		Expect(cfg.PingInterval).To(Equal(config.Default().PingInterval))
+	})
+
+	It("warns when lost-node detection is switched off", func() {
+		_, warns := parse("ping_deadline: 0s\n")
+		Expect(warns).To(ContainElement(ContainSubstring("never declare a lost node")))
+	})
+
+	It("warns when the stepper would stop after srun gives up", func() {
+		_, warns := parse("ping_deadline: 30s\norphan_grace: 2m\n")
+		Expect(warns).To(ContainElement(ContainSubstring("not shorter than ping_deadline")))
+	})
+
+	It("warns when the probe interval allows fewer than two probes", func() {
+		_, warns := parse("ping_interval: 40s\n")
+		Expect(warns).To(ContainElement(ContainSubstring("fewer than two probes")))
+	})
+})
+
+var _ = Describe("hot spares", func() {
+	parse := func(doc string) (*config.Config, []string) {
+		cfg, warns, err := config.Parse([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		return cfg, warns
+	}
+
+	It("defaults to elastic torchrun steps, no cap and no drain", func() {
+		cfg, warns := parse("")
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.Elastic).To(Equal(config.ElasticAuto))
+		Expect(cfg.MaxSpares).To(Equal(0))
+		Expect(cfg.DrainCommand).To(BeEmpty())
+		Expect(cfg.DrainTimeout.Duration).To(BeNumerically(">", 0))
+	})
+
+	It("reads the hot-spare settings and a partition default", func() {
+		cfg, warns := parse(`elastic: "ON"
+max_spares: 2
+drain_command: [touch, "/shared/drain/{host}"]
+drain_timeout: 5s
+partitions:
+  train: {queue: all.q, pe: gpu.pe, slots: per-task, spares: 1}
+`)
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.Elastic).To(Equal(config.ElasticOn), "case-insensitive")
+		Expect(cfg.MaxSpares).To(Equal(2))
+		Expect(cfg.DrainCommand).To(Equal([]string{"touch", "/shared/drain/{host}"}))
+		Expect(cfg.DrainTimeout.Duration.Seconds()).To(Equal(5.0))
+		Expect(cfg.Partitions["train"].Spares).To(Equal(1))
+	})
+
+	It("falls back with a warning on values it cannot use", func() {
+		cfg, warns := parse(`elastic: sometimes
+max_spares: -1
+partitions:
+  train: {queue: all.q, pe: gpu.pe, slots: per-task, spares: -2}
+`)
+		Expect(cfg.Elastic).To(Equal(config.ElasticAuto))
+		Expect(cfg.MaxSpares).To(Equal(0))
+		Expect(cfg.Partitions["train"].Spares).To(Equal(0))
+		Expect(warns).To(ContainElements(
+			ContainSubstring(`unknown elastic "sometimes"`),
+			ContainSubstring("max_spares -1 is negative"),
+			ContainSubstring(`partition "train": spares -2 is negative`),
+		))
+	})
+})

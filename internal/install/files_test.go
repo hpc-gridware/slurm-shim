@@ -56,6 +56,33 @@ var _ = Describe("InstallTree", func() {
 		Expect(install.InstallTree(src, prefix)).To(Succeed())
 		Expect(install.InstallTree(src, prefix)).To(Succeed())
 	})
+
+	It("copies the reference drain scripts executable when the payload has them", func() {
+		src := GinkgoT().TempDir()
+		payload(src)
+		Expect(os.MkdirAll(filepath.Join(src, "share"), 0o755)).To(Succeed())
+		scripts := []string{"share/drain-load-sensor.sh", "share/drain-qmod-helper.sh"}
+		for _, rel := range scripts {
+			Expect(os.WriteFile(filepath.Join(src, rel), []byte(rel), 0o644)).To(Succeed())
+		}
+		prefix := filepath.Join(GinkgoT().TempDir(), "p")
+		Expect(install.InstallTree(src, prefix)).To(Succeed())
+		for _, rel := range scripts {
+			Expect(os.ReadFile(filepath.Join(prefix, rel))).To(Equal([]byte(rel)))
+			fi, err := os.Stat(filepath.Join(prefix, rel))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fi.Mode().Perm()).To(Equal(os.FileMode(0o755)), rel)
+		}
+	})
+
+	It("installs without the drain scripts when the payload lacks them", func() {
+		src := GinkgoT().TempDir()
+		payload(src)
+		prefix := filepath.Join(GinkgoT().TempDir(), "p")
+		Expect(install.InstallTree(src, prefix)).To(Succeed())
+		_, err := os.Stat(filepath.Join(prefix, "share", "drain-qmod-helper.sh"))
+		Expect(os.IsNotExist(err)).To(BeTrue())
+	})
 })
 
 var _ = Describe("CheckTree [starter trust boundary]", func() {

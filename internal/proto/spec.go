@@ -64,6 +64,16 @@ type StepSpec struct {
 	// cannot make a rank disagree with `srun --dry-run`. Empty means
 	// EnvCUDADevices, which keeps a pre-AMD stepper's behaviour unchanged.
 	GPUEnvVar string `json:"gpu_env_var,omitempty"`
+	// OrphanGraceMS and PingIntervalMS set the stepper's side of the control
+	// channel's kernel liveness (REQ-CHN-004, Conn.SetLiveness): when srun's host
+	// stops answering for OrphanGraceMS, the channel fails and the stepper stops
+	// its ranks. Zero disables it.
+	OrphanGraceMS  int64 `json:"orphan_grace_ms,omitempty"`
+	PingIntervalMS int64 `json:"ping_interval_ms,omitempty"`
+	// AppendOutput opens per-rank output files for append instead of truncating
+	// them: a hot-spare relaunch continues the output the lost node's ranks
+	// already wrote rather than erasing it.
+	AppendOutput bool `json:"append_output,omitempty"`
 }
 
 // DeviceIDs are one rank's granted device ids. They marshal as JSON numbers when

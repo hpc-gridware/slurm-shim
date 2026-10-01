@@ -2,6 +2,7 @@ package sbatch
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -177,6 +178,21 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	}
 	if opt.haveGPUsPerTask {
 		args = append(args, "-v", "SLURM_GPUS_PER_TASK="+strconv.Itoa(opt.gpusPerTask))
+	}
+	// Hot spares travel into the job as environment, like the GPU binding above:
+	// the fabricator splits them off the grant and srun decides per step.
+	// A value inherited from the submit environment (a job submitted from inside a
+	// spares job, carried by -V) must not reach this job: an explicit -v overrides
+	// it. Emitted only when such a value exists, so other jobs keep their argv.
+	if opt.spares > 0 {
+		args = append(args, "-v", "SLURM_SHIM_SPARES="+strconv.Itoa(opt.spares))
+		if opt.elastic != "" {
+			args = append(args, "-v", "SLURM_X_ELASTIC="+opt.elastic)
+		} else if _, ok := os.LookupEnv("SLURM_X_ELASTIC"); ok {
+			args = append(args, "-v", "SLURM_X_ELASTIC=")
+		}
+	} else if _, ok := os.LookupEnv("SLURM_SHIM_SPARES"); ok {
+		args = append(args, "-v", "SLURM_SHIM_SPARES=0")
 	}
 	if l := buildResourceList(cfg, opt); l != "" {
 		args = append(args, "-l", l)
@@ -535,6 +551,37 @@ func parSpec(opt options, part config.Partition, slots int) allocationRule {
 		// deciding, exactly as before.
 		return allocationRule{}
 	}
+}
+
+// withSpares widens a request by its hot spares (--x-spares=k): k more nodes of
+// the same width, so the slot count grows by k times the slots per node and -par
+// keeps every node, spare or not, at that width. Spares need a pinned layout of at
+// least two nodes: the master can never be spared (it runs the script and srun),
+// and without -par (OCS 9.1.5+) nothing guarantees the extra slots land on extra
+// hosts.
+func withSpares(cfg *config.Config, opt options, slots int, rule allocationRule) (int, allocationRule, error) {
+	if cfg.MaxSpares > 0 && opt.spares > cfg.MaxSpares {
+		return 0, rule, fmt.Errorf("sbatch: error: --x-spares=%d exceeds this site's max_spares %d", opt.spares, cfg.MaxSpares)
+	}
+	if cannotTakeSpares(rule) != "" {
+		return 0, rule, fmt.Errorf("sbatch: error: --x-spares needs a job pinned to at least 2 nodes: " +
+			"give --nodes=2 or more on a per-task partition, on OCS 9.1.5+ (qsub -par). " +
+			"The master node runs the batch script and cannot be replaced, so a 1-node job has nothing to spare")
+	}
+	perNode := slots / rule.Nodes
+	rule.Nodes += opt.spares
+	return slots + opt.spares*perNode, rule, nil
+}
+
+// cannotTakeSpares says why a job cannot have hot spares, or "" when it can.
+func cannotTakeSpares(rule allocationRule) string {
+	if !rule.emit() {
+		return "its nodes are not pinned: that needs --nodes on a per-task partition and OCS 9.1.5+ (qsub -par)"
+	}
+	if rule.Nodes < 2 {
+		return "it runs on 1 node, whose master cannot be spared"
+	}
+	return ""
 }
 
 // ruleFor turns a resolved node count into the rule, or explains why it cannot.

@@ -30,15 +30,16 @@ const maxPredictedNodes = 4096
 // come from the grant qmaster has not made yet. Their predicted values would be
 // placeholders, so the placeholder is stated outright instead.
 var runtimeResolved = map[string]string{
-	"SLURM_JOB_ID":        "<assigned by qsub>",
-	"SLURM_JOBID":         "<assigned by qsub>",
-	"SLURM_ARRAY_JOB_ID":  "<assigned by qsub>",
-	"SLURM_ARRAY_TASK_ID": "<this element's index>",
-	"SLURM_JOB_NODELIST":  "<hosts from the grant>",
-	"SLURM_NODELIST":      "<hosts from the grant>",
-	"SLURM_JOB_GPUS":      "<device ids from the RSMAP grant>",
-	"MASTER_ADDR":         "<master host from the grant>",
-	"MASTER_PORT":         "<derived from the job id>",
+	"SLURM_JOB_ID":           "<assigned by qsub>",
+	"SLURM_JOBID":            "<assigned by qsub>",
+	"SLURM_ARRAY_JOB_ID":     "<assigned by qsub>",
+	"SLURM_ARRAY_TASK_ID":    "<this element's index>",
+	"SLURM_JOB_NODELIST":     "<hosts from the grant>",
+	"SLURM_NODELIST":         "<hosts from the grant>",
+	"SLURM_X_SPARE_NODELIST": "<spare hosts from the grant>",
+	"SLURM_JOB_GPUS":         "<device ids from the RSMAP grant>",
+	"MASTER_ADDR":            "<master host from the grant>",
+	"MASTER_PORT":            "<derived from the job id>",
 }
 
 // omittedAtRuntime are variables the real job exports that a prediction cannot
@@ -212,6 +213,8 @@ func predictEnv(runner gedata.Runner, cfg *config.Config, opt options, part conf
 	for _, k := range []string{"JOB_ID", "PE_HOSTFILE", "NHOSTS", "NSLOTS", "SGE_TASK_ID", "RESTARTED"} {
 		fixed[k] = ""
 	}
+	// The spare count buildQsubArgs sends with -v, which overrides an inherited one.
+	fixed["SLURM_SHIM_SPARES"] = strconv.Itoa(opt.spares)
 	if opt.haveArray {
 		// A predicted array reports the first element, whose coordinates are the ones
 		// a user checks. GE task ids are 1-based and dense, and the range metadata is

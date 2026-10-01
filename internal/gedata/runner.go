@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Runner abstracts external process execution (GE clients: qstat, qsub, qdel,
@@ -26,9 +27,16 @@ type Runner interface {
 // ExecRunner is the production Runner backed by os/exec.
 type ExecRunner struct{}
 
+// execWaitDelay bounds how long Run waits for the output pipes after the
+// context ends.
+const execWaitDelay = 2 * time.Second
+
 // Run executes name with args, capturing stdout and stderr separately.
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
 	cmd := exec.CommandContext(ctx, ResolveCommand(name), args...)
+	// A child that outlives the killed command (a wrapper script's grandchild)
+	// keeps the output pipes open; do not let it stretch the context's bound.
+	cmd.WaitDelay = execWaitDelay
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

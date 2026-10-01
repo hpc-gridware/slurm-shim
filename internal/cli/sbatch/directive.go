@@ -7,8 +7,8 @@ package sbatch
 
 import "strings"
 
-// ParseDirectives extracts the option tokens from a script's #SBATCH directives
-// (REQ-SBT-001). Directives are read from the top of the script: an optional
+// ParseDirectives extracts the option tokens from a script's #SBATCH (and
+// #SHIM) directives (REQ-SBT-001). Directives are read from the top of the script: an optional
 // shebang, then lines that are blank or comments, up to the first executable
 // line, which stops directive scanning (matching SLURM). Each `#SBATCH <args>`
 // line contributes its whitespace-split tokens in order.
@@ -20,12 +20,13 @@ func ParseDirectives(script []byte) []string {
 		if i == 0 && strings.HasPrefix(line, "#!") {
 			continue // shebang
 		}
+		if rest, ok := directiveArgs(line); ok {
+			tokens = append(tokens, tokenizeDirective(rest)...)
+			continue
+		}
 		switch {
 		case line == "":
 			continue
-		case strings.HasPrefix(line, "#SBATCH"):
-			rest := strings.TrimSpace(strings.TrimPrefix(line, "#SBATCH"))
-			tokens = append(tokens, tokenizeDirective(rest)...)
 		case strings.HasPrefix(line, "#"):
 			continue // ordinary comment between directives
 		default:
@@ -33,6 +34,21 @@ func ParseDirectives(script []byte) []string {
 		}
 	}
 	return tokens
+}
+
+// directiveArgs returns the argument text of a #SBATCH or #SHIM line. #SHIM carries
+// shim-only options (--x-spares, --x-elastic) for scripts that must also run on
+// real SLURM, which rejects an unknown #SBATCH option but ignores this line as a
+// comment; it is read exactly like #SBATCH. It must be followed by whitespace or
+// end the line, so a comment such as '#SHIMX foo' stays a comment.
+func directiveArgs(line string) (string, bool) {
+	if rest, ok := strings.CutPrefix(line, "#SBATCH"); ok {
+		return rest, true
+	}
+	if rest, ok := strings.CutPrefix(line, "#SHIM"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+		return rest, true
+	}
+	return "", false
 }
 
 // tokenizeDirective splits a directive's argument text into tokens, honoring

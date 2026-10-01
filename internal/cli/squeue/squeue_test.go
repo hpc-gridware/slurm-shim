@@ -295,7 +295,7 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 		// column more than once per row; a renderer that sorted in place would
 		// change what the next verb sees.
 		hosts := []string{"ocs-worker2", "ocs-master", "ocs-worker1"}
-		v := view{cfg: testCfg(), hosts: map[string][]string{"23": hosts}, now: time.Now()}
+		v := view{cfg: testCfg(), hosts: map[string]gedata.JobAllocation{"23": {Hosts: hosts}}, now: time.Now()}
 		row := gedata.JobRow{JobID: "23", State: "r"}
 		Expect(v.rowValue('N', row)).To(Equal(v.rowValue('N', row)))
 		Expect(hosts).To(Equal([]string{"ocs-worker2", "ocs-master", "ocs-worker1"}))
@@ -422,7 +422,7 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 		// reads the hosts for some set of verbs. If they drift apart, a node column
 		// is either always empty or costs a query nothing reads.
 		row := gedata.JobRow{JobID: "23", State: "r", Queue: "all.q@ocs-master", Slots: 4}
-		withHosts := view{cfg: testCfg(), hosts: map[string][]string{"23": {"a", "b"}}, now: time.Now()}
+		withHosts := view{cfg: testCfg(), hosts: map[string]gedata.JobAllocation{"23": {Hosts: []string{"a", "b"}}}, now: time.Now()}
 		without := view{cfg: testCfg(), now: time.Now()}
 		for verb := byte('A'); verb <= 'z'; verb++ {
 			if headerTitle(verb) == "" {

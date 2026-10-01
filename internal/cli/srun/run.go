@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -154,6 +155,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		errln(stderr, "srun: error: "+err.Error())
 		return 1
 	}
+	sup.elastic = sup.elasticStep()
+	for _, w := range sup.torchrunWarnings() {
+		errln(stderr, "srun: warning: "+w)
+	}
 	for _, w := range sup.gpuRequestWarnings(opt) {
 		errln(stderr, "srun: warning: "+w)
 	}
@@ -198,12 +203,32 @@ type supervisor struct {
 	demux *mux.Demux
 
 	mu            sync.Mutex
-	conns         []*proto.Conn
 	killTriggered bool
 	firstBadCode  int
 	maxCode       int
 
-	escalation sync.Once // the SIGKILL/abandon stages are armed at most once
+	escalation  sync.Once   // the SIGKILL/abandon stages are armed at most once
+	terminating atomic.Bool // srun is stopping the step: no spare may replace a node
+
+	// conns are the open stepper channels. A hot-spare relaunch adds one while
+	// the step runs, so they have their own lock. Lock order: mu, then connsMu.
+	connsMu sync.Mutex
+	conns   []*proto.Conn
+
+	// Hot spares (elastic.go). elastic is decided once per step; the launch
+	// context below is kept so a spare can be launched mid-step exactly like
+	// the original steppers.
+	elastic           bool
+	softSwapped       bool // a stepper ended early (not a lost host) and took a spare
+	swapRecordWarning sync.Once
+	recordMu          sync.Mutex     // serializes recordSwaps
+	bg                sync.WaitGroup // swap side effects (drain, recordSwaps)
+	runner            gedata.Runner  // nil: gedata.ExecRunner (tests inject a fake)
+	srv               *proto.Server
+	token             string
+	slave             launch.Launcher
+	remote            bool
+	handles           []launch.Handle // guarded by mu
 
 	// Signal state across the launch (signals.go). Until connected, a received
 	// signal cannot be forwarded: the first terminating one is kept in
@@ -264,6 +289,8 @@ func (s *supervisor) launch() int {
 		return exitLauncher
 	}
 	defer func() { _ = srv.Close() }()
+	defer s.bg.Wait()
+	s.srv, s.token, s.slave, s.remote = srv, token, slave, remote
 
 	// Preflight tight-integration launch before spawning anything (REQ-CHN-005).
 	if remote {
@@ -287,25 +314,30 @@ func (s *supervisor) launch() int {
 	// always launches locally (REQ-RUN-012); it need not be step-node 0 when -w
 	// selects a subset that still includes it.
 	var handles []launch.Handle
-	for ni, node := range s.plan.Nodes {
+	for ni := range s.plan.Nodes {
 		if sig := s.launchInterrupted(); sig != 0 {
 			s.abortLaunch(srv, nil, handles)
 			return 128 + int(sig)
 		}
-		launcher := launch.Launcher(master)
-		if node.LayoutIndex != 0 {
-			launcher = slave
-		}
-		env := proto.Envelope{
-			JobID:  s.lay.Job.JobID,
-			StepID: s.stepID,
-			Host:   node.Host,
-			NodeID: ni,
-			Dial:   s.dialAddr(srv.Addr(), remote),
-		}
-		h, err := launcher.Start(context.Background(), node.Host, env, token)
+		h, err := s.startOrSpare(ni, func(node plan.StepNode) (launch.Handle, error) {
+			launcher := launch.Launcher(master)
+			if node.LayoutIndex != 0 {
+				launcher = slave
+			}
+			env := proto.Envelope{
+				JobID:  s.lay.Job.JobID,
+				StepID: s.stepID,
+				Host:   node.Host,
+				NodeID: ni,
+				Dial:   s.dialAddr(srv.Addr(), remote),
+			}
+			h, err := launcher.Start(context.Background(), node.Host, env, token)
+			if err != nil {
+				errln(s.stderr, fmt.Sprintf("srun: error: launching stepper on %s: %v", node.Host, err))
+			}
+			return h, err
+		})
 		if err != nil {
-			errln(s.stderr, fmt.Sprintf("srun: error: launching stepper on %s: %v", node.Host, err))
 			s.abortLaunch(srv, nil, handles)
 			return exitLauncher
 		}
@@ -377,9 +409,10 @@ func (s *supervisor) launch() int {
 	pending := s.interruptSig
 	if pending == 0 {
 		for _, c := range conns {
-			s.conns = append(s.conns, c)
+			s.addConn(c)
 		}
 		s.connected = true
+		s.handles = append(s.handles, handles...)
 	}
 	s.mu.Unlock()
 	if pending != 0 {
@@ -391,8 +424,45 @@ func (s *supervisor) launch() int {
 	code := s.supervise(conns)
 
 	_ = s.demux.Flush()
-	s.waitHandles(handles)
+	s.mu.Lock()
+	all := append([]launch.Handle(nil), s.handles...)
+	s.mu.Unlock()
+	s.waitHandles(all)
 	return code
+}
+
+// addConn registers an open stepper channel for broadcasts and abandon.
+func (s *supervisor) addConn(c *proto.Conn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	s.conns = append(s.conns, c)
+}
+
+// addLiveConn registers a channel opened mid-step (a hot-spare relaunch) unless
+// srun is already stopping the step. Checked under connsMu, so it cannot slip in
+// after abandon took its snapshot of the channels to close.
+func (s *supervisor) addLiveConn(c *proto.Conn) bool {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	if s.terminating.Load() {
+		return false
+	}
+	s.conns = append(s.conns, c)
+	return true
+}
+
+// allConns is a snapshot of the open stepper channels.
+func (s *supervisor) allConns() []*proto.Conn {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	return append([]*proto.Conn(nil), s.conns...)
+}
+
+// addHandle registers a stepper launched mid-step (a hot-spare relaunch).
+func (s *supervisor) addHandle(h launch.Handle) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handles = append(s.handles, h)
 }
 
 // abortLaunch ends a step that failed before supervision started. Closing the
@@ -438,6 +508,25 @@ func (s *supervisor) waitHandles(handles []launch.Handle) {
 	}
 }
 
+// watchRemoteHosts lets the kernel detect a remote stepper's host going away
+// (REQ-CHN-004 as amended): a channel to a crashed, powered-off or partitioned
+// host fails with a timeout after ping_deadline, and supervise counts that
+// host's ranks as failed. A suspended or merely slow stepper keeps its host
+// answering, so it is never mistaken for a lost one. The master's own stepper
+// is local: losing that host means losing srun itself.
+func (s *supervisor) watchRemoteHosts(conns map[string]*proto.Conn) {
+	if s.cfg.PingDeadline.Duration <= 0 || s.cfg.PingInterval.Duration <= 0 {
+		return
+	}
+	for _, n := range s.plan.Nodes {
+		if c := conns[n.Host]; c != nil && n.LayoutIndex != 0 {
+			if err := c.SetLiveness(s.cfg.PingDeadline.Duration, s.cfg.PingInterval.Duration); err != nil {
+				errln(s.stderr, fmt.Sprintf("srun: warning: cannot watch node %s for loss: %v", n.Host, err))
+			}
+		}
+	}
+}
+
 // supervise reads frames from every stepper connection until all ranks have
 // reported, aggregating output and exit codes.
 func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
@@ -449,38 +538,59 @@ func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
 		host string
 		f    proto.Frame
 		eof  bool
+		lost bool // the channel timed out: the stepper's host stopped answering
 	}
+	s.watchRemoteHosts(conns)
+
+	// Readers feed one channel. The loop runs until every rank has reported, not
+	// until the channel closes: a hot-spare relaunch adds a reader mid-step, so
+	// "all readers done" is not a stable end.
 	events := make(chan event, 64)
-	var readers sync.WaitGroup
-	for host, c := range conns {
-		readers.Add(1)
-		go func(host string, c *proto.Conn) {
-			defer readers.Done()
+	read := func(host string, c *proto.Conn) {
+		go func() {
 			for {
 				f, err := c.Recv()
 				if err != nil {
-					events <- event{host: host, eof: true}
+					events <- event{host: host, eof: true, lost: proto.IsLivenessTimeout(err)}
 					return
 				}
 				events <- event{host: host, f: f}
 			}
-		}(host, c)
+		}()
 	}
-	go func() { readers.Wait(); close(events) }()
+	for host, c := range conns {
+		read(host, c)
+	}
 
 	hostReported := map[string]int{}
-	for ev := range events {
+	for reported < total {
+		ev := <-events
 		if ev.eof {
+			if hostReported[ev.host] >= perHostExpected[ev.host] {
+				continue // finished (or already replaced): nothing outstanding
+			}
+			// An elastic step answers a lost node with a spare: same tasks, same
+			// node index, nothing counted as failed (elastic.go).
+			if s.canReplace(ev.host, hostReported[ev.host]) {
+				if spare, c, ok := s.replace(ev.host, ev.lost); ok {
+					perHostExpected[spare] = perHostExpected[ev.host]
+					delete(perHostExpected, ev.host)
+					read(spare, c)
+					continue
+				}
+			} else if ev.lost {
+				errln(s.stderr, fmt.Sprintf("srun: error: lost node %s: it stopped answering for %s; "+
+					"its tasks are treated as failed", ev.host, s.cfg.PingDeadline.Duration))
+			}
 			// A stepper closed before reporting all its ranks: synthesize
 			// failures for the missing ones (REQ-RUN-027, SI-08).
 			for hostReported[ev.host] < perHostExpected[ev.host] {
 				hostReported[ev.host]++
 				reported++
 				s.recordExit(1)
-				errln(s.stderr, fmt.Sprintf("srun: error: stepper on %s exited without reporting a rank", ev.host))
-			}
-			if reported >= total {
-				break
+				if !ev.lost {
+					errln(s.stderr, fmt.Sprintf("srun: error: stepper on %s exited without reporting a rank", ev.host))
+				}
 			}
 			continue
 		}
@@ -496,9 +606,6 @@ func (s *supervisor) supervise(conns map[string]*proto.Conn) int {
 			reported++
 			errln(s.stderr, fmt.Sprintf("srun: error: task %d failed to start: %s", ev.f.Rank, ev.f.Payload))
 			s.recordExit(1)
-		}
-		if reported >= total {
-			break
 		}
 	}
 
@@ -534,6 +641,7 @@ func (s *supervisor) recordExit(code int) {
 // forwarded SIGTERM/SIGHUP): a rank that ignores SIGTERM gets SIGKILL, and a
 // stepper that still does not report is abandoned (killEscalation).
 func (s *supervisor) armEscalation() {
+	s.terminating.Store(true)
 	s.escalation.Do(func() { time.AfterFunc(killEscalation, s.escalate) })
 }
 
@@ -551,16 +659,15 @@ func (s *supervisor) escalate() {
 // ranks, and exits with a code. A channel whose stepper already finished is
 // closed harmlessly.
 func (s *supervisor) abandon() {
-	for _, c := range s.conns {
+	for _, c := range s.allConns() {
 		_ = c.Close()
 	}
 }
 
-// broadcast sends f to every stepper. s.conns is written once, before supervise
-// starts, and never changes afterwards, so it is read without s.mu: recordExit
-// calls broadcast while holding s.mu.
+// broadcast sends f to every stepper. recordExit calls it while holding s.mu,
+// which is fine: allConns takes only connsMu (lock order mu, then connsMu).
 func (s *supervisor) broadcast(f proto.Frame) {
-	for _, c := range s.conns {
+	for _, c := range s.allConns() {
 		_ = c.Send(f)
 	}
 }

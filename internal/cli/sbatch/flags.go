@@ -64,6 +64,13 @@ type options struct {
 	// so the caller silently held a string that was not an id.
 	parsable bool
 
+	// Hot spares (shim extensions, also accepted on #SHIM lines): --x-spares=k
+	// adds k idle nodes that replace a lost node during a step; --x-elastic
+	// picks which steps do that (auto, on, off).
+	spares     int
+	haveSpares bool
+	elastic    string
+
 	script     string   // script file path (first non-flag token)
 	scriptArgs []string // tokens after the script
 }
@@ -113,7 +120,8 @@ var knownLong = map[string]bool{
 	"gpus": true, "gpus-per-node": true, "gres": true,
 	"gpus-per-task": true, "gpu-bind": true,
 	"signal": true, "dependency": true, "export": true,
-	"account": true,
+	"account":  true,
+	"x-spares": true, "x-elastic": true,
 	// Accepted and intentionally ignored (GE has no distinct behavior to map):
 	"open-mode": true, "wckey": true,
 }
@@ -322,6 +330,22 @@ func setLong(opt *options, name, val string) error {
 			return err
 		}
 		opt.cpusPerTask = n
+	case "x-spares":
+		n, err := atoi()
+		if err != nil {
+			return err
+		}
+		if n < 0 {
+			return fmt.Errorf("sbatch: error: --x-spares must not be negative (got %d)", n)
+		}
+		opt.spares, opt.haveSpares = n, true
+	case "x-elastic":
+		switch v := strings.ToLower(val); v {
+		case "on", "off", "auto":
+			opt.elastic = v
+		default:
+			return fmt.Errorf("sbatch: error: --x-elastic=%q: expected on, off or auto", val)
+		}
 	case "partition":
 		opt.partition = val
 	case "job-name":

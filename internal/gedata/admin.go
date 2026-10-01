@@ -165,6 +165,11 @@ func (a *Admin) ExecHosts(ctx context.Context) ([]string, error) {
 	return a.q.ShowExecHosts()
 }
 
+// SubmitHosts lists the cluster's submit hosts (qconf -ss).
+func (a *Admin) SubmitHosts(ctx context.Context) ([]string, error) {
+	return a.q.ShowSubmitHosts()
+}
+
 // ResourceMapInstance is one instance of a host's RSMAP definition.
 type ResourceMapInstance struct {
 	ID string
