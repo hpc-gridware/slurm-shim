@@ -61,9 +61,13 @@ else
 fi
 
 # ----------------------------------------------------- SIGTERM to a remote stepper
+# Each rank drops a marker in the (shared) home once it runs: the SIGTERM must
+# land while the ranks run. Sent earlier, it hits a stepper still waiting for its
+# StepSpec, which exits 143 at once without a rank to report (srun then
+# synthesizes 1) -- correct, but not the case under test.
 cat >"$job" <<'EOF'
 #!/bin/bash
-srun bash -c 'exec sleep 60'
+srun bash -c 'touch "$HOME/e2e-41-sigterm.up.$SLURM_PROCID"; exec sleep 60'
 echo "SRUN_RC=$?"
 sleep 20
 echo SCRIPT_END
@@ -71,9 +75,14 @@ EOF
 remote=$JOB_HOME/e2e-41-sigterm.sh
 out=$JOB_HOME/e2e-41-sigterm.out
 put_job "$job" "$remote"
+gridware "rm -f $JOB_HOME/e2e-41-sigterm.up.*"
 id="$(sbatch_submit "$remote" "$out" --nodes=2 --ntasks-per-node=1)"
 ids="$ids $id"
 if [ -n "$id" ]; then
+  for _ in $(seq 1 60); do
+    [ "$(gridware "ls $JOB_HOME/e2e-41-sigterm.up.* 2>/dev/null | wc -l" || true)" -ge 2 ] && break
+    sleep 2
+  done
   # Find this job's REMOTE stepper -- a pe task, started by qrsh -inherit. The
   # stepper on srun's own host is srun's child and not a pe task: signalling it
   # would pass against the bug, so skip any stepper whose parent is srun. This
