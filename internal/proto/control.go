@@ -16,9 +16,15 @@ import (
 	"time"
 )
 
-// helloTimeout bounds how long the server waits for a dialer's HELLO before
-// dropping it, so a stray connection cannot occupy an accept slot (SI-52).
-const helloTimeout = 10 * time.Second
+// HelloTimeout bounds how long the server waits for a dialer's HELLO, and how
+// long it then holds an authenticated connection nobody accepts, before
+// dropping it, so a stray connection cannot occupy an accept slot (SI-52). A
+// var so tests elsewhere can shorten it; a server reads it once, when it is
+// created.
+var HelloTimeout = 10 * time.Second
+
+// dialTimeout bounds a stepper's TCP connect to srun.
+const dialTimeout = 10 * time.Second
 
 // NewToken returns a 32-byte cryptographically random hex token for a step
 // (REQ-CHN-002).
@@ -52,6 +58,7 @@ func (c *Conn) Close() error { return c.nc.Close() }
 // authenticated connection is delivered from Accept with its claimed host.
 type Server struct {
 	ln       net.Listener
+	hold     time.Duration // HelloTimeout when the server was created
 	token    string
 	accepted chan *Conn
 	errc     chan error
@@ -70,6 +77,7 @@ func Listen(addr, token string) (*Server, error) {
 	}
 	s := &Server{
 		ln:       ln,
+		hold:     HelloTimeout,
 		token:    token,
 		accepted: make(chan *Conn),
 		errc:     make(chan error, 1),
@@ -137,7 +145,7 @@ func (s *Server) acceptLoop() {
 // delivers the connection. An unauthenticated or malformed dialer is dropped
 // without affecting other steppers (REQ-CHN-002).
 func (s *Server) authenticate(nc net.Conn) {
-	_ = nc.SetReadDeadline(time.Now().Add(helloTimeout))
+	_ = nc.SetReadDeadline(time.Now().Add(s.hold))
 	fr := NewFrameReader(nc)
 	hello, err := fr.Read()
 	if err != nil || hello.Type != FrameHello {
@@ -157,7 +165,7 @@ func (s *Server) authenticate(nc net.Conn) {
 		// The server closed (srun aborted the launch): drop the stepper now, so
 		// it stops waiting for a StepSpec that will never come.
 		_ = nc.Close()
-	case <-time.After(helloTimeout):
+	case <-time.After(s.hold):
 		_ = nc.Close()
 	}
 }
@@ -187,7 +195,7 @@ func (s *Server) Close() error {
 // Dial connects to srun's control channel and authenticates as host. The
 // returned Conn is ready to receive the StepSpec.
 func Dial(addr, token, host string) (*Conn, error) {
-	nc, err := net.DialTimeout("tcp", addr, helloTimeout)
+	nc, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return nil, err
 	}

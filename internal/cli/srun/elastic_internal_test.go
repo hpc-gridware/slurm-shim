@@ -139,12 +139,13 @@ var _ = Describe("hot spares: a node lost before the step starts [AC6]", func() 
 			},
 		}
 		var tried []string
-		_, err := s.startOrSpare(1, func(node plan.StepNode) (launch.Handle, error) {
-			tried = append(tried, node.Host)
-			if node.Host == "node002" {
+		_, err := startAt(s, 1, func(ni int) (launch.Handle, error) {
+			host := s.plan.Nodes[ni].Host
+			tried = append(tried, host)
+			if host == "node002" {
 				return nil, launch.HostError(errors.New("qrsh: node002 never accepted the task"))
 			}
-			return exitedHandle(node.Host), nil
+			return exitedHandle(host), nil
 		})
 
 		Expect(err).NotTo(HaveOccurred())
@@ -164,7 +165,7 @@ var _ = Describe("hot spares: a node lost before the step starts [AC6]", func() 
 			stderr: gbytes.NewBuffer(), elastic: true, lay: &layout.Layout{}, opt: &options{}, cfg: config.Default(),
 			plan: &plan.StepPlan{Nodes: []plan.StepNode{{Host: "node001"}, {Host: "node002", LayoutIndex: 1}}},
 		}
-		_, err := s.startOrSpare(1, func(plan.StepNode) (launch.Handle, error) {
+		_, err := startAt(s, 1, func(int) (launch.Handle, error) {
 			return nil, launch.HostError(errors.New("down"))
 		})
 		Expect(err).To(MatchError("down"))
@@ -286,12 +287,13 @@ var _ = Describe("hot spares: a dead spare at launch [AC5]", func() {
 			},
 		}
 		var tried []string
-		_, err := s.startOrSpare(1, func(node plan.StepNode) (launch.Handle, error) {
-			tried = append(tried, node.Host)
-			if node.Host != "node004" {
-				return nil, launch.HostError(errors.New("qrsh: " + node.Host + " never accepted the task"))
+		_, err := startAt(s, 1, func(ni int) (launch.Handle, error) {
+			host := s.plan.Nodes[ni].Host
+			tried = append(tried, host)
+			if host != "node004" {
+				return nil, launch.HostError(errors.New("qrsh: " + host + " never accepted the task"))
 			}
-			return exitedHandle(node.Host), nil
+			return exitedHandle(host), nil
 		})
 
 		Expect(err).NotTo(HaveOccurred())
@@ -332,8 +334,9 @@ var _ = Describe("hot spares: only a real node loss costs spares", func() {
 	It("does not swap at launch on an error that would repeat on every host", func() {
 		dir := writeSparesLayout(nodes, []layout.Node{{Host: "node003"}}, nil)
 		var tried []string
-		_, err := elastic(gbytes.NewBuffer()).startOrSpare(1, func(node plan.StepNode) (launch.Handle, error) {
-			tried = append(tried, node.Host)
+		s := elastic(gbytes.NewBuffer())
+		_, err := startAt(s, 1, func(ni int) (launch.Handle, error) {
+			tried = append(tried, s.plan.Nodes[ni].Host)
 			return nil, errors.New("qrsh launch on node002: slots unavailable past slot_retry bound")
 		})
 		Expect(err).To(HaveOccurred())
@@ -520,3 +523,13 @@ var _ = Describe("hot spares: torchrun command lines", func() {
 		Entry("garbage", "x", false),
 	)
 })
+
+// startAt starts step node ni as startSteppers does for one node: the start,
+// then the move to spares while the host refuses the task.
+func startAt(s *supervisor, ni int, start func(ni int) (launch.Handle, error)) (launch.Handle, error) {
+	h, err := start(ni)
+	if err == nil {
+		return h, nil
+	}
+	return s.startOnSpare(ni, err, start)
+}

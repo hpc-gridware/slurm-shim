@@ -305,20 +305,21 @@ func (s *supervisor) relaunchSpec(ni int) proto.StepSpec {
 	return spec
 }
 
-// startOrSpare starts the stepper for step node ni at launch. When a remote
-// node of an elastic step refuses it -- its execd never takes the task -- the
-// node moves to the next spare and the start is retried there. A host that is
-// powered off or cut off usually makes qrsh hang rather than fail; that case
-// still ends at launch_timeout and costs the step.
-func (s *supervisor) startOrSpare(ni int, start func(node plan.StepNode) (launch.Handle, error)) (launch.Handle, error) {
-	for {
+// hostFault reports whether a failed start on step node ni may cost a spare:
+// an elastic step, a remote node, and an error that points at the host itself
+// (its execd never took the task). An error that would repeat on every host
+// (spawning qrsh, slots held by other steps) fails the step as is.
+func (s *supervisor) hostFault(ni int, err error) bool {
+	return s.elastic && s.plan.Nodes[ni].LayoutIndex != 0 && errors.Is(err, launch.ErrHostUnusable)
+}
+
+// startOnSpare handles step node ni whose start failed with err: while the
+// failure is a host fault, the node moves to the next spare and is started
+// there. A host that is powered off or cut off usually makes qrsh hang rather
+// than fail; that case still ends at launch_timeout and costs the step.
+func (s *supervisor) startOnSpare(ni int, err error, start func(ni int) (launch.Handle, error)) (launch.Handle, error) {
+	for s.hostFault(ni, err) {
 		node := s.plan.Nodes[ni]
-		h, err := start(node)
-		// Only a host fault costs a spare: an error that would repeat on every
-		// host (spawning qrsh, slots held by other steps) fails the step as is.
-		if err == nil || !s.elastic || node.LayoutIndex == 0 || !errors.Is(err, launch.ErrHostUnusable) {
-			return h, err
-		}
 		spare, used, total, terr := s.takeSpare(node.Host)
 		if terr != nil {
 			errln(s.stderr, fmt.Sprintf("srun: error: node %s did not start (%v) and %v", node.Host, err, spareStatus(terr, used, total)))
@@ -330,7 +331,12 @@ func (s *supervisor) startOrSpare(ni int, start func(node plan.StepNode) (launch
 		s.placeOnSpare(ni, spare)
 		errln(s.stderr, fmt.Sprintf("srun: node %s did not start (%v); tasks %s placed on %s (%d/%d spares used)",
 			node.Host, err, s.rankList(ni), spare.Host, used, total))
+		var h launch.Handle
+		if h, err = start(ni); err == nil {
+			return h, nil
+		}
 	}
+	return nil, err
 }
 
 // recordSwaps stores the job's swaps in its job context, so squeue and scontrol

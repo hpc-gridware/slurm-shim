@@ -265,10 +265,7 @@ func (s *supervisor) launch() int {
 		return 1
 	}
 
-	// The master host always runs under the LocalLauncher (REQ-RUN-012); slave
-	// hosts use the configured backend (qrsh-inherit by default).
-	master := launch.LocalLauncher{Self: s.self, Stderr: s.stderr}
-	slave, err := launch.For(s.cfg, s.self, s.stderr)
+	master, slave, err := launchersFor(s)
 	if err != nil {
 		errln(s.stderr, "srun: error: "+err.Error())
 		return exitLauncher
@@ -310,76 +307,49 @@ func (s *supervisor) launch() int {
 	s.interrupted = make(chan struct{})
 	s.installSignals()
 
-	// Launch one stepper per participating host. The master host (layout index 0)
-	// always launches locally (REQ-RUN-012); it need not be step-node 0 when -w
-	// selects a subset that still includes it.
-	var handles []launch.Handle
-	for ni := range s.plan.Nodes {
-		if sig := s.launchInterrupted(); sig != 0 {
-			s.abortLaunch(srv, nil, handles)
-			return 128 + int(sig)
-		}
-		h, err := s.startOrSpare(ni, func(node plan.StepNode) (launch.Handle, error) {
-			launcher := launch.Launcher(master)
-			if node.LayoutIndex != 0 {
-				launcher = slave
-			}
-			env := proto.Envelope{
-				JobID:  s.lay.Job.JobID,
-				StepID: s.stepID,
-				Host:   node.Host,
-				NodeID: ni,
-				Dial:   s.dialAddr(srv.Addr(), remote),
-			}
-			h, err := launcher.Start(context.Background(), node.Host, env, token)
-			if err != nil {
-				errln(s.stderr, fmt.Sprintf("srun: error: launching stepper on %s: %v", node.Host, err))
-			}
-			return h, err
-		})
-		if err != nil {
-			s.abortLaunch(srv, nil, handles)
-			return exitLauncher
-		}
-		handles = append(handles, h)
-	}
-
-	// Accept each stepper's authenticated connection within launch_timeout.
+	// Accept while launching: a connected stepper is held only briefly until
+	// srun accepts it, and starting many nodes takes longer than that. The
+	// launch_timeout deadline is armed once the last start returned.
 	conns := map[string]*proto.Conn{}
-	acceptCtx, cancel := context.WithTimeout(context.Background(), s.cfg.LaunchTimeout.Duration)
-	defer cancel()
+	acceptCtx, stopAccept := context.WithCancel(context.Background())
+	defer stopAccept()
+	acceptErr := make(chan error, 1)
+	go func() { acceptErr <- acceptSteppers(acceptCtx, srv, len(s.plan.Nodes), conns) }()
 	// An interrupt ends the wait for connections. Cancelling this context is
 	// safe: it only bounds Accept, never a launched qrsh client.
 	go func() {
 		select {
 		case <-s.interrupted:
-			cancel()
+			stopAccept()
 		case <-acceptCtx.Done():
 		}
 	}()
-	for range s.plan.Nodes {
-		// Checked before every Accept: a signal that arrived during a slow Start
-		// (qrsh's settle wait) must not be outrun by connections already queued.
+
+	handles, ok := s.startSteppers(master, slave, srv, token, remote)
+	if !ok {
+		stopAccept()
+		<-acceptErr
+		s.abortLaunch(srv, conns, handles)
 		if sig := s.launchInterrupted(); sig != 0 {
-			s.abortLaunch(srv, conns, handles)
 			return 128 + int(sig)
 		}
-		c, err := srv.Accept(acceptCtx)
-		if err != nil {
-			if sig := s.launchInterrupted(); sig != 0 {
-				s.abortLaunch(srv, conns, handles)
-				return 128 + int(sig)
-			}
-			errln(s.stderr, "srun: error: stepper did not connect within launch_timeout")
-			if remote {
-				errln(s.stderr, "srun: the control channel is listening on "+srv.Addr()+
-					"; if this cluster filters traffic between nodes, that port range must be "+
-					"open to this host (run `slurm-shim ports` for the exact rules)")
-			}
-			s.abortLaunch(srv, conns, handles)
-			return exitLauncher
+		return exitLauncher
+	}
+	deadline := time.AfterFunc(s.cfg.LaunchTimeout.Duration, stopAccept)
+	err = <-acceptErr
+	deadline.Stop()
+	if err != nil {
+		s.abortLaunch(srv, conns, handles)
+		if sig := s.launchInterrupted(); sig != 0 {
+			return 128 + int(sig)
 		}
-		conns[c.Host] = c
+		errln(s.stderr, "srun: error: stepper did not connect within launch_timeout")
+		if remote {
+			errln(s.stderr, "srun: the control channel is listening on "+srv.Addr()+
+				"; if this cluster filters traffic between nodes, that port range must be "+
+				"open to this host (run `slurm-shim ports` for the exact rules)")
+		}
+		return exitLauncher
 	}
 
 	// Push each host's StepSpec.
@@ -392,7 +362,13 @@ func (s *supervisor) launch() int {
 			s.abortLaunch(srv, conns, handles)
 			return 1
 		}
-		if err := conns[node.Host].Send(proto.Frame{Type: proto.FrameSpec, Payload: payload}); err != nil {
+		c := conns[node.Host]
+		if c == nil {
+			errln(s.stderr, "srun: error: no stepper connected for "+node.Host)
+			s.abortLaunch(srv, conns, handles)
+			return exitLauncher
+		}
+		if err := c.Send(proto.Frame{Type: proto.FrameSpec, Payload: payload}); err != nil {
 			errln(s.stderr, "srun: error: sending spec: "+err.Error())
 			s.abortLaunch(srv, conns, handles)
 			return exitLauncher
@@ -429,6 +405,108 @@ func (s *supervisor) launch() int {
 	s.mu.Unlock()
 	s.waitHandles(all)
 	return code
+}
+
+// launchConcurrency bounds the steppers being started at once. Every qrsh start
+// waits out qrsh's 2s rejection window, so one at a time costs 2s per node; 64
+// at a time keeps a 1000-node step near half a minute without flooding the
+// master host's forks or qmaster. A var so tests can lower it.
+var launchConcurrency = 64
+
+// launchersFor returns the launchers for the master host -- always local, so
+// its ranks go through a stepper too (REQ-RUN-012) -- and for the slave hosts
+// (the configured backend). A var so tests can launch fake steppers.
+var launchersFor = func(s *supervisor) (master, slave launch.Launcher, err error) {
+	slave, err = launch.For(s.cfg, s.self, s.stderr)
+	return launch.LocalLauncher{Self: s.self, Stderr: s.stderr}, slave, err
+}
+
+// startSteppers starts one stepper per step node, at most launchConcurrency at
+// once, and returns the handles of those that started; false means abort. A
+// start's context is never cancelled -- a qrsh client ended by a signal makes
+// Grid Engine delete the job -- so after a failure or an interrupt only new
+// starts are skipped. Nodes whose host refused the task move to spares
+// afterwards, one at a time: the swap bookkeeping must not run concurrently.
+func (s *supervisor) startSteppers(master, slave launch.Launcher, srv *proto.Server, token string, remote bool) ([]launch.Handle, bool) {
+	start := func(ni int) (launch.Handle, error) {
+		node := s.plan.Nodes[ni]
+		launcher := master
+		if node.LayoutIndex != 0 {
+			launcher = slave
+		}
+		env := proto.Envelope{
+			JobID:  s.lay.Job.JobID,
+			StepID: s.stepID,
+			Host:   node.Host,
+			NodeID: ni,
+			Dial:   s.dialAddr(srv.Addr(), remote),
+		}
+		h, err := launcher.Start(context.Background(), node.Host, env, token)
+		if err != nil {
+			errln(s.stderr, fmt.Sprintf("srun: error: launching stepper on %s: %v", node.Host, err))
+		}
+		return h, err
+	}
+
+	handles := make([]launch.Handle, len(s.plan.Nodes))
+	errs := make([]error, len(s.plan.Nodes))
+	sem := make(chan struct{}, launchConcurrency)
+	var wg sync.WaitGroup
+	var failed atomic.Bool
+	for ni := range s.plan.Nodes {
+		select {
+		case sem <- struct{}{}:
+		case <-s.interrupted:
+		}
+		if failed.Load() || s.launchInterrupted() != 0 {
+			break
+		}
+		wg.Add(1)
+		go func(ni int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			handles[ni], errs[ni] = start(ni)
+			if errs[ni] != nil && !s.hostFault(ni, errs[ni]) {
+				failed.Store(true)
+			}
+		}(ni)
+	}
+	wg.Wait()
+	for ni, err := range errs {
+		if err == nil || failed.Load() || s.launchInterrupted() != 0 {
+			continue
+		}
+		h, err := s.startOnSpare(ni, err, start)
+		if err != nil {
+			failed.Store(true)
+			continue
+		}
+		handles[ni] = h
+	}
+	var started []launch.Handle
+	for _, h := range handles {
+		if h != nil {
+			started = append(started, h)
+		}
+	}
+	return started, !failed.Load() && s.launchInterrupted() == 0
+}
+
+// acceptSteppers fills conns until n distinct hosts are connected or ctx ends.
+// A second connection from one host is closed; its stepper exits with a code.
+func acceptSteppers(ctx context.Context, srv *proto.Server, n int, conns map[string]*proto.Conn) error {
+	for len(conns) < n {
+		c, err := srv.Accept(ctx)
+		if err != nil {
+			return err
+		}
+		if _, dup := conns[c.Host]; dup {
+			_ = c.Close()
+			continue
+		}
+		conns[c.Host] = c
+	}
+	return nil
 }
 
 // addConn registers an open stepper channel for broadcasts and abandon.
@@ -468,7 +546,7 @@ func (s *supervisor) addHandle(h launch.Handle) {
 // abortLaunch ends a step that failed before supervision started. Closing the
 // listener and the accepted channels makes every started stepper exit with a
 // code (a stepper still dialling is refused; a connected one loses its channel;
-// an authenticated one nobody accepted is dropped after helloTimeout, which is
+// an authenticated one nobody accepted is dropped after proto.HelloTimeout, which is
 // shorter than stepperExitWait). srun then waits for them, so no qrsh client is
 // left behind writing its stderr into the pipe of an srun that has exited: a
 // SIGPIPE there would kill the client, and the remote pe task with it.

@@ -52,7 +52,7 @@ var _ = Describe("MakePlan", func() {
 		Expect(p.PE.ControlSlaves).To(BeTrue(), "qrsh -inherit needs control_slaves TRUE")
 		Expect(p.PE.StartProcArgs).To(Equal(prefix + "/bin/slurm-shim-env"))
 		Expect(p.PE.AllocationRule).To(Equal("$round_robin"))
-		Expect(p.PE.Slots).To(Equal(999))
+		Expect(p.PE.Slots).To(Equal(install.PESlotsNoCap), "no PE-level cap: queue slots bound what runs")
 		Expect(p.PE.JobIsFirstTask).To(BeFalse())
 		Expect(p.PE.DaemonForksSlaves).To(BeFalse())
 
@@ -180,3 +180,39 @@ func findAttr(p install.Plan, kind install.ChangeKind, object, attr string) (ins
 	}
 	return install.Change{}, false
 }
+
+var _ = Describe("MakePlan: the dedicated PE's slots", func() {
+	ctx := context.Background()
+	ours := func(slots int) *fakeAdmin {
+		f := bare()
+		f.pes["slurm-shim"] = gedata.PE{Name: "slurm-shim", Slots: slots, ControlSlaves: true,
+			StartProcArgs: prefix + "/bin/slurm-shim-env", AllocationRule: "$round_robin"}
+		return f
+	}
+
+	It("raises the old installer default of 999, which capped every job in the PE together", func() {
+		facts, err := install.Discover(ctx, ours(999))
+		Expect(err).NotTo(HaveOccurred())
+		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		c, ok := findAttr(p, install.ChangeSetPEAttr, "slurm-shim", "slots")
+		Expect(ok).To(BeTrue())
+		Expect([]string{c.Old, c.New}).To(Equal([]string{"999", "9999999"}))
+		Expect(p.Refusals()).To(BeEmpty(), "the installer's own old value needs no --force")
+	})
+
+	It("keeps any other value: that is the site's choice", func() {
+		facts, err := install.Discover(ctx, ours(4096))
+		Expect(err).NotTo(HaveOccurred())
+		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		_, ok := findAttr(p, install.ChangeSetPEAttr, "slurm-shim", "slots")
+		Expect(ok).To(BeFalse())
+	})
+
+	It("never touches a site PE at 999, which is also Grid Engine's own template default", func() {
+		facts, err := install.Discover(ctx, bare())
+		Expect(err).NotTo(HaveOccurred())
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, PEName: "make", Force: true})
+		_, ok := findAttr(p, install.ChangeSetPEAttr, "make", "slots")
+		Expect(ok).To(BeFalse())
+	})
+})

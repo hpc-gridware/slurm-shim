@@ -78,3 +78,35 @@ var _ = Describe("Run [lost-node checks]", func() {
 			"h1 sets it in its local configuration")
 	})
 })
+
+var _ = Describe("Run [PE slots]", func() {
+	// The fake cluster is the captured OCS 9.1.6 one: 3 x 14 = 42 slots in
+	// all.q (qstat -f). Its make PE is served with slots 16, so a 17-slot job on
+	// the batch partition could never start.
+	BeforeEach(func() {
+		fixtures, err := filepath.Abs("../../../test/e2e/fixtures/9.1.6")
+		Expect(err).NotTo(HaveOccurred())
+		dir := GinkgoT().TempDir()
+		qconf := `#!/bin/sh
+case "$1" in
+  -sp) sed 's/^slots .*/slots              16/' ` + fixtures + `/qconf-sp-make.txt ;;
+  -sq) printf 'qname all.q\nhostlist @allhosts\npe_list make\nslots 14\nshell_start_mode unix_behavior\nstarter_method NONE\n' ;;
+  *) echo "fake qconf: $*" >&2; exit 1 ;;
+esac
+`
+		Expect(os.WriteFile(filepath.Join(dir, "qconf"), []byte(qconf), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "qstat"), []byte("#!/bin/sh\ncat "+fixtures+"/qstat-f.txt\n"), 0o755)).To(Succeed())
+		cfg := filepath.Join(dir, "slurm-shim.yaml")
+		Expect(os.WriteFile(cfg, []byte("partitions:\n  batch: {queue: all.q, pe: make, slots: \"1\"}\n"), 0o644)).To(Succeed())
+		GinkgoT().Setenv("PATH", dir+":/usr/bin:/bin")
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", cfg)
+		GinkgoT().Setenv("SGE_ROOT", "")
+	})
+
+	It("warns that the partition's PE caps below its queue's slots, with the fix", func() {
+		var stdout, stderr bytes.Buffer
+		doctor.Run(nil, &stdout, &stderr)
+		Expect(stdout.String()).To(MatchRegexp(
+			`(?m)^WARN  pe make caps every job using it, together, at 16 slots; queue\(s\) all.q have 42: .*qconf -mattr pe slots 9999999 make`))
+	})
+})
