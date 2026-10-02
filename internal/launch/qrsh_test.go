@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
 
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
 )
@@ -155,5 +158,36 @@ var _ = Describe("qrsh client process group", func() {
 		cmd := qrshCommand(context.Background(), []string{"-inherit"}, nil)
 		Expect(cmd.SysProcAttr).NotTo(BeNil())
 		Expect(cmd.SysProcAttr.Setpgid).To(BeTrue())
+	})
+})
+
+var _ = Describe("QrshLauncher retries when many nodes start at once", func() {
+	It("spreads each backoff over [d/2, 3d/2) so concurrent starts do not retry in step", func() {
+		seen := map[time.Duration]bool{}
+		for i := 0; i < 200; i++ {
+			d := jittered(time.Second)
+			Expect(d).To(BeNumerically(">=", 500*time.Millisecond))
+			Expect(d).To(BeNumerically("<", 1500*time.Millisecond))
+			seen[d] = true
+		}
+		Expect(len(seen)).To(BeNumerically(">", 1), "the backoff must vary")
+	})
+
+	It("prints the slot-retry line once per srun, not once per retry and node", func() {
+		procs := []*fakeProc{
+			{exits: true, stderr: `error: no suitable queues`},
+			{exits: true, stderr: `error: no suitable queues`},
+			{exits: false},
+		}
+		l, _ := scriptedLauncher(procs, time.Second)
+		out := gbytes.NewBuffer()
+		l.Stderr = out
+		l.slotNotice = new(sync.Once)
+		env := proto.Envelope{JobID: 4711, StepID: 1, Host: "node002", NodeID: 1, Dial: "127.0.0.1:5000"}
+		_, err := l.Start(context.Background(), "node002", env, "tok")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = l.Start(context.Background(), "node003", env, "tok") // another node, same srun
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Count(string(out.Contents()), slotRetryMessage)).To(Equal(1))
 	})
 })

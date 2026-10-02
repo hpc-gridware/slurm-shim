@@ -3,6 +3,7 @@ package launch
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 )
@@ -17,7 +18,7 @@ import (
 func For(cfg *config.Config, self string, stderr io.Writer) (Launcher, error) {
 	switch cfg.Launcher {
 	case "", "qrsh-inherit":
-		return QrshLauncher{Self: self, Stderr: stderr}, nil
+		return QrshLauncher{Self: self, Stderr: stderr, slotNotice: new(sync.Once)}, nil
 	case "local":
 		return LocalLauncher{Self: self, Stderr: stderr}, nil
 	case "ssh":

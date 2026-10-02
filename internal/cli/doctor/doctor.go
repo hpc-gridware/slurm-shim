@@ -187,6 +187,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	seenPE := map[string]bool{}
 	var peOrder []string              // PEs read successfully, in partition order
 	peForks := map[string]bool{}      // PE -> daemon_forks_slaves
+	peSlots := map[string]int{}       // PE -> slots
 	peQueues := map[string][]string{} // PE -> readable queues that offer it
 	for _, n := range names {
 		p := cfg.Partitions[n]
@@ -235,6 +236,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		peOrder = append(peOrder, p.PE)
 		peForks[p.PE] = pe.DaemonForksSlaves
+		peSlots[p.PE] = pe.Slots
 	}
 	// daemon_forks_slaves is judged once all partitions are read: whether FALSE
 	// can hurt depends on every queue that offers the PE.
@@ -357,6 +359,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if bad == 0 {
 			r.pass("%d queue instance(s), none in error/alarm/unreachable state", len(insts))
 		}
+		for _, name := range peOrder {
+			if warn, pass := peSlotsFinding(name, peSlots[name], peQueues[name], insts); warn != "" {
+				r.warn("%s", warn)
+			} else if pass != "" {
+				r.pass("%s", pass)
+			}
+		}
 	}
 	_ = build
 	_ = ports.Run
@@ -453,6 +462,30 @@ func paramEnabled(params, name string) bool {
 		}
 	}
 	return false
+}
+
+// peSlotsFinding compares a PE's slots, which cap every job running in it at
+// once together, with the slots of the queues that offer it. Below that total,
+// a job asking for more than the cap never starts. Nothing to say (both empty)
+// when no queue offers the PE -- already a FAIL above -- or its queues have no
+// slots. A host in two such queues counts twice, which can only overstate the
+// total.
+func peSlotsFinding(pe string, slots int, queues []string, insts []gedata.QueueInstance) (warn, pass string) {
+	total := 0
+	for _, qi := range insts {
+		if containsStr(queues, qi.Queue) {
+			total += qi.Total
+		}
+	}
+	if total == 0 {
+		return "", ""
+	}
+	if slots < total {
+		return fmt.Sprintf("pe %s caps every job using it, together, at %d slots; queue(s) %s have %d: "+
+			"a job of more than %d slots never starts (raise it: qconf -mattr pe slots %d %s)",
+			pe, slots, strings.Join(queues, ","), total, slots, install.PESlotsNoCap, pe), ""
+	}
+	return "", fmt.Sprintf("pe %s slots %d cover the %d slots of queue(s) %s", pe, slots, total, strings.Join(queues, ","))
 }
 
 // notIn returns the entries of xs that are not in set.

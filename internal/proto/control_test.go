@@ -53,7 +53,7 @@ var _ = Describe("Control channel [REQ-CHN-002]", func() {
 
 	It("drops an authenticated stepper nobody accepted as soon as the server closes", func() {
 		// srun aborting a launch closes the server; a stepper waiting for its
-		// StepSpec must see EOF at once, not after helloTimeout (10s).
+		// StepSpec must see EOF at once, not after HelloTimeout (10s).
 		client, err := proto.Dial(srv.Addr(), token, "node002")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = client.Close() }()

@@ -8,6 +8,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/hpc-gridware/slurm-shim/internal/gedata"
+
 	"github.com/hpc-gridware/slurm-shim/internal/gedata/fake"
 )
 
@@ -119,5 +121,39 @@ var _ = Describe("doctor: exec hosts that are not submit hosts", func() {
 	It("names the hosts missing from the submit host list", func() {
 		Expect(notIn([]string{"m", "w1", "w2"}, []string{"w1", "m"})).To(Equal([]string{"w2"}))
 		Expect(notIn([]string{"m"}, []string{"m"})).To(BeEmpty())
+	})
+})
+
+var _ = Describe("doctor: PE slots against the queues that offer it", func() {
+	insts := []gedata.QueueInstance{
+		{Queue: "all.q", Host: "h1", Total: 512}, {Queue: "all.q", Host: "h2", Total: 512},
+		{Queue: "other.q", Host: "h1", Total: 64},
+	}
+
+	It("warns when the PE caps below the queue's slots, with the fix", func() {
+		warn, _ := peSlotsFinding("make", 999, []string{"all.q"}, insts)
+		Expect(warn).To(ContainSubstring("pe make caps every job using it, together, at 999 slots; queue(s) all.q have 1024"))
+		Expect(warn).To(ContainSubstring("qconf -mattr pe slots 9999999 make"))
+	})
+
+	It("passes when the PE covers the queue", func() {
+		warn, pass := peSlotsFinding("slurm-shim", 9999999, []string{"all.q"}, insts)
+		Expect(warn).To(BeEmpty())
+		Expect(pass).To(ContainSubstring("cover the 1024 slots"))
+	})
+
+	It("counts only the queues that offer the PE", func() {
+		warn, _ := peSlotsFinding("smp", 1024, []string{"all.q"}, insts)
+		Expect(warn).To(BeEmpty(), "other.q does not offer smp")
+	})
+})
+
+var _ = Describe("doctor: PE slots with nothing to compare", func() {
+	It("says nothing, rather than a vacuous PASS, when no queue offers the PE or its queues have no slots", func() {
+		insts := []gedata.QueueInstance{{Queue: "all.q", Host: "h1", Total: 0}}
+		for _, queues := range [][]string{nil, {"other.q"}, {"all.q"}} {
+			warn, pass := peSlotsFinding("make", 999, queues, insts)
+			Expect(warn + pass).To(BeEmpty())
+		}
 	})
 })

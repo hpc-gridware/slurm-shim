@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"strings"
@@ -40,6 +41,10 @@ type QrshLauncher struct {
 	Self      string    // absolute shim path (target argv[0] on the remote host)
 	Stderr    io.Writer // qrsh child stderr is teed here
 	SlotRetry time.Duration
+
+	// slotNotice prints the slot-retry line once for every start sharing this
+	// launcher (one srun); nil prints it on every retry.
+	slotNotice *sync.Once
 
 	// Seams for deterministic tests; nil selects the production behavior.
 	spawn func(ctx context.Context, args, env []string, tee io.Writer) (childProc, error)
@@ -101,13 +106,17 @@ func (l QrshLauncher) Start(ctx context.Context, host string, env proto.Envelope
 			if now().After(raceDeadline) {
 				return nil, HostError(fmt.Errorf("qrsh launch on %s kept failing (job not yet known to execd): %s", host, oneLine(tail)))
 			}
-			sleep(jobRaceBackoff)
+			sleep(jittered(jobRaceBackoff))
 		case rejectSlots:
 			if now().After(slotDeadline) {
 				return nil, fmt.Errorf("qrsh launch on %s: slots unavailable past slot_retry bound: %s", host, oneLine(tail))
 			}
-			fmt.Fprintln(l.Stderr, slotRetryMessage)
-			sleep(slotRetryBackoff)
+			if l.slotNotice != nil {
+				l.slotNotice.Do(func() { fmt.Fprintln(l.Stderr, slotRetryMessage) })
+			} else {
+				fmt.Fprintln(l.Stderr, slotRetryMessage)
+			}
+			sleep(jittered(slotRetryBackoff))
 		default:
 			// Redact the token from the diagnostic command (REQ-CHN-003, SI-51).
 			return nil, fmt.Errorf("qrsh launch on %s failed: %s (command: qrsh %s)",
@@ -211,6 +220,13 @@ func classifyRejection(stderr string) rejectionKind {
 		// Unknown rejection: prefer a bounded retry over an immediate exit 8.
 		return rejectJobRace
 	}
+}
+
+// jittered spreads a retry backoff over [d/2, 3d/2): srun starts many nodes at
+// once, and a rejection that hits them all (the job not yet known to the
+// execds, slots still held) must not make every start respawn qrsh in step.
+func jittered(d time.Duration) time.Duration {
+	return d/2 + rand.N(d)
 }
 
 func oneLine(s string) string {

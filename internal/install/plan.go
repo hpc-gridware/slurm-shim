@@ -2,6 +2,7 @@ package install
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
@@ -13,6 +14,17 @@ import (
 // overwriting it silently breaks their MPI.
 const DefaultPEName = "slurm-shim"
 
+// PESlotsNoCap is the dedicated PE's slots: the sge_pe(5) maximum, i.e. no
+// PE-level cap. A PE's slots limit every job running in it at once, together,
+// so a value sized to today's cluster goes stale the day nodes are added; queue
+// and host slots still bound what runs. A site that wants a cap sets one.
+const PESlotsNoCap = 9999999
+
+// legacyPESlots is what earlier installers gave the dedicated PE. An install
+// still at exactly this value is raised to PESlotsNoCap: it is the installer's
+// own old default, not a site's choice.
+const legacyPESlots = 999
+
 // ReferencePE is the PE shape the shim needs, verified against the working
 // test cluster (qconf -sp make). control_slaves TRUE is what lets srun launch
 // steppers with qrsh -inherit; $round_robin spreads slots across nodes so a
@@ -21,7 +33,7 @@ const DefaultPEName = "slurm-shim"
 func ReferencePE(name, prefix string) gedata.PE {
 	return gedata.PE{
 		Name:              name,
-		Slots:             999,
+		Slots:             PESlotsNoCap,
 		StartProcArgs:     filepath.Join(prefix, "bin", "slurm-shim-env"),
 		StopProcArgs:      "NONE",
 		AllocationRule:    "$round_robin",
@@ -118,6 +130,14 @@ func MakePlan(f Facts, o Options) Plan {
 // planPERepair compares an existing PE with the reference and either accepts
 // it, refuses to touch it, or (with Force) lists the attribute repairs.
 func planPERepair(have, want gedata.PE, force bool) []Change {
+	var raise []Change
+	if have.Name == DefaultPEName && have.Slots == legacyPESlots {
+		raise = append(raise, Change{
+			Kind: ChangeSetPEAttr, Object: have.Name, Attr: "slots",
+			Old: strconv.Itoa(legacyPESlots), New: strconv.Itoa(PESlotsNoCap),
+			Reason: "earlier installers capped every job in this PE, together, at 999 slots",
+		})
+	}
 	type fix struct{ attr, old, new string }
 	var fixes []fix
 	if have.StartProcArgs != want.StartProcArgs {
@@ -127,9 +147,12 @@ func planPERepair(have, want gedata.PE, force bool) []Change {
 		fixes = append(fixes, fix{"control_slaves", "FALSE", "TRUE"})
 	}
 	if len(fixes) == 0 {
+		if len(raise) > 0 {
+			return raise
+		}
 		return []Change{{Kind: ChangeUnchanged, Object: have.Name, Attr: "start_proc_args", Old: have.StartProcArgs, New: have.StartProcArgs}}
 	}
-	var out []Change
+	out := raise
 	for _, x := range fixes {
 		if !force {
 			out = append(out, Change{
