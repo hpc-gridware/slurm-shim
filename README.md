@@ -6,7 +6,7 @@
 
 **Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — `submitit`, JAX, and anything else that shells out to `sbatch`.
 
-> **Validated** end-to-end against live Open Cluster Scheduler clusters (9.0.10, 9.1.5) and on multi-node, multi-GPU NVIDIA L4 clusters: every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts. The [compatibility matrix](#compatibility-matrix) lists every supported command, flag and variable — for anything missing, [open an issue](../../issues).
+> **Validated** end-to-end against live Open Cluster Scheduler clusters (9.0.10 to 9.1.6) and Gridware Cluster Scheduler 9.1.6, on multi-node, multi-GPU NVIDIA L4 clusters (every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts) and on 32 nodes, where a step starts in under 3 seconds. The [compatibility matrix](#compatibility-matrix) lists every supported command, flag and variable — for anything missing, [open an issue](../../issues).
 
 ![A stock SLURM script submitted with sbatch on an Open Cluster Scheduler cluster: squeue, six ranks across three nodes, sacct](docs/assets/slurm-shim-demo.gif)
 
@@ -238,7 +238,7 @@ This is the strongest area — the fabricated environment is the whole point, an
 
 ### srun semantics
 
-- `srun` launches one process per task over **`qrsh -inherit` tight integration**: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
+- `srun` launches one process per task over **`qrsh -inherit` tight integration**, starting up to 64 nodes at once: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
 - **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
 - **Lost nodes.** The control channel has kernel liveness (TCP keepalive and, on Linux, `TCP_USER_TIMEOUT`). A node whose host stops answering -- crash, power loss, network partition -- is declared lost after `ping_deadline` (60 s) and its tasks count as failed, so `srun` never hangs on a dead host. A suspended or slow step keeps its hosts answering and is never touched. A stepper that loses `srun`'s host stops its tasks after `orphan_grace` (45 s).
 - **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach` and `salloc`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
