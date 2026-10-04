@@ -150,3 +150,29 @@ var _ = Describe("MergeInto and retired keys [todo 080 + 079]", func() {
 		Expect(string(out)).To(ContainSubstring("launch_ramp: 8"))
 	})
 })
+
+var _ = Describe("RemovePartitions", func() {
+	It("drops the partitions and moves default_partition, keeping every other key and comment", func() {
+		in := []byte(`# site config
+partitions:
+  batch: {queue: all.q, pe: make, slots: per-task}
+  slurm:
+    queue: slurm.q
+    pe: slurm-shim
+default_partition: slurm
+future_key: kept # a key this binary does not model
+`)
+		out, err := config.RemovePartitions(in, []string{"slurm"}, "batch")
+		Expect(err).NotTo(HaveOccurred())
+		s := string(out)
+		Expect(s).NotTo(ContainSubstring("slurm.q"))
+		Expect(s).To(ContainSubstring("batch: {queue: all.q, pe: make, slots: per-task}"))
+		Expect(s).To(ContainSubstring("default_partition: batch"))
+		Expect(s).To(ContainSubstring("future_key: kept # a key this binary does not model"))
+		Expect(s).To(ContainSubstring("# site config"))
+
+		out, err = config.RemovePartitions(in, []string{"slurm", "batch"}, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(out)).NotTo(ContainSubstring("default_partition"))
+	})
+})

@@ -70,7 +70,7 @@ func runInteractive(cfg *config.Config, opt *options, stderr io.Writer) int {
 		Slots:          slots,
 		AllocationRule: rule.Value,
 		VerifyGeometry: submit.VerifyGeometry(cfg, req),
-		Resources:      submit.ResourceList(cfg, req),
+		Resources:      joinRequests(part.Request, submit.ResourceList(cfg, req)),
 		Account:        opt.account,
 		JobName:        opt.jobName,
 		Chdir:          opt.chdir,
@@ -169,4 +169,15 @@ func warnIfNoPtyDaemon(r gedata.Runner, stderr io.Writer) {
 			return
 		}
 	}
+}
+
+// joinRequests joins -l lists, skipping empty ones.
+func joinRequests(lists ...string) string {
+	var out []string
+	for _, l := range lists {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, ",")
 }

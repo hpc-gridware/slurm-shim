@@ -110,3 +110,36 @@ esac
 			`(?m)^WARN  pe make caps every job using it, together, at 16 slots; queue\(s\) all.q have 42: .*qconf -mattr pe slots 9999999 make`))
 	})
 })
+
+var _ = Describe("Run [hosts that carry two queues]", func() {
+	// The captured 9.1.6 cluster with a slurm.q next to all.q on every host, as
+	// a default install creates it; the exec hosts' slots limit is removed.
+	BeforeEach(func() {
+		fixtures, err := filepath.Abs("../../../test/e2e/fixtures/9.1.6")
+		Expect(err).NotTo(HaveOccurred())
+		dir := GinkgoT().TempDir()
+		qconf := `#!/bin/sh
+case "$1" in
+  -sp) cat ` + fixtures + `/qconf-sp-make.txt ;;
+  -sq) printf 'qname %s\nhostlist @allhosts\npe_list make\nslots 14\nshell_start_mode unix_behavior\nstarter_method NONE\n' "$2" ;;
+  -se) sed -e "s/^hostname .*/hostname $2/" -e 's/slots=14,//' ` + fixtures + `/qconf-se-worker1.txt ;;
+  *) echo "fake qconf: $*" >&2; exit 1 ;;
+esac
+`
+		Expect(os.WriteFile(filepath.Join(dir, "qconf"), []byte(qconf), 0o755)).To(Succeed())
+		qstat := "#!/bin/sh\nsed -n 'p; s/^all\\.q@/slurm.q@/p' " + fixtures + "/qstat-f.txt\n"
+		Expect(os.WriteFile(filepath.Join(dir, "qstat"), []byte(qstat), 0o755)).To(Succeed())
+		cfg := filepath.Join(dir, "slurm-shim.yaml")
+		Expect(os.WriteFile(cfg, []byte("partitions:\n  slurm: {queue: slurm.q, pe: make, slots: per-task}\n"), 0o644)).To(Succeed())
+		GinkgoT().Setenv("PATH", dir+":/usr/bin:/bin")
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", cfg)
+		GinkgoT().Setenv("SGE_ROOT", "")
+	})
+
+	It("warns that a host without a slots limit can run more jobs than it has cores", func() {
+		var stdout, stderr bytes.Buffer
+		doctor.Run(nil, &stdout, &stderr)
+		Expect(stdout.String()).To(MatchRegexp(
+			`(?m)^WARN  exec host ocs-master carries queues all.q,slurm.q and has no slots limit: .*complex_values slots=<cores> ocs-master`))
+	})
+})

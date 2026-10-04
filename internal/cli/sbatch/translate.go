@@ -103,6 +103,9 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 	rule allocationRule) ([]string, []string) {
 	var warns []string
 	args := []string{"-terse", "-q", part.Queue, "-pe", part.PE, strconv.Itoa(slots)}
+	if part.Request != "" {
+		args = append(args, "-l", part.Request)
+	}
 	if rule.emit() {
 		// -w e rides along with -par, never alone. Grid Engine accepts a rule its
 		// scheduler can never satisfy and then leaves the job in qw forever, with

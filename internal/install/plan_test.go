@@ -12,6 +12,10 @@ import (
 
 const prefix = "/opt/ocs/slurm-shim"
 
+// all is --queue all: the specs written before the own-queue default test
+// wiring the cluster's existing queues.
+var all = []string{install.AllQueues}
+
 // bare is a stock cluster: all.q with the default PEs, none of them ours.
 func bare() *fakeAdmin {
 	f := newFake()
@@ -45,7 +49,7 @@ var _ = Describe("MakePlan", func() {
 		f := bare()
 		facts, err := install.Discover(ctx, f)
 		Expect(err).NotTo(HaveOccurred())
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 
 		Expect(kinds(p)).To(ContainElements(install.ChangeAddPE, install.ChangeAddToPEList, install.ChangeSetStarter))
 		Expect(p.PE.Name).To(Equal("slurm-shim"))
@@ -66,7 +70,7 @@ var _ = Describe("MakePlan", func() {
 	It("never touches an existing PE's start_proc_args without --force (MPI safety)", func() {
 		f := bare()
 		facts, _ := install.Discover(ctx, f)
-		p := install.MakePlan(facts, install.Options{Prefix: prefix, PEName: "make"})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all, PEName: "make"})
 
 		r, ok := find(p, install.ChangeRefused, "make")
 		Expect(ok).To(BeTrue(), "an existing PE with foreign start_proc_args must be refused")
@@ -80,7 +84,7 @@ var _ = Describe("MakePlan", func() {
 	It("repairs an existing PE only with --force, attribute by attribute", func() {
 		f := bare()
 		facts, _ := install.Discover(ctx, f)
-		p := install.MakePlan(facts, install.Options{Prefix: prefix, PEName: "make", Force: true})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all, PEName: "make", Force: true})
 
 		fix, ok := find(p, install.ChangeSetPEAttr, "make")
 		Expect(ok).To(BeTrue())
@@ -98,7 +102,7 @@ var _ = Describe("MakePlan", func() {
 		q.StarterMethod = "/site/starter.sh"
 		f.queues["all.q"] = q
 		facts, _ := install.Discover(ctx, f)
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 
 		r, ok := find(p, install.ChangeRefused, "all.q")
 		Expect(ok).To(BeTrue())
@@ -106,7 +110,7 @@ var _ = Describe("MakePlan", func() {
 		Expect(r.Old).To(Equal("/site/starter.sh"))
 		Expect(kinds(p)).NotTo(ContainElement(install.ChangeSetStarter))
 
-		forced := install.MakePlan(facts, install.Options{Prefix: prefix, Force: true})
+		forced := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all, Force: true})
 		s, ok := find(forced, install.ChangeSetStarter, "all.q")
 		Expect(ok).To(BeTrue())
 		Expect(s.Old).To(Equal("/site/starter.sh"))
@@ -120,7 +124,7 @@ var _ = Describe("MakePlan", func() {
 		q.StarterMethod = install.StarterPath(prefix)
 		f.queues["all.q"] = q
 		facts, _ := install.Discover(ctx, f)
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 
 		Expect(p.Mutating()).To(BeFalse())
 		Expect(p.Refusals()).To(BeEmpty())
@@ -134,7 +138,7 @@ var _ = Describe("MakePlan", func() {
 		f.queues["gpu.q"] = gedata.Queue{Name: "gpu.q"}
 		f.queues["debug.q"] = gedata.Queue{Name: "debug.q"}
 		facts, _ := install.Discover(ctx, f)
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 
 		names := map[string]string{}
 		for _, part := range p.Partitions {
@@ -149,7 +153,7 @@ var _ = Describe("MakePlan", func() {
 		f.queues["gpu.q"] = gedata.Queue{Name: "gpu.q"}
 		f.queues["batch.q"] = gedata.Queue{Name: "batch.q"}
 		facts, _ := install.Discover(ctx, f)
-		Expect(install.MakePlan(facts, install.Options{Prefix: prefix}).DefaultPartition).To(Equal("batch"))
+		Expect(install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all}).DefaultPartition).To(Equal("batch"))
 	})
 
 	It("limits wiring to --queue when given", func() {
@@ -168,7 +172,7 @@ var _ = Describe("MakePlan", func() {
 		f := bare()
 		f.complexes = []gedata.Complex{{Name: "mem_free", Type: "MEMORY"}, {Name: "gpu", Type: "RSMAP", Consumable: "HOST"}}
 		facts, _ := install.Discover(ctx, f)
-		Expect(install.MakePlan(facts, install.Options{Prefix: prefix}).GPUComplex).To(Equal("gpu"))
+		Expect(install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all}).GPUComplex).To(Equal("gpu"))
 	})
 })
 
@@ -193,7 +197,7 @@ var _ = Describe("MakePlan: the dedicated PE's slots", func() {
 	It("raises the old installer default of 999, which capped every job in the PE together", func() {
 		facts, err := install.Discover(ctx, ours(999))
 		Expect(err).NotTo(HaveOccurred())
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 		c, ok := findAttr(p, install.ChangeSetPEAttr, "slurm-shim", "slots")
 		Expect(ok).To(BeTrue())
 		Expect([]string{c.Old, c.New}).To(Equal([]string{"999", "9999999"}))
@@ -203,7 +207,7 @@ var _ = Describe("MakePlan: the dedicated PE's slots", func() {
 	It("keeps any other value: that is the site's choice", func() {
 		facts, err := install.Discover(ctx, ours(4096))
 		Expect(err).NotTo(HaveOccurred())
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 		_, ok := findAttr(p, install.ChangeSetPEAttr, "slurm-shim", "slots")
 		Expect(ok).To(BeFalse())
 	})
@@ -211,7 +215,7 @@ var _ = Describe("MakePlan: the dedicated PE's slots", func() {
 	It("never touches a site PE at 999, which is also Grid Engine's own template default", func() {
 		facts, err := install.Discover(ctx, bare())
 		Expect(err).NotTo(HaveOccurred())
-		p := install.MakePlan(facts, install.Options{Prefix: prefix, PEName: "make", Force: true})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all, PEName: "make", Force: true})
 		_, ok := findAttr(p, install.ChangeSetPEAttr, "make", "slots")
 		Expect(ok).To(BeFalse())
 	})

@@ -15,6 +15,8 @@ type fakeAdmin struct {
 	queues    map[string]gedata.Queue
 	complexes []gedata.Complex
 	hosts     []string
+	unlimited map[string]bool // exec hosts without a slots limit
+	rqs       []gedata.RQS
 	calls     []string
 	failOn    string // a call prefix that should error, e.g. "AddPE"
 }
@@ -86,6 +88,9 @@ func (f *fakeAdmin) SetQueueAttr(_ context.Context, q, attr, v string) error {
 	}
 	qq := f.queues[q]
 	if attr == "starter_method" {
+		if v == "NONE" {
+			v = "" // as gedata reads it back
+		}
 		qq.StarterMethod = v
 	}
 	f.queues[q] = qq
@@ -104,3 +109,65 @@ func (f *fakeAdmin) AddQueueAttr(_ context.Context, q, attr, v string) error {
 }
 func (f *fakeAdmin) Complexes(context.Context) ([]gedata.Complex, error) { return f.complexes, nil }
 func (f *fakeAdmin) ExecHosts(context.Context) ([]string, error)         { return f.hosts, nil }
+func (f *fakeAdmin) RemoveQueueAttr(_ context.Context, q, attr, v string) error {
+	if err := f.record("RemoveQueueAttr " + q + " " + attr + "-=" + v); err != nil {
+		return err
+	}
+	qq := f.queues[q]
+	if attr == "pe_list" {
+		var keep []string
+		for _, p := range qq.PEList {
+			if p != v {
+				keep = append(keep, p)
+			}
+		}
+		qq.PEList = keep
+	}
+	f.queues[q] = qq
+	return nil
+}
+func (f *fakeAdmin) CloneQueue(_ context.Context, src, name, complexValues string) error {
+	if err := f.record("CloneQueue " + src + " -> " + name + " complex_values=" + complexValues); err != nil {
+		return err
+	}
+	f.queues[name] = gedata.Queue{Name: name, ShellStartMode: f.queues[src].ShellStartMode}
+	return nil
+}
+func (f *fakeAdmin) DeleteQueue(_ context.Context, name string) error {
+	if err := f.record("DeleteQueue " + name); err != nil {
+		return err
+	}
+	delete(f.queues, name)
+	return nil
+}
+func (f *fakeAdmin) DeletePE(_ context.Context, name string) error {
+	if err := f.record("DeletePE " + name); err != nil {
+		return err
+	}
+	delete(f.pes, name)
+	return nil
+}
+func (f *fakeAdmin) HostSlotsLimited(_ context.Context, h string) (bool, error) {
+	return !f.unlimited[h], nil
+}
+func (f *fakeAdmin) AddForcedComplex(_ context.Context, name string) error {
+	if err := f.record("AddForcedComplex " + name); err != nil {
+		return err
+	}
+	f.complexes = append(f.complexes, gedata.Complex{Name: name, Shortcut: name, Type: "BOOL", Consumable: "NO", Requestable: "FORCED"})
+	return nil
+}
+func (f *fakeAdmin) DeleteComplex(_ context.Context, name string) error {
+	if err := f.record("DeleteComplex " + name); err != nil {
+		return err
+	}
+	var keep []gedata.Complex
+	for _, c := range f.complexes {
+		if c.Name != name {
+			keep = append(keep, c)
+		}
+	}
+	f.complexes = keep
+	return nil
+}
+func (f *fakeAdmin) ResourceQuotaSets(context.Context) ([]gedata.RQS, error) { return f.rqs, nil }

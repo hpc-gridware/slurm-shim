@@ -16,7 +16,7 @@ var _ = Describe("GenerateConfig", func() {
 
 	planFor := func(f *fakeAdmin) install.Plan {
 		facts, _ := install.Discover(ctx, f)
-		return install.MakePlan(facts, install.Options{Prefix: prefix})
+		return install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 	}
 
 	It("starts from the compiled defaults, so the safe memory complex and port range come along", func() {
@@ -70,7 +70,7 @@ var _ = Describe("gpu.vendor is the site's choice [REQ-GPU-004]", func() {
 	ctx := context.Background()
 	planFor := func(f *fakeAdmin) install.Plan {
 		facts, _ := install.Discover(ctx, f)
-		return install.MakePlan(facts, install.Options{Prefix: prefix})
+		return install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 	}
 
 	It("keeps a site-set vendor when the config is regenerated", func() {

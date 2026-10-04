@@ -29,7 +29,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	from := fs.String("from", "", "payload to install from (default: the tree this binary runs from)")
 	peName := fs.String("pe", install.DefaultPEName, "parallel environment to create or, with --force, repair")
 	var queues multi
-	fs.Var(&queues, "queue", "wire only this cluster queue (repeatable; default all)")
+	fs.Var(&queues, "queue", "wire this cluster queue (repeatable), or \"all\" for every queue; "+
+		"default: a new queue "+install.DefaultQueueName+", so no existing queue changes")
 	force := fs.Bool("force", false, "overwrite an existing PE's start_proc_args or a queue's starter_method")
 	expose := fs.String("expose", "none", "put the commands on PATH: none, module, profile.d")
 	verify := fs.Bool("verify", false, "after --apply, submit a 2-node smoke job and check it")
@@ -79,7 +80,34 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "install: error: %v (is qmaster up, and are you a manager?)\n", err)
 		return 2
 	}
-	plan := install.MakePlan(facts, install.Options{Prefix: *prefix, PEName: *peName, Queues: queues, Force: *force})
+	if install.AmbiguousAllQueues(facts, queues) {
+		fmt.Fprintln(stderr, `install: error: --queue all is ambiguous here: a cluster queue is named "all"; name the queues to wire instead`)
+		return 2
+	}
+	// The record of an earlier install: it names a queue an interrupted first
+	// install created, and it is merged into below. One that cannot be trusted
+	// or read stops the install before anything changes, rather than being
+	// overwritten and losing the values --force replaced.
+	st, err := install.ReadState(*prefix)
+	if err != nil {
+		fmt.Fprintf(stderr, "install: error: %v\n", err)
+		fmt.Fprintln(stderr, "install: fix or remove the install record and re-run; nothing has been changed.")
+		return 1
+	}
+	if st == nil {
+		st = &install.State{}
+	}
+	plan := install.MakePlan(facts, install.Options{Prefix: *prefix, PEName: *peName, Queues: queues,
+		CreatedQueue: st.CreatedQueue, Force: *force})
+	for _, c := range plan.Changes {
+		if c.Kind == install.ChangeAddQueue {
+			insts, err := gedata.QueueInstances(ctx, gedata.ExecRunner{})
+			if err != nil {
+				plan.Warnings = append(plan.Warnings, "could not list queue instances: "+err.Error())
+			}
+			plan.Warnings = append(plan.Warnings, install.CloneWarnings(ctx, admin, facts, c.Old, insts)...)
+		}
+	}
 
 	// Fail on an unparseable config HERE, before any cluster change is applied.
 	// The write below merges into this file rather than overwriting it, so it
@@ -108,6 +136,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout)
 	printPlan(stdout, plan)
+	for _, w := range plan.Warnings {
+		fmt.Fprintf(stdout, "  WARN      %s\n", w)
+	}
 
 	if len(plan.Refusals()) > 0 {
 		fmt.Fprintln(stdout)
@@ -130,17 +161,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	for _, p := range install.CheckTree(*prefix, adminUser) {
 		fmt.Fprintf(stderr, "install: warning: %s: %s\n", p.Path, p.Why)
 	}
-	if path, err := install.Expose(*prefix, install.ExposeMode(*expose), version.Shim); err != nil {
+	exposed, err := install.Expose(*prefix, install.ExposeMode(*expose), version.Shim)
+	if err != nil {
 		fmt.Fprintf(stderr, "install: error: %v\n", err)
 		return 1
-	} else if path != "" {
-		fmt.Fprintf(stdout, "exposed    %s\n", path)
+	} else if exposed != "" {
+		fmt.Fprintf(stdout, "exposed    %s\n", exposed)
 		if install.ExposeMode(*expose) == install.ExposeModule {
 			fmt.Fprintf(stdout, "           add %s to MODULEPATH, then: module load slurm-shim\n",
 				filepath.Join(*prefix, "share", "modulefiles"))
 		}
 	}
 
+	// Record what is about to be created before creating it, so an install
+	// interrupted mid-way still leaves a record a re-run or uninstall can use;
+	// then record what was done, so uninstall can undo exactly that (and
+	// restore what --force replaced).
+	st.Prefix, st.Config = *prefix, *cfgPath
+	st.Intend(plan)
+	if err := install.WriteState(*prefix, st); err != nil {
+		fmt.Fprintf(stderr, "install: error: writing the install record: %v; the cluster was not changed\n", err)
+		return 1
+	}
 	report := install.Apply(ctx, admin, plan)
 	for _, o := range report.Outcomes {
 		if o.Err != nil {
@@ -148,6 +190,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stdout, "cluster    %d change(s) applied\n", report.Applied())
+	st.Record(report)
+	if err := install.WriteState(*prefix, st); err != nil {
+		fmt.Fprintf(stderr, "install: warning: writing the install record: %v (uninstall cannot restore values --force replaced)\n", err)
+	}
 
 	// MERGE, never overwrite. Rendering the struct over the file drops every key
 	// the running binary does not model -- which silently loses site settings on
@@ -196,11 +242,27 @@ func printPlan(w io.Writer, p install.Plan) {
 			fmt.Fprintf(w, "  REFUSED   %-12s %-16s %s -> %s\n            %s\n", c.Object, c.Attr, orNone(c.Old), c.New, c.Reason)
 		case install.ChangeAddToPEList:
 			fmt.Fprintf(w, "  change    %-12s %-16s %s += %s\n", c.Object, c.Attr, orNone(c.Old), c.New)
+		case install.ChangeAddComplex:
+			fmt.Fprintf(w, "  add       complex %s  %s\n", c.Object, c.Reason)
+		case install.ChangeAddQueue:
+			from := "with the scheduler's queue defaults"
+			if c.Old != "" {
+				from = "cloned from " + c.Old
+			}
+			fmt.Fprintf(w, "  add       queue %-6s %s, complex_values %s\n            %s\n", c.Object, from, c.New, c.Reason)
+		case install.ChangeRemoveFromPEList:
+			fmt.Fprintf(w, "  change    %-12s %-16s -= %s\n", c.Object, c.Attr, c.Old)
+		case install.ChangeDeleteQueue:
+			fmt.Fprintf(w, "  delete    queue %s (%s)\n", c.Object, c.Reason)
+		case install.ChangeDeletePE:
+			fmt.Fprintf(w, "  delete    pe %s (%s)\n", c.Object, c.Reason)
+		case install.ChangeDeleteComplex:
+			fmt.Fprintf(w, "  delete    complex %s (%s)\n", c.Object, c.Reason)
 		case install.ChangeAddPE:
 			fmt.Fprintf(w, "  add       pe %-9s start_proc_args %s, control_slaves TRUE, allocation_rule %s\n",
 				c.Object, p.PE.StartProcArgs, p.PE.AllocationRule)
 		default:
-			fmt.Fprintf(w, "  change    %-12s %-16s %s -> %s\n", c.Object, c.Attr, orNone(c.Old), c.New)
+			fmt.Fprintf(w, "  change    %-12s %-16s %s -> %s\n", c.Object, c.Attr, orNone(c.Old), orNone(c.New))
 		}
 	}
 }

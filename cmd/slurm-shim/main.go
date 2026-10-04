@@ -56,9 +56,10 @@ var commands = map[string]string{
 	"rank-exec": "rank-exec",
 
 	// Site tooling, subcommand only -- no SLURM command of these names to shadow.
-	"ports":   "ports",
-	"install": "install",
-	"doctor":  "doctor",
+	"ports":     "ports",
+	"install":   "install",
+	"uninstall": "uninstall",
+	"doctor":    "doctor",
 }
 
 func main() {
@@ -131,6 +132,8 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return stepper.RankExec(args)
 	case "install":
 		return installcmd.Run(args, stdout, stderr)
+	case "uninstall":
+		return installcmd.RunUninstall(args, stdout, stderr)
 	case "doctor":
 		return doctor.Run(args, stdout, stderr)
 	case "ports":

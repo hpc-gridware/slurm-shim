@@ -600,6 +600,16 @@ var _ = Describe("sbatch end-to-end [REQ-SBT-002/003/005]", func() {
 		Expect(captured).To(ContainElements("-q", "all.q", "-pe", "smp.pe", "16"))
 	})
 
+	It("adds the partition's request, so the installer's own queue admits the job", func() {
+		script := writeScript("#!/bin/bash\nsrun hostname\n")
+		cfg := testCfg()
+		cfg.Partitions["slurm"] = config.Partition{Queue: "slurm.q", PE: "slurm-shim", Slots: "per-task", Request: "slurm_shim=TRUE"}
+		var captured []string
+		rc := run(fakeQsub("6", &captured), cfg, "/shim", []string{"-p", "slurm", script}, io.Discard, io.Discard)
+		Expect(rc).To(Equal(0))
+		Expect(strings.Join(captured, " ")).To(ContainSubstring("-q slurm.q -pe slurm-shim 1 -l slurm_shim=TRUE"))
+	})
+
 	It("falls back to default_partition when none is given", func() {
 		script := writeScript("#!/bin/bash\nsrun hostname\n")
 		cfg := testCfg()

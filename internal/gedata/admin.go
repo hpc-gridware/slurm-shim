@@ -2,7 +2,9 @@ package gedata
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,20 +30,28 @@ type PE struct {
 	DaemonForksSlaves bool
 }
 
-// Queue is the shim's view of a cluster queue.
+// Queue is the shim's view of a cluster queue. PEList and StarterMethod are
+// the queue's default entries; per-host overrides ("[@gpu=mpi slurm-shim]")
+// are kept apart, because qconf -aattr/-dattr on the queue name touch only
+// the default entry.
 type Queue struct {
-	Name           string
-	PEList         []string
-	StarterMethod  string // "" when GE prints NONE
-	ShellStartMode string
+	Name             string
+	PEList           []string
+	PEListOverrides  []string
+	StarterMethod    string // "" when GE prints NONE
+	StarterOverrides []string
+	ShellStartMode   string
+	// Subordinates is the subordinate_list (default entry).
+	Subordinates []string
 }
 
 // Complex is one row of `qconf -sc`.
 type Complex struct {
-	Name       string
-	Shortcut   string
-	Type       string // MEMORY, INT, RSMAP, ...
-	Consumable string // YES, NO, JOB, HOST
+	Name        string
+	Shortcut    string
+	Type        string // MEMORY, INT, RSMAP, ...
+	Consumable  string // YES, NO, JOB, HOST
+	Requestable string // YES, NO, FORCED
 }
 
 // Admin performs the qconf reads and writes the installer and doctor need.
@@ -128,11 +138,17 @@ func (a *Admin) Queue(ctx context.Context, name string) (Queue, error) {
 	if err != nil {
 		return Queue{}, err
 	}
+	pes, peOverrides := splitOverrides(dropNone(c.PeList))
+	starter, starterOverrides := splitOverrides(c.StarterMethod)
+	subs, _ := splitOverrides(dropNone(c.SubordinateList))
 	return Queue{
-		Name:           c.Name,
-		PEList:         dropNone(c.PeList),
-		StarterMethod:  firstOrEmpty(c.StarterMethod),
-		ShellStartMode: firstOrEmpty(c.ShellStartMode),
+		Name:             c.Name,
+		PEList:           pes,
+		PEListOverrides:  peOverrides,
+		StarterMethod:    firstOrEmpty(starter),
+		StarterOverrides: starterOverrides,
+		ShellStartMode:   firstOrEmpty(c.ShellStartMode),
+		Subordinates:     subs,
 	}, nil
 }
 
@@ -147,6 +163,105 @@ func (a *Admin) AddQueueAttr(ctx context.Context, queue, attr, value string) err
 	return a.q.AddAttribute("queue", attr, value, queue)
 }
 
+// RemoveQueueAttr removes a value from a list-valued queue attribute (qconf
+// -dattr queue), e.g. a PE from pe_list. A value that is not there is not an
+// error: removal is idempotent.
+func (a *Admin) RemoveQueueAttr(ctx context.Context, queue, attr, value string) error {
+	if err := a.q.DeleteAttribute("queue", attr, value, queue); err != nil && !errors.Is(err, qconf.ErrNoModification) {
+		return err
+	}
+	return nil
+}
+
+// CloneQueue creates queue name as a copy of src -- hostlist, slots, limits,
+// shell settings -- with an empty pe_list and no starter_method, so the new
+// queue offers nothing until it is wired. Two things are deliberately not
+// copied: src's queue-level complex_values (a consumable there would double its
+// capacity on every host) and its subordinate_list (the new queue would suspend
+// other queues without anyone asking). complexValues ("slurm_shim=TRUE") become
+// the new queue's complex_values. An empty src creates it on @allhosts with the
+// scheduler's queue defaults. src itself is never written.
+func (a *Admin) CloneQueue(ctx context.Context, src, name, complexValues string) error {
+	cfg := qconf.ClusterQueueConfig{HostList: []string{"@allhosts"}}
+	if src != "" {
+		c, err := a.q.ShowClusterQueue(src)
+		if err != nil {
+			return err
+		}
+		cfg = c
+	}
+	cfg.Name = name
+	cfg.PeList = []string{"NONE"}
+	cfg.StarterMethod = []string{"NONE"}
+	cfg.SubordinateList = []string{"NONE"}
+	cfg.ComplexValues = []string{orNONE(complexValues)}
+	return a.q.AddClusterQueue(cfg)
+}
+
+// AddForcedComplex adds a boolean complex that is requestable FORCED: a queue
+// that sets it in complex_values only runs jobs that request it (-l name=TRUE),
+// so no job lands there by accident.
+func (a *Admin) AddForcedComplex(ctx context.Context, name string) error {
+	return a.q.AddComplexEntry(qconf.ComplexEntryConfig{
+		Name: name, Shortcut: name, Type: "BOOL", Relop: "==", Requestable: "FORCED",
+		Consumable: "NO", Default: "FALSE", Urgency: 0,
+	})
+}
+
+// DeleteComplex deletes a complex entry. The scheduler refuses while a queue
+// or host still references it.
+func (a *Admin) DeleteComplex(ctx context.Context, name string) error {
+	return a.q.DeleteComplexEntry(name)
+}
+
+// RQS is one resource quota set: its name and its limit rules, as qconf -srqs
+// prints them ("users {*} queues all.q to slots=10").
+type RQS struct {
+	Name    string
+	Enabled bool
+	Limits  []string
+}
+
+// ResourceQuotaSets reads every resource quota set.
+func (a *Admin) ResourceQuotaSets(ctx context.Context) ([]RQS, error) {
+	names, err := a.q.ShowResourceQuotaSets()
+	if err != nil {
+		return nil, err
+	}
+	var out []RQS
+	for _, n := range dropNone(names) {
+		r, err := a.q.ShowResourceQuotaSet(n)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, RQS{Name: r.Name, Enabled: r.Enabled, Limits: r.Limits})
+	}
+	return out, nil
+}
+
+// DeleteQueue deletes a cluster queue (qconf -dq).
+func (a *Admin) DeleteQueue(ctx context.Context, name string) error {
+	return a.q.DeleteClusterQueue(name)
+}
+
+// DeletePE deletes a parallel environment (qconf -dp). The scheduler refuses
+// while a job still uses it.
+func (a *Admin) DeletePE(ctx context.Context, name string) error {
+	return a.q.DeleteParallelEnvironment(name)
+}
+
+// HostSlotsLimited reports whether exec host sets a slots limit in its
+// complex_values -- what keeps two queues on one host from together running
+// more jobs than it has cores.
+func (a *Admin) HostSlotsLimited(ctx context.Context, host string) (bool, error) {
+	h, err := a.q.ShowExecHost(host)
+	if err != nil {
+		return false, err
+	}
+	_, ok := h.ComplexValues["slots"]
+	return ok, nil
+}
+
 // Complexes lists the complex entries.
 func (a *Admin) Complexes(ctx context.Context) ([]Complex, error) {
 	rows, err := a.q.ShowAllComplexes()
@@ -155,7 +270,7 @@ func (a *Admin) Complexes(ctx context.Context) ([]Complex, error) {
 	}
 	out := make([]Complex, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Complex{Name: r.Name, Shortcut: r.Shortcut, Type: r.Type, Consumable: r.Consumable})
+		out = append(out, Complex{Name: r.Name, Shortcut: r.Shortcut, Type: r.Type, Consumable: r.Consumable, Requestable: r.Requestable})
 	}
 	return out, nil
 }
@@ -248,6 +363,44 @@ func firstOrEmpty(vs []string) string {
 }
 
 // dropNone removes GE's NONE placeholder from a list attribute.
+// RQSLimitsHostSlots reports whether an enabled resource quota limits slots
+// per host ("hosts {*} to slots=$num_proc"), which bounds every queue on a host
+// together, as an exechost slots limit does.
+func RQSLimitsHostSlots(sets []RQS) bool {
+	for _, r := range sets {
+		if !r.Enabled {
+			continue
+		}
+		for _, l := range r.Limits {
+			if slices.Contains(strings.Fields(l), "hosts") && strings.Contains(l, "slots=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// splitOverrides separates a list attribute's default entries from its
+// per-host override entries ("[host=...]").
+func splitOverrides(vs []string) (defaults, overrides []string) {
+	for _, v := range vs {
+		if strings.HasPrefix(v, "[") {
+			overrides = append(overrides, v)
+		} else {
+			defaults = append(defaults, v)
+		}
+	}
+	return defaults, overrides
+}
+
+// orNONE is v, or GE's literal NONE for an empty value.
+func orNONE(v string) string {
+	if v == "" {
+		return "NONE"
+	}
+	return v
+}
+
 func dropNone(vs []string) []string {
 	var out []string
 	for _, v := range vs {

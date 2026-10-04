@@ -67,7 +67,7 @@ done
 # queue's starter_method (below) then sources that file into the job.
 # The real installer wires the dedicated slurm-shim PE, merges the test config
 # (never rewriting its partitions) and verifies the tree. Run it as a manager.
-manager "source $CELL_DIR/settings.sh && $SHIM_PREFIX/bin/slurm-shim install --apply --prefix '$SHIM_PREFIX' >/dev/null"
+manager "source $CELL_DIR/settings.sh && $SHIM_PREFIX/bin/slurm-shim install --apply --queue all --prefix '$SHIM_PREFIX' >/dev/null"
 
 # The test config also maps partitions onto the STOCK PEs (make, smp, ...), which
 # the installer deliberately never touches; wire those explicitly.

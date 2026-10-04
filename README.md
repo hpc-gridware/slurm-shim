@@ -42,9 +42,13 @@ export PATH=$SGE_ROOT/slurm-shim/bin:$PATH   # this shell only; step 3 is the si
 # 2. Configure the cluster. Source the cell first; run as a manager.
 source $SGE_ROOT/default/common/settings.sh
 slurm-shim install            # prints the plan, changes NOTHING
-slurm-shim install --apply    # creates the slurm-shim PE, wires every queue's
-                              # starter_method, writes the cell config, prints the
-                              # firewall rules. Idempotent: run it again, 0 changes.
+slurm-shim install --apply    # creates the slurm-shim PE and its own queue slurm.q
+                              # (a clone of all.q that only shim jobs enter), writes
+                              # the cell config, prints the firewall rules. No
+                              # existing queue changes. Idempotent: run it again.
+slurm-shim install --apply --queue all     # or wire every existing queue instead
+                                           # (--queue <q> for chosen ones)
+slurm-shim uninstall [--apply] [--purge-config]   # undo it exactly; plan first
 
 # 3. Put the commands on users' PATH -- YOUR choice, never /usr/bin (sites with
 #    real SLURM clients must not collide):
@@ -52,7 +56,7 @@ slurm-shim install --apply --expose=module      # Tcl modulefile under $SGE_ROOT
 slurm-shim install --apply --expose=profile.d   # /etc/profile.d/slurm-shim.sh for everyone
 
 # 4. Check it, and keep this for support tickets:
-slurm-shim doctor
+slurm-shim doctor             # also flags hosts that could oversubscribe
 
 # ---- users ----
 module load slurm-shim        # or whatever step 3 chose
