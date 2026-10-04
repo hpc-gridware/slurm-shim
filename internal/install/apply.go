@@ -42,7 +42,9 @@ func (r Report) Failed() []Outcome {
 
 func mutating(k ChangeKind) bool {
 	switch k {
-	case ChangeAddPE, ChangeSetPEAttr, ChangeAddToPEList, ChangeSetStarter:
+	case ChangeAddPE, ChangeSetPEAttr, ChangeAddToPEList, ChangeSetStarter,
+		ChangeAddComplex, ChangeAddQueue, ChangeRemoveFromPEList, ChangeDeleteQueue,
+		ChangeDeletePE, ChangeDeleteComplex:
 		return true
 	}
 	return false
@@ -58,11 +60,23 @@ func Apply(ctx context.Context, a ClusterAdmin, p Plan) Report {
 		case ChangeAddPE:
 			err = a.AddPE(ctx, c.pe)
 		case ChangeSetPEAttr:
-			err = a.SetPEAttr(ctx, c.Object, c.Attr, c.New)
+			err = a.SetPEAttr(ctx, c.Object, c.Attr, orNONE(c.New))
 		case ChangeAddToPEList:
 			err = a.AddQueueAttr(ctx, c.Object, "pe_list", c.New)
 		case ChangeSetStarter:
-			err = a.SetQueueAttr(ctx, c.Object, "starter_method", c.New)
+			err = a.SetQueueAttr(ctx, c.Object, "starter_method", orNONE(c.New))
+		case ChangeAddComplex:
+			err = a.AddForcedComplex(ctx, c.Object)
+		case ChangeAddQueue:
+			err = a.CloneQueue(ctx, c.Old, c.Object, c.New)
+		case ChangeRemoveFromPEList:
+			err = a.RemoveQueueAttr(ctx, c.Object, "pe_list", c.Old)
+		case ChangeDeleteQueue:
+			err = a.DeleteQueue(ctx, c.Object)
+		case ChangeDeletePE:
+			err = a.DeletePE(ctx, c.Object)
+		case ChangeDeleteComplex:
+			err = a.DeleteComplex(ctx, c.Object)
 		case ChangeUnchanged, ChangeRefused:
 			// nothing to do; reported for completeness
 		default:
@@ -74,4 +88,12 @@ func Apply(ctx context.Context, a ClusterAdmin, p Plan) Report {
 		r.Outcomes = append(r.Outcomes, Outcome{Change: c, Err: err})
 	}
 	return r
+}
+
+// orNONE is the value Grid Engine takes for "unset".
+func orNONE(v string) string {
+	if v == "" {
+		return "NONE"
+	}
+	return v
 }

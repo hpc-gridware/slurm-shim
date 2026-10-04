@@ -359,6 +359,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if bad == 0 {
 			r.pass("%d queue instance(s), none in error/alarm/unreachable state", len(insts))
 		}
+		for _, w := range oversubscribedHosts(ctx, admin, insts, shimQueues(peQueues)) {
+			r.warn("%s", w)
+		}
 		for _, name := range peOrder {
 			if warn, pass := peSlotsFinding(name, peSlots[name], peQueues[name], insts); warn != "" {
 				r.warn("%s", warn)
@@ -462,6 +465,58 @@ func paramEnabled(params, name string) bool {
 		}
 	}
 	return false
+}
+
+// shimQueues is every queue that offers one of the shim's partition PEs.
+func shimQueues(peQueues map[string][]string) []string {
+	var out []string
+	for _, qs := range peQueues {
+		for _, q := range qs {
+			if !containsStr(out, q) {
+				out = append(out, q)
+			}
+		}
+	}
+	return out
+}
+
+// oversubscribedHosts warns about each host that carries a shim queue next to
+// another queue and has no slots limit: every queue adds its own slots, so
+// together they can run more jobs than the host has cores. Doctor only reports
+// it -- slots limits are the site's (the installer never changes a host).
+func oversubscribedHosts(ctx context.Context, admin *gedata.Admin, insts []gedata.QueueInstance, shim []string) []string {
+	queuesOn := map[string][]string{}
+	var hosts []string
+	for _, qi := range insts {
+		if _, seen := queuesOn[qi.Host]; !seen {
+			hosts = append(hosts, qi.Host)
+		}
+		queuesOn[qi.Host] = append(queuesOn[qi.Host], qi.Queue)
+	}
+	// A resource quota limiting slots per host bounds every queue on the host
+	// together, as an exechost slots limit does.
+	if sets, err := admin.ResourceQuotaSets(ctx); err == nil && gedata.RQSLimitsHostSlots(sets) {
+		return nil
+	}
+	var warns []string
+	for _, h := range hosts {
+		qs := queuesOn[h]
+		carriesShim := false
+		for _, q := range qs {
+			carriesShim = carriesShim || containsStr(shim, q)
+		}
+		if len(qs) < 2 || !carriesShim {
+			continue
+		}
+		limited, err := admin.HostSlotsLimited(ctx, h)
+		if err != nil || limited {
+			continue
+		}
+		warns = append(warns, fmt.Sprintf("exec host %s carries queues %s and has no slots limit: together they can "+
+			"run more jobs than it has cores (qconf -mattr exechost complex_values slots=<cores> %s)",
+			h, strings.Join(qs, ","), h))
+	}
+	return warns
 }
 
 // peSlotsFinding compares a PE's slots, which cap every job running in it at

@@ -109,6 +109,10 @@ type Partition struct {
 	// Spares is the default number of hot-spare nodes for jobs on this partition
 	// (sbatch --x-spares overrides it). 0 means none.
 	Spares int `yaml:"spares"`
+	// Request is a hard resource request (qsub -l) added to every job on this
+	// partition, e.g. slurm_shim=TRUE for the installer's own queue, whose
+	// FORCED complex admits only jobs that request it.
+	Request string `yaml:"request"`
 }
 
 // Elastic modes for hot-spare steps (srun --x-elastic, config `elastic`).

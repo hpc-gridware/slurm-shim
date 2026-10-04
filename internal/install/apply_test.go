@@ -15,7 +15,7 @@ var _ = Describe("Apply", func() {
 	It("performs exactly the mutating changes, then a second plan is empty", func() {
 		f := bare()
 		facts, _ := install.Discover(ctx, f)
-		p := install.MakePlan(facts, install.Options{Prefix: prefix})
+		p := install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all})
 		r := install.Apply(ctx, f, p)
 
 		Expect(r.Failed()).To(BeEmpty())
@@ -27,14 +27,14 @@ var _ = Describe("Apply", func() {
 		))
 
 		again, _ := install.Discover(ctx, f)
-		Expect(install.MakePlan(again, install.Options{Prefix: prefix}).Mutating()).To(BeFalse(),
+		Expect(install.MakePlan(again, install.Options{Prefix: prefix, Queues: all}).Mutating()).To(BeFalse(),
 			"apply twice must change nothing")
 	})
 
 	It("adds to pe_list rather than rewriting it (site PEs survive)", func() {
 		f := bare()
 		facts, _ := install.Discover(ctx, f)
-		install.Apply(ctx, f, install.MakePlan(facts, install.Options{Prefix: prefix}))
+		install.Apply(ctx, f, install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all}))
 		Expect(f.queues["all.q"].PEList).To(Equal([]string{"make", "slurm-shim"}))
 	})
 
@@ -44,7 +44,7 @@ var _ = Describe("Apply", func() {
 		q.StarterMethod = "/site/starter.sh"
 		f.queues["all.q"] = q
 		facts, _ := install.Discover(ctx, f)
-		install.Apply(ctx, f, install.MakePlan(facts, install.Options{Prefix: prefix}))
+		install.Apply(ctx, f, install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all}))
 		Expect(f.queues["all.q"].StarterMethod).To(Equal("/site/starter.sh"), "refused change must not be applied")
 		Expect(f.calls).NotTo(ContainElement(ContainSubstring("starter_method")))
 	})
@@ -53,7 +53,7 @@ var _ = Describe("Apply", func() {
 		f := bare()
 		f.failOn = "AddPE"
 		facts, _ := install.Discover(ctx, f)
-		r := install.Apply(ctx, f, install.MakePlan(facts, install.Options{Prefix: prefix}))
+		r := install.Apply(ctx, f, install.MakePlan(facts, install.Options{Prefix: prefix, Queues: all}))
 
 		Expect(r.Failed()).To(HaveLen(1))
 		Expect(r.Failed()[0].Err.Error()).To(ContainSubstring("add-pe slurm-shim"))

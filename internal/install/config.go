@@ -25,9 +25,10 @@ func GenerateConfig(p Plan, existing *config.Config) *config.Config {
 			continue
 		}
 		cfg.Partitions[part.Name] = config.Partition{
-			Queue: part.Queue,
-			PE:    p.PE.Name,
-			Slots: "per-task",
+			Queue:   part.Queue,
+			PE:      p.PE.Name,
+			Slots:   "per-task",
+			Request: part.Request,
 		}
 	}
 	if _, exists := cfg.PEs[p.PE.Name]; !exists {

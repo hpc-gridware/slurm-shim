@@ -22,8 +22,16 @@ type ClusterAdmin interface {
 	Queue(ctx context.Context, name string) (gedata.Queue, error)
 	SetQueueAttr(ctx context.Context, queue, attr, value string) error
 	AddQueueAttr(ctx context.Context, queue, attr, value string) error
+	RemoveQueueAttr(ctx context.Context, queue, attr, value string) error
+	CloneQueue(ctx context.Context, src, name, complexValues string) error
+	DeleteQueue(ctx context.Context, name string) error
+	DeletePE(ctx context.Context, name string) error
 	Complexes(ctx context.Context) ([]gedata.Complex, error)
+	AddForcedComplex(ctx context.Context, name string) error
+	DeleteComplex(ctx context.Context, name string) error
 	ExecHosts(ctx context.Context) ([]string, error)
+	HostSlotsLimited(ctx context.Context, host string) (bool, error)
+	ResourceQuotaSets(ctx context.Context) ([]gedata.RQS, error)
 }
 
 // Facts is everything Discover learned. Plan is a pure function of Facts and
@@ -43,8 +51,14 @@ type Options struct {
 	// PEName is the dedicated PE to create (default "slurm-shim"). With Force it
 	// may name an existing PE, whose start_proc_args is then overwritten.
 	PEName string
-	// Queues limits wiring to these cluster queues; empty means all of them.
+	// Queues names the cluster queues to wire; AllQueues ("all") wires every
+	// queue. Empty: the queues already wired to this tree, or -- on a first
+	// install -- a new queue DefaultQueueName, so no existing queue changes.
 	Queues []string
+	// CreatedQueue is the queue an earlier install recorded creating (State),
+	// so a re-run after an interrupted first install finishes wiring it rather
+	// than refusing it as foreign.
+	CreatedQueue string
 	// Force allows overwriting an existing PE's start_proc_args and a queue's
 	// existing starter_method. Without it both are refused (see Plan).
 	Force bool
@@ -58,8 +72,22 @@ const (
 	ChangeSetPEAttr   ChangeKind = "set-pe-attr"
 	ChangeAddToPEList ChangeKind = "add-pe-to-queue"
 	ChangeSetStarter  ChangeKind = "set-starter"
-	ChangeRefused     ChangeKind = "refused"
-	ChangeUnchanged   ChangeKind = "unchanged"
+	// ChangeAddComplex adds Object as a FORCED boolean complex.
+	ChangeAddComplex ChangeKind = "add-complex"
+	// ChangeAddQueue creates Object as a clone of Old ("" when there is none to
+	// clone), with an empty pe_list, no starter_method and New as its
+	// complex_values.
+	ChangeAddQueue ChangeKind = "add-queue"
+
+	// ChangeRemoveFromPEList, ChangeDeleteQueue, ChangeDeletePE and
+	// ChangeDeleteComplex are uninstall's.
+	ChangeRemoveFromPEList ChangeKind = "remove-pe-from-queue"
+	ChangeDeleteQueue      ChangeKind = "delete-queue"
+	ChangeDeletePE         ChangeKind = "delete-pe"
+	ChangeDeleteComplex    ChangeKind = "delete-complex"
+
+	ChangeRefused   ChangeKind = "refused"
+	ChangeUnchanged ChangeKind = "unchanged"
 )
 
 // Change is one planned mutation, with enough to render and enough to apply.
@@ -89,20 +117,23 @@ type Plan struct {
 	DefaultPartition string
 	// GPUComplex is the RSMAP complex found, "" when none.
 	GPUComplex string
+	// Warnings are findings the plan reports but does not act on.
+	Warnings []string
 }
 
-// Partition is one queue exposed under a SLURM partition name.
+// Partition is one queue exposed under a SLURM partition name. Request is the
+// hard resource request (-l) its jobs need to enter the queue, "" for none.
 type Partition struct {
-	Name  string
-	Queue string
+	Name    string
+	Queue   string
+	Request string
 }
 
 // Mutating reports whether the plan contains anything that would change the
 // cluster (as opposed to only unchanged rows and refusals).
 func (p Plan) Mutating() bool {
 	for _, c := range p.Changes {
-		switch c.Kind {
-		case ChangeAddPE, ChangeSetPEAttr, ChangeAddToPEList, ChangeSetStarter:
+		if mutating(c.Kind) {
 			return true
 		}
 	}

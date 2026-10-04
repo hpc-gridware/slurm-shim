@@ -70,7 +70,7 @@ func InstallTree(src, prefix string) error {
 	// Reference drain scripts for hot-spare swaps (docs/install). Optional: a
 	// payload without them installs as before.
 	if !same {
-		for _, rel := range []string{"share/drain-load-sensor.sh", "share/drain-qmod-helper.sh"} {
+		for _, rel := range drainScriptsRel {
 			if _, err := os.Stat(filepath.Join(src, rel)); err != nil {
 				continue
 			}
@@ -282,6 +282,20 @@ const (
 	ExposeProfileD ExposeMode = "profile.d"
 )
 
+// ProfileDPath is the file Expose writes for profile.d.
+const ProfileDPath = "/etc/profile.d/slurm-shim.sh"
+
+// modulefileMarker identifies a modulefile Expose wrote, so uninstall removes
+// only those.
+const modulefileMarker = "## slurm-shim:"
+
+// profileDBody is the profile.d file Expose writes for prefix; uninstall
+// removes the file only when it is exactly this.
+func profileDBody(prefix string) string {
+	return "# slurm-shim: SLURM commands for Open Cluster Scheduler\n" +
+		"export PATH=" + filepath.Join(prefix, "bin") + ":$PATH\n"
+}
+
 // Expose writes the PATH hook for the chosen mode and returns the file written
 // (or "" for none). The modulefile is Tcl, which Lmod and environment-modules
 // both read; it lands under the prefix so the admin adds one directory to
@@ -293,22 +307,19 @@ func Expose(prefix string, mode ExposeMode, version string) (string, error) {
 	case ExposeNone, "":
 		return "", nil
 	case ExposeModule:
-		dir := filepath.Join(prefix, "share", "modulefiles", "slurm-shim")
+		dir := filepath.Join(prefix, modulefilesRel)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", err
 		}
 		path := filepath.Join(dir, version)
 		body := "#%Module1.0\n" +
-			"## slurm-shim: SLURM command compatibility for Open Cluster Scheduler\n" +
+			modulefileMarker + " SLURM command compatibility for Open Cluster Scheduler\n" +
 			"proc ModulesHelp { } { puts stderr \"sbatch/srun/squeue/... translated to OCS\" }\n" +
 			"module-whatis \"SLURM commands for Open Cluster Scheduler\"\n" +
 			"prepend-path PATH " + bin + "\n"
 		return path, os.WriteFile(path, []byte(body), 0o644)
 	case ExposeProfileD:
-		path := "/etc/profile.d/slurm-shim.sh"
-		body := "# slurm-shim: SLURM commands for Open Cluster Scheduler\n" +
-			"export PATH=" + bin + ":$PATH\n"
-		return path, os.WriteFile(path, []byte(body), 0o644)
+		return ProfileDPath, os.WriteFile(ProfileDPath, []byte(profileDBody(prefix)), 0o644)
 	}
 	return "", fmt.Errorf("install: unknown expose mode %q (none, module, profile.d)", mode)
 }

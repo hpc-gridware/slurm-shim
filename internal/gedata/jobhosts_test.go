@@ -346,3 +346,40 @@ var _ = Describe("recording hot-spare swaps in the job context", func() {
 		Expect(gedata.ClearSwaps(context.Background(), r, "4711")).To(MatchError(ContainSubstring("qalter not found")))
 	})
 })
+
+var _ = Describe("ParseJobUsesXML", func() {
+	It("reads the PE, hard queues, granted queues and hard resources of pending and running jobs", func() {
+		doc := `<?xml version='1.0'?>
+<detailed_job_info><djob_info>
+<element>
+  <JB_job_number>773</JB_job_number>
+  <JB_request_set_list><ulong_sublist>
+    <JRS_hard_resource_list><qstat_l_requests><CE_name>slurm_shim</CE_name></qstat_l_requests></JRS_hard_resource_list>
+    <JRS_hard_queue_list><destin_ident_list><QR_name>slurm.q</QR_name></destin_ident_list></JRS_hard_queue_list>
+  </ulong_sublist></JB_request_set_list>
+  <JB_pe>slurm*</JB_pe>
+</element>
+<element>
+  <JB_job_number>774</JB_job_number>
+  <JB_hard_queue_list><destin_ident_list><QR_name>all.q@ocs-master</QR_name></destin_ident_list></JB_hard_queue_list>
+  <JB_pe>make</JB_pe>
+  <JB_ja_tasks><element><JAT_granted_destin_identifier_list>
+    <element><JG_qname>all.q@ocs-master</JG_qname></element>
+    <element><JG_qname>gpu.q@ocs-worker1</JG_qname></element>
+  </JAT_granted_destin_identifier_list></element></JB_ja_tasks>
+</element>
+</djob_info></detailed_job_info>`
+		uses, err := gedata.ParseJobUsesXML([]byte(doc))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(uses).To(Equal([]gedata.JobUse{
+			{ID: "773", PE: "slurm*", Queues: []string{"slurm.q"}, Resources: []string{"slurm_shim"}},
+			{ID: "774", PE: "make", Queues: []string{"all.q", "gpu.q"}},
+		}))
+	})
+
+	It("answers no jobs for qstat's unknown_jobs document", func() {
+		uses, err := gedata.ParseJobUsesXML([]byte("<?xml version='1.0'?>\n<unknown_jobs xmlns:xsd=\"x\">\n  <>\n    <ST_name>*</ST_name>\n  </>\n</unknown_jobs>\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(uses).To(BeEmpty())
+	})
+})

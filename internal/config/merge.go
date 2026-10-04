@@ -218,3 +218,58 @@ func retiredKeyWarning(key string) string {
 	return fmt.Sprintf("config key %q is obsolete and ignored: %s; "+
 		"`slurm-shim install --apply` removes it", key, reason)
 }
+
+// RemovePartitions deletes the named partitions from a config document and,
+// when default_partition names one of them, sets it to newDefault (or removes
+// it when newDefault is ""). Every other key, comment and the indentation of
+// the rest of the document survive, as with MergeInto. Uninstall uses it so a
+// kept config does not route jobs to a queue or PE it deleted.
+func RemovePartitions(existing []byte, names []string, newDefault string) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(existing, &doc); err != nil {
+		return nil, fmt.Errorf("config is not valid YAML: %w", err)
+	}
+	root := docRoot(&doc)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return existing, nil
+	}
+	gone := map[string]bool{}
+	for _, n := range names {
+		gone[n] = true
+	}
+	var kept []*yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key, val := root.Content[i], root.Content[i+1]
+		switch key.Value {
+		case "partitions":
+			if val.Kind == yaml.MappingNode {
+				var parts []*yaml.Node
+				for j := 0; j+1 < len(val.Content); j += 2 {
+					if !gone[val.Content[j].Value] {
+						parts = append(parts, val.Content[j], val.Content[j+1])
+					}
+				}
+				val.Content = parts
+			}
+		case "default_partition":
+			if gone[val.Value] {
+				if newDefault == "" {
+					continue
+				}
+				val.Value = newDefault
+			}
+		}
+		kept = append(kept, key, val)
+	}
+	root.Content = kept
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}

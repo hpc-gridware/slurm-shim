@@ -49,6 +49,16 @@ func Discover(ctx context.Context, a ClusterAdmin) (Facts, error) {
 	return f, nil
 }
 
+// findQueue returns the queue with the given name, if present.
+func (f Facts) findQueue(name string) (gedata.Queue, bool) {
+	for _, q := range f.Queues {
+		if q.Name == name {
+			return q, true
+		}
+	}
+	return gedata.Queue{}, false
+}
+
 // findPE returns the PE with the given name, if present.
 func (f Facts) findPE(name string) (gedata.PE, bool) {
 	for _, p := range f.PEs {
@@ -57,4 +67,14 @@ func (f Facts) findPE(name string) (gedata.PE, bool) {
 		}
 	}
 	return gedata.PE{}, false
+}
+
+// findComplex returns the complex with the given name, if present.
+func (f Facts) findComplex(name string) (gedata.Complex, bool) {
+	for _, c := range f.Complexes {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return gedata.Complex{}, false
 }

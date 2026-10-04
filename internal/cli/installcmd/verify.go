@@ -42,8 +42,11 @@ func runVerify(ctx context.Context, cfg *config.Config, plan install.Plan, stdou
 	// Put the shim's bin first so scontrol inside the job resolves to it.
 	env := "PATH=" + filepath.Join(filepath.Dir(plan.PE.StartProcArgs)) + ":" + os.Getenv("PATH")
 	r := gedata.ExecRunner{}
-	o, e, exit, err := r.Run(ctx, "qsub", "-terse", "-sync", "y", "-q", part.Queue, "-pe", part.PE, "2",
-		"-o", out, "-j", "y", "-v", env, script)
+	args := []string{"-terse", "-sync", "y", "-q", part.Queue, "-pe", part.PE, "2"}
+	if part.Request != "" {
+		args = append(args, "-l", part.Request)
+	}
+	o, e, exit, err := r.Run(ctx, "qsub", append(args, "-o", out, "-j", "y", "-v", env, script)...)
 	if err != nil || exit != 0 {
 		fmt.Fprintf(stderr, "verify: qsub failed (exit %d): %s%s\n", exit, strings.TrimSpace(string(e)), errText(err))
 		return 1
