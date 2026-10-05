@@ -134,3 +134,49 @@ tarball: payload
 
 checksums:
 	cd dist && (command -v sha256sum >/dev/null && sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
+
+# ---- third-party licenses and SBOM ---------------------------------------------
+# 3rdparty-licenses/ in the layout qontrol uses: a CycloneDX SBOM from Trivy
+# (sbom.cyclonedx.json), the license text of every third-party Go module linked
+# into the binary (licenses/, by go-licenses), and a module,URL,license index
+# (licenses.csv). Test-only modules (ginkgo, gomega) are not linked into the
+# binary and so not listed by go-licenses; the SBOM covers all of go.mod.
+# hpc-gridware modules are our own and are skipped, as in qontrol.
+#
+# Both tools run in containers, so the result does not depend on what the host
+# has installed; the release workflow runs this target for every release.
+# --user keeps the output owned by the caller, not root. Errors fail the target.
+.PHONY: licenses-sbom
+licenses-sbom:
+	rm -rf 3rdparty-licenses
+	mkdir -p 3rdparty-licenses
+	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
+		aquasec/trivy:latest fs --cache-dir /tmp/trivy --format cyclonedx \
+		--skip-dirs dist,bin,test/cluster/.quickinstall \
+		--output 3rdparty-licenses/sbom.cyclonedx.json .
+	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
+		-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/gocache -e GOFLAGS=-buildvcs=false \
+		-e GOPROXY=https://proxy.golang.org,direct -e GOTOOLCHAIN=auto -e GOWORK=off \
+		-e GOOS=linux -e CGO_ENABLED=0 \
+		golang:1.25 sh -c '\
+		go install github.com/google/go-licenses@latest && \
+		/tmp/go/bin/go-licenses save ./... --save_path=3rdparty-licenses/licenses --ignore github.com/hpc-gridware --force && \
+		/tmp/go/bin/go-licenses csv  ./... --ignore github.com/hpc-gridware > 3rdparty-licenses/licenses.csv'
+	@echo "3rd party licenses and SBOM generated in 3rdparty-licenses/"
+
+# ---- releases/ ---------------------------------------------------------------
+# releases/ holds the latest release: the tarballs and SHA256SUMS exactly as
+# published on GitHub, plus a README for installing from them. The release
+# workflow fills it from the very files it uploads, so they are byte-identical.
+# To fill it by hand from a published release instead:
+#   gh release download vX.Y.Z -D dist --clobber -p '*.tar.gz' -p SHA256SUMS
+#   make releases-dir RELEASE=vX.Y.Z
+RELEASE ?= $(VERSION)
+.PHONY: releases-dir
+releases-dir:
+	test -f dist/SHA256SUMS
+	mkdir -p releases
+	rm -f releases/*.tar.gz releases/SHA256SUMS
+	cp dist/slurm-shim_linux_amd64.tar.gz dist/slurm-shim_linux_arm64.tar.gz dist/SHA256SUMS releases/
+	cd releases && (command -v sha256sum >/dev/null && sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS)
+	sed 's/@VERSION@/$(RELEASE)/g' docs/install/releases-README.md.in > releases/README.md

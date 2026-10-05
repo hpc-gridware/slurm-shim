@@ -1,0 +1,58 @@
+# slurm-shim @VERSION@
+
+This directory holds the latest slurm-shim release, the same files as on the
+[GitHub release page](https://github.com/hpc-gridware/slurm-shim/releases/tag/@VERSION@):
+
+| File | |
+|---|---|
+| `slurm-shim_linux_amd64.tar.gz` | x86-64 cluster nodes |
+| `slurm-shim_linux_arm64.tar.gz` | ARM64 cluster nodes |
+| `SHA256SUMS` | checksums of both |
+
+Third-party licenses and the SBOM of this release are in the
+`3rdparty-licenses` directory of the repository; the SBOM is also attached to
+the release as `sbom.cyclonedx.json`.
+
+## Install
+
+Run as an Open Cluster Scheduler and Gridware Cluster Scheduler manager on a
+host that shares `$SGE_ROOT` with the cluster nodes.
+
+```bash
+source $SGE_ROOT/default/common/settings.sh
+sha256sum -c SHA256SUMS --ignore-missing
+
+mkdir -p $SGE_ROOT/slurm-shim
+tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
+
+$SGE_ROOT/slurm-shim/bin/slurm-shim install                    # prints the plan, changes nothing
+$SGE_ROOT/slurm-shim/bin/slurm-shim install --apply --expose=profile.d
+$SGE_ROOT/slurm-shim/bin/slurm-shim doctor
+```
+
+`install --apply` creates the PE `slurm-shim` and a queue of its own,
+`slurm.q`, and changes no existing queue. `--queue all` wires every existing
+queue instead. `--expose=module` writes a modulefile instead of
+`/etc/profile.d/slurm-shim.sh`.
+
+## Uninstall
+
+```bash
+$SGE_ROOT/slurm-shim/bin/slurm-shim uninstall                  # prints the plan, changes nothing
+$SGE_ROOT/slurm-shim/bin/slurm-shim uninstall --apply
+```
+
+Uninstall undoes what install did and removes the installed files. It keeps the
+config; `--purge-config` removes it too. It changes nothing while a job still
+uses the shim.
+
+More information, including configuration, upgrades and troubleshooting:
+https://github.com/hpc-gridware/slurm-shim
+
+## Support
+
+Gridware Cluster Scheduler customers: for configuration, bug reports or any
+other questions, reach out to HPC-Gridware through the support portal.
+
+Open Cluster Scheduler users: please report bugs as GitHub issues at
+https://github.com/hpc-gridware/slurm-shim/issues.

@@ -35,6 +35,7 @@ curl -fsSL https://github.com/hpc-gridware/slurm-shim/releases/latest/download/i
 # 1b. Or unpack the tarball yourself -- the same delivery model as OCS. Steps 2
 #     and 3 are then yours to run. Download it (or _arm64) with SHA256SUMS from
 #     https://github.com/hpc-gridware/slurm-shim/releases/latest/download/slurm-shim_linux_amd64.tar.gz
+#     (the same files are in releases/ of this repository)
 mkdir -p $SGE_ROOT/slurm-shim
 tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
 export PATH=$SGE_ROOT/slurm-shim/bin:$PATH   # this shell only; step 3 is the site-wide choice
@@ -705,3 +706,4 @@ Developed by [HPC-Gridware](https://hpc-gridware.com), the company behind Open C
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Copyright 2026 HPC-Gridware.
+Third-party licenses and the SBOM of the latest release are in [`3rdparty-licenses`](3rdparty-licenses).

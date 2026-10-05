@@ -72,6 +72,11 @@ jobs:
       - name: check the bootstrap parses
         run: sh -n dist/install.sh
 
+      # 3rdparty-licenses/: the SBOM and third-party license texts of exactly
+      # this release (Trivy and go-licenses in containers; see the Makefile).
+      - name: SBOM and third-party licenses
+        run: make licenses-sbom
+
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -87,4 +92,38 @@ jobs:
             dist/install.sh \
             dist/slurm-shim_linux_amd64.tar.gz \
             dist/slurm-shim_linux_arm64.tar.gz \
-            dist/SHA256SUMS
+            dist/SHA256SUMS \
+            3rdparty-licenses/sbom.cyclonedx.json
+
+      # Keep main's 3rdparty-licenses/ and releases/ at the latest release.
+      # releases/ gets the very dist/ files uploaded above, so they are
+      # byte-identical to the release assets (make releases-dir checks them
+      # against SHA256SUMS). The tag is checked out detached; the generated
+      # files are carried over to main and committed there. A push from the
+      # workflow token starts no other workflow.
+      - name: commit the release files to main
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          make releases-dir RELEASE="$TAG"
+          carry="$(mktemp -d)"
+          cp -R 3rdparty-licenses releases "$carry"/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -f -B main origin/main
+          rm -rf 3rdparty-licenses releases
+          cp -R "$carry"/3rdparty-licenses "$carry"/releases .
+          git add -A 3rdparty-licenses releases
+          if git diff --cached --quiet; then
+            echo "main already has the files of $TAG"
+            exit 0
+          fi
+          git commit -m "release $TAG: SBOM, third-party licenses and release tarballs"
+          for _ in 1 2 3; do
+            git push origin main && exit 0
+            git pull --rebase origin main
+          done
+          echo "::error::could not push the release files to main"
+          exit 1
