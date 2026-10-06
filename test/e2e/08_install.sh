@@ -54,6 +54,13 @@ assert_contains "$doc" "PASS  OCS 9." "doctor reports the OCS build"
 assert_contains "$doc" "PASS  tree owned by root" "doctor verifies the install tree"
 assert_contains "$doc" "PASS  queue all.q starter_method -> this tree" "doctor verifies the queue wiring"
 case "$doc" in *"FAIL "*) fail "doctor reported a FAIL line: $(printf '%s\n' "$doc" | grep 'FAIL ' | head -3)" ;; *) pass "doctor has no FAIL lines" ;; esac
+# The daemon_forks_slaves verdict (SI-18): the harness PEs keep the installer's
+# FALSE and no queue caps per-slot memory, so each passes -- never the old
+# always-WARN -- and control_slaves is reported once per PE, not twice.
+assert_contains "$doc" "PASS  pe make daemon_forks_slaves FALSE" "a FALSE PE passes where no queue caps per-slot memory"
+forks_warns="$(printf '%s\n' "$doc" | grep -c '^WARN  pe .*daemon_forks_slaves' || true)"
+assert_eq "$forks_warns" "0" "no daemon_forks_slaves WARN on a cluster without per-slot memory limits"
+assert_eq "$(printf '%s\n' "$doc" | grep -c 'pe make control_slaves' || true)" "1" "control_slaves is reported once per PE"
 
 # (7) A first install on its own queue, and uninstall. A second tree and its
 # own PE and config, so the harness install above is not touched: by default

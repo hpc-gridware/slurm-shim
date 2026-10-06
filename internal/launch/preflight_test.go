@@ -90,7 +90,7 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 		// printed by srun per step, so reporting it here told the wrong person
 		// repeatedly -- and the line landed interleaved with the job own output,
 		// corrupting what tools parse. doctor reports it once, under security,
-		// via TokenSpoolWarning.
+		// via SpoolWarning.
 		res := Preflight(context.Background(), fixtureRunner(), "make", "all.q")
 		for _, w := range res.Warnings {
 			Expect(w).NotTo(ContainSubstring("SI-51"))
@@ -100,8 +100,9 @@ var _ = Describe("launch preflight [REQ-CHN-005, SI-18]", func() {
 
 	It("still exposes the spool check for doctor to call directly", func() {
 		// The check itself must keep working -- only its delivery changed.
-		Expect(TokenSpoolWarning(context.Background(), fixtureRunner())).
+		Expect(tokenSpoolWarning(context.Background(), fixtureRunner())).
 			To(ContainSubstring("SI-51"))
+		Expect(SpoolWarning("")).To(ContainSubstring("SI-51"), "an unknown spool keeps the advisory")
 	})
 
 	It("fails loud when control_slaves is not TRUE", func() {

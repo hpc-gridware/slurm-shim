@@ -45,8 +45,9 @@ var _ = Describe("CompatNotes [version matrix]", func() {
 const fakeQconf = `#!/bin/sh
 case "$1" in
   -sel|-ss) printf 'h1\nh2\n' ;;
+  -sconfl) printf 'h1\n' ;;
   -sconf)
-    if [ $# -eq 1 ]; then
+    if [ $# -eq 1 ] || [ "$2" = global ]; then
       printf 'qmaster_params ENABLE_RESCHEDULE_SLAVE=TRUE\nexecd_params NONE\n'
     elif [ "$2" = h1 ]; then
       printf '#h1:\nexecd_params ENABLE_ADDGRP_KILL=TRUE\n'

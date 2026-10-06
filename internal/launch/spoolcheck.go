@@ -26,9 +26,16 @@ import (
 // site with per-host spool policies could still differ elsewhere; when the path
 // cannot be determined the original advisory is returned unchanged.
 func tokenSpoolWarning(ctx context.Context, r gedata.Runner) string {
+	return SpoolWarning(execdSpoolDir(ctx, r))
+}
+
+// SpoolWarning is the SI-51 check for an execd spool directory already known
+// (doctor reads the global configuration once for all its checks): "" when
+// the spool is not traversable by other users, the advisory when dir is ""
+// or cannot be checked.
+func SpoolWarning(dir string) string {
 	const advise = "token delivered via qrsh -v: confirm the execd env spool file is owner-only for the step lifetime (SI-51)"
 
-	dir := execdSpoolDir(ctx, r)
 	if dir == "" {
 		return advise
 	}
@@ -88,10 +95,4 @@ func othersCanTraverse(dir string) (open bool, why string) {
 		}
 	}
 	return true, fmt.Sprintf("mode %04o", self.Mode().Perm())
-}
-
-// TokenSpoolWarning is the SI-51 check as one string for diagnostics such as
-// `slurm-shim doctor`: "" when the execd spool is not traversable by others.
-func TokenSpoolWarning(ctx context.Context, r gedata.Runner) string {
-	return tokenSpoolWarning(ctx, r)
 }

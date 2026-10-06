@@ -1,8 +1,6 @@
 package doctor
 
 import (
-	"errors"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -26,14 +24,6 @@ var _ = Describe("daemon_forks_slaves verdict [SI-18, REQ-APX-003]", func() {
 		Expect(warns).To(HaveLen(1))
 		Expect(warns[0]).To(ContainSubstring(`queue "big.q" sets h_vmem=4G`))
 		Expect(warns[0]).To(ContainSubstring("SI-18"))
-	})
-
-	It("does not pass a FALSE PE whose queue could not be read", func() {
-		warns, pass := forksFindings("make", false, "mem_free", []queueLimits{
-			unlimited, {Queue: "odd.q", Err: errors.New("denied")},
-		})
-		Expect(pass).To(BeEmpty())
-		Expect(warns).To(ConsistOf(And(ContainSubstring(`"odd.q"`), ContainSubstring("denied"))))
 	})
 
 	It("warns on TRUE exactly once, whatever the queues set", func() {

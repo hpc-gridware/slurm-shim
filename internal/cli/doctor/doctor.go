@@ -184,6 +184,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		r.stop("wiring")
 		return r.finish()
 	}
+	reads := newClusterReads(ctx, admin)
 	seenPE := map[string]bool{}
 	var peOrder []string              // PEs read successfully, in partition order
 	peForks := map[string]bool{}      // PE -> daemon_forks_slaves
@@ -191,7 +192,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	peQueues := map[string][]string{} // PE -> readable queues that offer it
 	for _, n := range names {
 		p := cfg.Partitions[n]
-		q, err := admin.Queue(ctx, p.Queue)
+		q, err := reads.queue(p.Queue)
 		if err != nil {
 			r.fail("partition %s: queue %s: %v", n, p.Queue, err)
 			continue
@@ -241,10 +242,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// daemon_forks_slaves is judged once all partitions are read: whether FALSE
 	// can hurt depends on every queue that offers the PE.
 	for _, name := range peOrder {
+		// The queues were read in the partition loop above; peQueues holds
+		// only the ones that read, so their memory limits are known.
 		var queues []queueLimits
 		for _, qn := range peQueues[name] {
-			limits, err := launch.ReadQueueMemoryLimits(ctx, runner, qn)
-			queues = append(queues, queueLimits{Queue: qn, Limits: limits, Err: err})
+			q, _ := reads.queue(qn)
+			queues = append(queues, queueLimits{Queue: qn, Limits: q.MemoryLimits})
 		}
 		warns, pass := forksFindings(name, peForks[name], cfg.MemoryComplex, queues)
 		for _, w := range warns {
@@ -269,7 +272,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// -- gpu isolation --------------------------------------------------------
 	if cfg.GPU.Isolation == "cgroup" {
 		r.section("gpu isolation")
-		checkCgroupIsolation(ctx, r, admin, cfg.GPU.GresComplex, hosts, hostsErr)
+		checkCgroupIsolation(r, reads, cfg.GPU.GresComplex, hosts, hostsErr)
 	}
 
 	// -- memory ---------------------------------------------------------------
@@ -304,15 +307,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		r.warn("ping_deadline is 0: a step on a node that crashes or drops off the network hangs until the job ends")
 	}
 	// qmaster_params is read by qmaster only, so only the global value counts.
-	if global, _, err := readConf(ctx, runner, ""); err != nil {
-		r.info("ENABLE_RESCHEDULE_SLAVE: unknown (%v)", err)
-	} else if paramEnabled(global["qmaster_params"], "ENABLE_RESCHEDULE_SLAVE") {
+	global, globalErr := reads.globalConf()
+	if globalErr != nil {
+		r.info("ENABLE_RESCHEDULE_SLAVE: unknown (%v)", globalErr)
+	} else if paramEnabled(global.QmasterParams, "ENABLE_RESCHEDULE_SLAVE") {
 		r.fail("qmaster_params sets ENABLE_RESCHEDULE_SLAVE: losing any slave host reschedules the whole job, " +
 			"so a lost node can never be handled by the step (or replaced by a hot spare)")
 	}
 	if hostsErr != nil {
 		r.info("ENABLE_ADDGRP_KILL: unknown (exec host list: %v)", hostsErr)
-	} else if missing, err := addgrpKillMissing(ctx, runner, hosts); err != nil {
+	} else if globalErr != nil {
+		r.info("ENABLE_ADDGRP_KILL: unknown (%v)", globalErr)
+	} else if missing, err := addgrpKillMissing(global, hosts, reads.localConf); err != nil {
 		r.info("ENABLE_ADDGRP_KILL: unknown (%v)", err)
 	} else if len(missing) > 0 {
 		r.warn("execd_params lacks ENABLE_ADDGRP_KILL=TRUE on exec host(s) %s: when a job ends while one of its "+
@@ -333,12 +339,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	// -- security -------------------------------------------------------------
 	r.section("security")
-	if w := launch.TokenSpoolWarning(ctx, runner); w != "" {
+	if w := launch.SpoolWarning(global.ExecdSpoolDir); w != "" {
 		r.warn("%s", w)
 	} else {
 		r.pass("execd spool is not traversable by other users (step tokens stay private)")
 	}
-	if daemon := globalConf(ctx, runner, "rsh_daemon"); daemon != "" && !strings.EqualFold(daemon, "builtin") {
+	if daemon := global.RshDaemon; daemon != "" && !strings.EqualFold(daemon, "builtin") {
 		r.warn("rsh_daemon is %q, not builtin: srun --pty sessions get the environment but may have no terminal", daemon)
 	} else if daemon != "" {
 		r.pass("rsh_daemon builtin")
@@ -359,7 +365,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if bad == 0 {
 			r.pass("%d queue instance(s), none in error/alarm/unreachable state", len(insts))
 		}
-		for _, w := range oversubscribedHosts(ctx, admin, insts, shimQueues(peQueues)) {
+		for _, w := range oversubscribedHosts(reads, insts, shimQueues(peQueues)) {
 			r.warn("%s", w)
 		}
 		for _, name := range peOrder {
@@ -382,62 +388,21 @@ func memSemantics(scope string) string {
 	return "filters hosts on free memory but is not enforced"
 }
 
-// globalConf reads one value of the cluster's global configuration (qconf
-// -sconf), "" if unknown.
-func globalConf(ctx context.Context, r gedata.Runner, key string) string {
-	conf, _, err := readConf(ctx, r, "")
-	if err != nil {
-		return ""
-	}
-	return conf[key]
-}
-
-// readConf reads the global configuration (host "") or a host's local one
-// (qconf -sconf <host>) as key -> value. found is false when the host has no
-// local configuration, which is normal: the global one applies to it.
-func readConf(ctx context.Context, r gedata.Runner, host string) (conf map[string]string, found bool, err error) {
-	args := []string{"-sconf"}
-	if host != "" {
-		args = append(args, host)
-	}
-	out, errOut, exit, err := r.Run(ctx, "qconf", args...)
-	if err != nil {
-		return nil, false, err
-	}
-	if exit != 0 {
-		msg := strings.TrimSpace(string(out) + " " + string(errOut))
-		if host != "" && strings.Contains(msg, "not defined") {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("qconf %s: exit %d: %s", strings.Join(args, " "), exit, msg)
-	}
-	conf = map[string]string{}
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) >= 2 && !strings.HasPrefix(f[0], "#") {
-			conf[f[0]] = strings.Join(f[1:], " ")
-		}
-	}
-	return conf, true, nil
-}
-
 // addgrpKillMissing lists the exec hosts on which execd_params does not turn
 // ENABLE_ADDGRP_KILL on. A host's local execd_params replaces the global one
 // as a whole, so the global value counts only for hosts without their own.
-func addgrpKillMissing(ctx context.Context, r gedata.Runner, hosts []string) ([]string, error) {
-	global, _, err := readConf(ctx, r, "")
-	if err != nil {
-		return nil, err
-	}
+// local answers a host's local configuration (found false: it has none).
+func addgrpKillMissing(global gedata.ClusterConf, hosts []string,
+	local func(string) (gedata.ClusterConf, bool, error)) ([]string, error) {
 	var missing []string
 	for _, h := range hosts {
-		local, found, err := readConf(ctx, r, h)
+		conf, found, err := local(h)
 		if err != nil {
 			return nil, err
 		}
-		params := global["execd_params"]
-		if lp := local["execd_params"]; found && lp != "" && !strings.EqualFold(lp, "NONE") {
-			params = lp
+		params := global.ExecdParams
+		if found && conf.ExecdParams != "" {
+			params = conf.ExecdParams
 		}
 		if !paramEnabled(params, "ENABLE_ADDGRP_KILL") {
 			missing = append(missing, h)
@@ -476,7 +441,7 @@ func shimQueues(peQueues map[string][]string) []string {
 // another queue and has no slots limit: every queue adds its own slots, so
 // together they can run more jobs than the host has cores. Doctor only reports
 // it -- slots limits are the site's (the installer never changes a host).
-func oversubscribedHosts(ctx context.Context, admin *gedata.Admin, insts []gedata.QueueInstance, shim []string) []string {
+func oversubscribedHosts(reads *clusterReads, insts []gedata.QueueInstance, shim []string) []string {
 	queuesOn := map[string][]string{}
 	var hosts []string
 	for _, qi := range insts {
@@ -487,7 +452,7 @@ func oversubscribedHosts(ctx context.Context, admin *gedata.Admin, insts []gedat
 	}
 	// A resource quota limiting slots per host bounds every queue on the host
 	// together, as an exechost slots limit does.
-	if sets, err := admin.ResourceQuotaSets(ctx); err == nil && gedata.RQSLimitsHostSlots(sets) {
+	if sets, err := reads.admin.ResourceQuotaSets(reads.ctx); err == nil && gedata.RQSLimitsHostSlots(sets) {
 		return nil
 	}
 	var warns []string
@@ -500,8 +465,8 @@ func oversubscribedHosts(ctx context.Context, admin *gedata.Admin, insts []gedat
 		if len(qs) < 2 || !carriesShim {
 			continue
 		}
-		limited, err := admin.HostSlotsLimited(ctx, h)
-		if err != nil || limited {
+		host, err := reads.execHost(h)
+		if err != nil || host.SlotsLimited() {
 			continue
 		}
 		warns = append(warns, fmt.Sprintf("exec host %s carries queues %s and has no slots limit: together they can "+

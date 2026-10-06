@@ -1,7 +1,6 @@
 package doctor
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -23,7 +22,7 @@ type hostIsolation struct {
 
 // checkCgroupIsolation verifies, host by host, that Grid Engine will confine
 // jobs to their GPUs, and reports the result.
-func checkCgroupIsolation(ctx context.Context, r *report, admin *gedata.Admin, complexName string, hosts []string, hostsErr error) {
+func checkCgroupIsolation(r *report, reads *clusterReads, complexName string, hosts []string, hostsErr error) {
 	if hostsErr != nil {
 		r.fail("gpu.isolation cgroup: cannot list exec hosts to verify it: %v", hostsErr)
 		return
@@ -32,21 +31,43 @@ func checkCgroupIsolation(ctx context.Context, r *report, admin *gedata.Admin, c
 		complexName = "gpu"
 	}
 	var facts []hostIsolation
+	var unconfirmed []string // hosts whose local configuration could not be looked up
 	for _, host := range hosts {
-		instances, found, err := admin.ExecHostResourceMap(ctx, host, complexName)
+		eh, err := reads.execHost(host)
+		var instances []gedata.ResourceMapInstance
+		var found bool
+		if err == nil {
+			instances, found, err = eh.ResourceMap(complexName)
+		}
 		if err != nil {
 			r.fail("%s: cannot read RSMAP %s: %v", host, complexName, err)
 			continue
 		}
 		fact := hostIsolation{Host: host, Defined: found, Instances: len(instances), Undeclared: devicesUndeclared(instances)}
 		if found {
-			if off, err := admin.SystemdDisabled(ctx, host); err != nil {
-				r.warn("%s: cannot read execd_params to confirm systemd is on: %v", host, err)
-			} else {
-				fact.SystemdDisabled = off
+			// A host's own execd_params replace the global ones as a whole.
+			local, hasLocal, lErr := reads.localConf(host)
+			global, gErr := reads.globalConf()
+			switch {
+			case lErr != nil && lErr == reads.listErr():
+				// One failed qconf -sconfl, not a fact about this host: counted
+				// and reported once below.
+				unconfirmed = append(unconfirmed, host)
+			case lErr != nil:
+				r.warn("%s: cannot read execd_params to confirm systemd is on: %v", host, lErr)
+			case hasLocal && local.ExecdParams != "":
+				fact.SystemdDisabled = gedata.SystemdDisabled(&local, global)
+			case gErr != nil:
+				r.warn("%s: cannot read execd_params to confirm systemd is on: %v", host, gErr)
+			default:
+				fact.SystemdDisabled = gedata.SystemdDisabled(nil, global)
 			}
 		}
 		facts = append(facts, fact)
+	}
+	if len(unconfirmed) > 0 {
+		r.warn("cannot list the hosts with a local configuration (qconf -sconfl): %v; systemd not confirmed "+
+			"on %d host(s): %s", reads.listErr(), len(unconfirmed), strings.Join(unconfirmed, " "))
 	}
 	fails, warns, pass := isolationFindings(complexName, facts)
 	for _, f := range fails {

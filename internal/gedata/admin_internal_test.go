@@ -34,9 +34,11 @@ var _ = Describe("systemdSetting (execd_params ENABLE_SYSTEMD)", func() {
 		Expect(disabled).To(BeTrue())
 	})
 
-	It("treats NONE as no local parameters", func() {
-		Expect(hasParams([]string{"NONE"})).To(BeFalse())
-		Expect(hasParams(nil)).To(BeFalse())
-		Expect(hasParams([]string{"ENABLE_SYSTEMD=FALSE"})).To(BeTrue())
+	It("lets a host's own execd_params replace the global ones as a whole", func() {
+		global := ClusterConf{ExecdParams: "ENABLE_SYSTEMD=FALSE"}
+		Expect(SystemdDisabled(nil, global)).To(BeTrue(), "no local configuration: global applies")
+		Expect(SystemdDisabled(&ClusterConf{}, global)).To(BeTrue(), "local without execd_params: global applies")
+		Expect(SystemdDisabled(&ClusterConf{ExecdParams: "KEEP_ACTIVE=TRUE"}, global)).To(BeFalse(),
+			"local execd_params without the switch: systemd stays on")
 	})
 })

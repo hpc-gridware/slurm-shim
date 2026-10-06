@@ -88,7 +88,7 @@ func Preflight(ctx context.Context, r gedata.Runner, peName, queue string) Prefl
 	// in a captured multi-node result -- so it both corrupts what tools parse
 	// and trains readers to skip warnings.
 	//
-	// `doctor` reports it once, under security, via launch.TokenSpoolWarning.
+	// `doctor` reports it once, under security, via launch.SpoolWarning.
 	// That is run deliberately by the person who can actually fix the directory.
 
 	return res

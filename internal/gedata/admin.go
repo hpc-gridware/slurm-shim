@@ -43,6 +43,9 @@ type Queue struct {
 	ShellStartMode   string
 	// Subordinates is the subordinate_list (default entry).
 	Subordinates []string
+	// MemoryLimits are the per-slot memory rlimits the queue sets, as sorted
+	// "name=value" entries; INFINITY (no limit) is left out.
+	MemoryLimits []string
 }
 
 // Complex is one row of `qconf -sc`.
@@ -149,6 +152,7 @@ func (a *Admin) Queue(ctx context.Context, name string) (Queue, error) {
 		StarterOverrides: starterOverrides,
 		ShellStartMode:   firstOrEmpty(c.ShellStartMode),
 		Subordinates:     subs,
+		MemoryLimits:     queueMemoryLimits(c),
 	}, nil
 }
 
@@ -254,12 +258,11 @@ func (a *Admin) DeletePE(ctx context.Context, name string) error {
 // complex_values -- what keeps two queues on one host from together running
 // more jobs than it has cores.
 func (a *Admin) HostSlotsLimited(ctx context.Context, host string) (bool, error) {
-	h, err := a.q.ShowExecHost(host)
+	h, err := a.ExecHost(ctx, host)
 	if err != nil {
 		return false, err
 	}
-	_, ok := h.ComplexValues["slots"]
-	return ok, nil
+	return h.SlotsLimited(), nil
 }
 
 // Complexes lists the complex entries.
@@ -293,44 +296,6 @@ type ResourceMapInstance struct {
 	Characteristics map[string]string
 }
 
-// ExecHostResourceMap reads the instances of the RSMAP complex name on host.
-// found is false when the host does not define that complex.
-func (a *Admin) ExecHostResourceMap(ctx context.Context, host, name string) (instances []ResourceMapInstance, found bool, err error) {
-	h, err := a.q.ShowExecHost(host)
-	if err != nil {
-		return nil, false, err
-	}
-	value, ok := h.ComplexValues[name]
-	if !ok {
-		return nil, false, nil
-	}
-	_, parsed, err := qconf.ParseResourceMap(value)
-	if err != nil {
-		return nil, true, err
-	}
-	for _, p := range parsed {
-		instances = append(instances, ResourceMapInstance{ID: p.ID, Characteristics: p.Characteristics})
-	}
-	return instances, true, nil
-}
-
-// SystemdDisabled reports whether execd_params turns systemd off on host.
-// A host's local execd_params replaces the global one as a whole, so the
-// global setting is consulted only when the host has none of its own.
-func (a *Admin) SystemdDisabled(ctx context.Context, host string) (bool, error) {
-	// An error here means the host has no local configuration, which is normal.
-	if local, err := a.q.ShowHostConfiguration(host); err == nil && hasParams(local.ExecdParams) {
-		disabled, _ := systemdSetting(local.ExecdParams)
-		return disabled, nil
-	}
-	global, err := a.q.ShowGlobalConfiguration()
-	if err != nil {
-		return false, err
-	}
-	disabled, _ := systemdSetting(global.ExecdParams)
-	return disabled, nil
-}
-
 // systemdSetting reads ENABLE_SYSTEMD from execd_params. set is false when the
 // parameter is absent, in which case systemd is on (the default). Entries may
 // hold several comma- or space-separated parameters: the library splits the
@@ -345,12 +310,6 @@ func systemdSetting(params []string) (disabled, set bool) {
 		}
 	}
 	return false, false
-}
-
-// hasParams reports whether an execd_params list carries any value other
-// than GE's NONE placeholder.
-func hasParams(params []string) bool {
-	return len(dropNone(params)) > 0
 }
 
 // firstOrEmpty reads a GE single-valued attribute the library returns as a

@@ -8,12 +8,11 @@ import (
 )
 
 // queueLimits is what one queue offering a PE contributes to the
-// daemon_forks_slaves verdict: the per-slot memory limits it sets, or why they
-// could not be read.
+// daemon_forks_slaves verdict: the per-slot memory limits it sets. Only queues
+// that could be read get here; one that could not already failed its partition.
 type queueLimits struct {
 	Queue  string
 	Limits []string
-	Err    error
 }
 
 // forksFindings decides what doctor says about a PE's daemon_forks_slaves
@@ -28,9 +27,6 @@ type queueLimits struct {
 //	FALSE -- the installer's default. A stepper forking N ranks runs under one
 //	         slot's rlimits, which can only hurt where a queue caps per-slot
 //	         memory: a warning naming each such queue, otherwise a pass.
-//
-// A queue whose limits could not be read gets a warning too. Passing it would
-// assert a safety doctor did not establish.
 //
 // The queue config is not the only source of a per-slot limit: when
 // memory_complex is one of them, every --mem job requests it, and Grid Engine
@@ -48,9 +44,6 @@ func forksFindings(pe string, daemonForksSlaves bool, memoryComplex string, queu
 	var checked []string
 	for _, q := range queues {
 		switch {
-		case q.Err != nil:
-			warns = append(warns, fmt.Sprintf("PE %q has daemon_forks_slaves FALSE, but queue %q "+
-				"could not be read to check for per-slot memory limits (SI-18): %v", pe, q.Queue, q.Err))
 		case len(q.Limits) > 0:
 			warns = append(warns, fmt.Sprintf("%s; queue %q sets %s",
 				launch.PEForksNote(false, pe), q.Queue, strings.Join(q.Limits, ", ")))

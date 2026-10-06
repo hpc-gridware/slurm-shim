@@ -1,16 +1,12 @@
 package doctor
 
 import (
-	"context"
 	"errors"
-	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
-
-	"github.com/hpc-gridware/slurm-shim/internal/gedata/fake"
 )
 
 var _ = Describe("doctor: qmaster_params and execd_params switches", func() {
@@ -35,85 +31,46 @@ var _ = Describe("doctor: qmaster_params and execd_params switches", func() {
 	})
 })
 
-// confRunner answers qconf -sconf from a global configuration and per-host
-// local ones; a host without an entry has no local configuration.
-func confRunner(global string, local map[string]string) *fake.Runner {
-	return &fake.Runner{Responder: func(name string, args []string) fake.Response {
-		if name != "qconf" || len(args) == 0 || args[0] != "-sconf" {
-			return fake.Response{Exit: 1}
+// localConfs answers a host's local configuration from a map; a host without
+// an entry has none, and the hosts in fail cannot be read.
+func localConfs(local map[string]string, fail map[string]error) func(string) (gedata.ClusterConf, bool, error) {
+	return func(h string) (gedata.ClusterConf, bool, error) {
+		if err := fail[h]; err != nil {
+			return gedata.ClusterConf{}, true, err
 		}
-		if len(args) == 1 {
-			return fake.Response{Stdout: []byte(global)}
-		}
-		if conf, ok := local[args[1]]; ok {
-			return fake.Response{Stdout: []byte("#" + args[1] + ":\n" + conf)}
-		}
-		return fake.Response{Stdout: []byte("configuration " + args[1] + " not defined\n"), Exit: 1}
-	}}
+		params, ok := local[h]
+		return gedata.ClusterConf{ExecdParams: params}, ok, nil
+	}
 }
 
 var _ = Describe("doctor: ENABLE_ADDGRP_KILL per exec host", func() {
-	ctx := context.Background()
 	hosts := []string{"m", "w1", "w2"}
 
 	It("passes a host-local ENABLE_ADDGRP_KILL=TRUE although the global one lacks it", func() {
-		r := confRunner("execd_params                 NONE\n", map[string]string{
-			"m":  "execd_params                 ENABLE_ADDGRP_KILL=TRUE\n",
-			"w1": "execd_params                 KEEP_ACTIVE=FALSE,ENABLE_ADDGRP_KILL=TRUE\n",
-			"w2": "execd_params                 ENABLE_ADDGRP_KILL=1\n",
-		})
-		Expect(addgrpKillMissing(ctx, r, hosts)).To(BeEmpty())
+		local := localConfs(map[string]string{
+			"m":  "ENABLE_ADDGRP_KILL=TRUE",
+			"w1": "KEEP_ACTIVE=FALSE,ENABLE_ADDGRP_KILL=TRUE",
+			"w2": "ENABLE_ADDGRP_KILL=1",
+		}, nil)
+		Expect(addgrpKillMissing(gedata.ClusterConf{}, hosts, local)).To(BeEmpty())
 	})
 
 	It("lets a host-local execd_params replace a global one that has the switch", func() {
-		r := confRunner("execd_params                 ENABLE_ADDGRP_KILL=TRUE\n", map[string]string{
-			"w1": "execd_params                 KEEP_ACTIVE=FALSE\n",
-			"w2": "mailer                       /bin/mail\n",
-		})
-		Expect(addgrpKillMissing(ctx, r, hosts)).To(Equal([]string{"w1"}),
-			"m has no local configuration and w2 none for execd_params: the global value applies to both")
+		local := localConfs(map[string]string{"w1": "KEEP_ACTIVE=FALSE", "w2": ""}, nil)
+		Expect(addgrpKillMissing(gedata.ClusterConf{ExecdParams: "ENABLE_ADDGRP_KILL=TRUE"}, hosts, local)).
+			To(Equal([]string{"w1"}),
+				"m has no local configuration and w2 none for execd_params: the global value applies to both")
 	})
 
 	It("names every host when neither config sets it", func() {
-		r := confRunner("execd_params                 NONE\n", nil)
-		Expect(addgrpKillMissing(ctx, r, hosts)).To(Equal(hosts))
+		Expect(addgrpKillMissing(gedata.ClusterConf{}, hosts, localConfs(nil, nil))).To(Equal(hosts))
 	})
 
-	It("is unknown, not missing, when qconf fails", func() {
-		failing := &fake.Runner{Responder: func(string, []string) fake.Response {
-			return fake.Response{Stderr: []byte("denied"), Exit: 1}
-		}}
-		missing, err := addgrpKillMissing(ctx, failing, hosts)
+	It("is unknown, not missing, when a local configuration cannot be read", func() {
+		local := localConfs(nil, map[string]error{"w1": errors.New("denied")})
+		missing, err := addgrpKillMissing(gedata.ClusterConf{}, hosts, local)
 		Expect(err).To(MatchError(ContainSubstring("denied")))
 		Expect(missing).To(BeNil())
-
-		broken := &fake.Runner{Responder: func(string, []string) fake.Response {
-			return fake.Response{Err: errors.New("qconf: not found")}
-		}}
-		_, err = addgrpKillMissing(ctx, broken, hosts)
-		Expect(err).To(HaveOccurred())
-	})
-
-	It("does not mistake an unreachable host for one without local configuration", func() {
-		r := &fake.Runner{Responder: func(name string, args []string) fake.Response {
-			if len(args) == 1 {
-				return fake.Response{Stdout: []byte("execd_params ENABLE_ADDGRP_KILL=TRUE\n")}
-			}
-			return fake.Response{Stderr: []byte(`can't resolve hostname "` + args[1] + `"`), Exit: 1}
-		}}
-		_, err := addgrpKillMissing(ctx, r, hosts)
-		Expect(err).To(MatchError(ContainSubstring("resolve")))
-	})
-})
-
-var _ = Describe("doctor: readConf", func() {
-	It("reads multi-word values and skips the host comment line", func() {
-		r := confRunner("", map[string]string{"w1": "execd_params A=1 B=2\n"})
-		conf, found, err := readConf(context.Background(), r, "w1")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(conf).To(Equal(map[string]string{"execd_params": "A=1 B=2"}))
-		Expect(strings.Join(r.Calls[0].Args, " ")).To(Equal("-sconf w1"))
 	})
 })
 

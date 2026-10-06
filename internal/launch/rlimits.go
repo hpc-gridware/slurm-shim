@@ -11,16 +11,9 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
-// perSlotMemoryLimits are the queue rlimits Grid Engine applies PER SLOT, and
-// therefore the ones that make the daemon_forks_slaves setting dangerous. Time
-// and file limits are deliberately absent: they are not what multiplies, and
-// SI-18 is a memory story.
-var perSlotMemoryLimits = []string{
-	"h_vmem", "s_vmem",
-	"h_rss", "s_rss",
-	"h_data", "s_data",
-	"h_stack", "s_stack",
-}
+// perSlotMemoryLimits are the queue rlimits Grid Engine applies per slot
+// (gedata.PerSlotMemoryLimits, shared with doctor).
+var perSlotMemoryLimits = gedata.PerSlotMemoryLimits
 
 // IsPerSlotMemoryLimit reports whether a complex name is one of the per-slot
 // memory rlimits. A memory_complex that is one of them makes every --mem
@@ -84,7 +77,7 @@ func ReadQueueMemoryLimits(ctx context.Context, r gedata.Runner, queue string) (
 			continue
 		}
 		// GE spells "no limit" as INFINITY. Anything else is a real cap.
-		if strings.EqualFold(fields[1], "INFINITY") {
+		if !gedata.MemoryLimitSet(fields[1]) {
 			continue
 		}
 		found = append(found, fmt.Sprintf("%s=%s", fields[0], fields[1]))
