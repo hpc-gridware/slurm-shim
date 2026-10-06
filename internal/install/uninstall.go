@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
@@ -52,6 +53,30 @@ func TreeMatcher(prefix string) func(string) bool {
 		dir, err := filepath.EvalSymlinks(filepath.Dir(filepath.Clean(command(p))))
 		return err == nil && inResolved(filepath.Join(dir, filepath.Base(command(p))))
 	}
+}
+
+// ShimRef is a slurm-shim install the cluster points at: its prefix and the
+// object that shows it.
+type ShimRef struct {
+	Prefix string
+	Object string
+}
+
+// ShimInstalls lists the installs the cluster points at, by their starter
+// (queue starter_method) or slurm-shim-env (PE start_proc_args).
+func ShimInstalls(f Facts) []ShimRef {
+	var out []ShimRef
+	for _, q := range f.Queues {
+		if c := command(q.StarterMethod); filepath.Base(c) == "slurm-shim-starter" {
+			out = append(out, ShimRef{filepath.Dir(filepath.Dir(c)), "queue " + q.Name + " starter_method " + q.StarterMethod})
+		}
+	}
+	for _, pe := range f.PEs {
+		if c := command(pe.StartProcArgs); filepath.Base(c) == "slurm-shim-env" {
+			out = append(out, ShimRef{filepath.Dir(filepath.Dir(c)), "pe " + pe.Name + " start_proc_args " + pe.StartProcArgs})
+		}
+	}
+	return out
 }
 
 // command is the executable of a starter_method or start_proc_args value
@@ -312,9 +337,9 @@ func IsShimTree(prefix string) error {
 }
 
 // TreeFiles lists the files install put under prefix that are still there,
-// relative to it: the binary, starter, hook and record, the drain scripts,
-// each command link that points at slurm-shim, and the modulefiles Expose
-// wrote. Nothing else is ever listed, so nothing else is ever removed. It
+// relative to it: the binary, starter, hook, record and config pointer, the
+// drain scripts, each command link that points at slurm-shim, and the
+// modulefiles Expose wrote. Nothing else is ever listed, so nothing else is ever removed. It
 // reads through os.Root, so a symlink leading out of the tree is not followed.
 func TreeFiles(prefix string) ([]string, error) {
 	root, err := os.OpenRoot(prefix)
@@ -327,7 +352,7 @@ func TreeFiles(prefix string) ([]string, error) {
 
 func treeFiles(root *os.Root) []string {
 	var out []string
-	for _, rel := range append([]string{BinaryRel, StarterRel, HookRel, StateRel}, drainScriptsRel...) {
+	for _, rel := range append([]string{BinaryRel, StarterRel, HookRel, StateRel, config.PointerRel}, drainScriptsRel...) {
 		if fi, err := root.Lstat(rel); err == nil && fi.Mode().IsRegular() {
 			out = append(out, rel)
 		}

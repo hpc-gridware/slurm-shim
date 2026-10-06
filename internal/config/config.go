@@ -31,13 +31,19 @@ const DefaultPath = "/etc/slurm-shim/config.yaml"
 // distributes.
 const CellRelPath = "common/slurm-shim/config.yaml"
 
-// SearchPaths returns the config locations in the order Load tries them:
-// $SLURM_SHIM_CONFIG if set (alone -- an explicit path is not a search), then
-// the cell path when $SGE_ROOT is set, then DefaultPath.
+// SearchPaths returns the config locations searched when the install has no
+// config pointer (see Resolve): $SLURM_SHIM_CONFIG if set (alone -- an
+// explicit path is not a search), then the cell path when $SGE_ROOT is set,
+// then DefaultPath.
 func SearchPaths() []string {
 	if p := os.Getenv(EnvVar); p != "" {
 		return []string{p}
 	}
+	return fallbackPaths()
+}
+
+// fallbackPaths are the cell path (when $SGE_ROOT is set) and DefaultPath.
+func fallbackPaths() []string {
 	var paths []string
 	if root := os.Getenv("SGE_ROOT"); root != "" {
 		cell := os.Getenv("SGE_CELL")
@@ -49,10 +55,11 @@ func SearchPaths() []string {
 	return append(paths, DefaultPath)
 }
 
-// CellPath is where the installer writes: the cell path when $SGE_ROOT is set,
-// else DefaultPath.
+// CellPath is the install's default config location: the cell path when
+// $SGE_ROOT is set, else DefaultPath. It ignores $SLURM_SHIM_CONFIG and any
+// config pointer; InstallPath is what an install acts on.
 func CellPath() string {
-	return SearchPaths()[0]
+	return fallbackPaths()[0]
 }
 
 // Render serialises a config as YAML that Parse reads back identically.
@@ -353,12 +360,30 @@ func Default() *Config {
 	}
 }
 
-// Load resolves the config path per the search order (EnvVar, then DefaultPath)
-// and parses it. A missing file at either location yields defaults with no
-// warnings (REQ-CFG-001).
+// Load resolves the config of the install this binary runs from (Resolve) and
+// parses it. No config file anywhere yields defaults with no warnings
+// (REQ-CFG-001); a broken config pointer is an error.
 func Load() (*Config, []string, error) {
-	cfg, _, warns, err := LoadFrom(SearchPaths())
+	cfg, _, warns, err := LoadFor(SelfPrefix())
 	return cfg, warns, err
+}
+
+// LoadFor is Load for the install at prefix ("" for none), also returning
+// where the config came from.
+func LoadFor(prefix string) (*Config, Location, []string, error) {
+	loc, err := Resolve(prefix)
+	if err != nil {
+		return nil, loc, nil, err
+	}
+	if !loc.Exists {
+		return Default(), loc, nil, nil
+	}
+	data, err := os.ReadFile(loc.Path)
+	if err != nil {
+		return nil, loc, nil, err
+	}
+	cfg, warns, err := Parse(data)
+	return cfg, loc, warns, err
 }
 
 // LoadFrom tries each path in order and parses the first that exists,

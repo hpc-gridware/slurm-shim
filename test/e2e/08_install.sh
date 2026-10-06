@@ -102,6 +102,47 @@ wrong="$(manager "mkdir -p /tmp/notashim/bin && echo real > /tmp/notashim/bin/sb
 assert_contains "$wrong" "not a slurm-shim install tree" "a directory without bin/slurm-shim is not a shim tree"
 assert_contains "$wrong" "real" "and its files are untouched"
 
+# (7b) The config in a Qontrol config dir. Another tree, installed with
+# --config-dir: the config lands in DIR/slurm-shim/, the tree's pointer makes
+# every command of that tree read it without SLURM_SHIM_CONFIG, a re-run follows
+# the pointer, a dangling pointer fails a command instead of falling back, and
+# uninstall removes the pointer but keeps the config and says how to reuse it.
+T2=/opt/shimtest2
+Q=/tmp/qontrolcfg
+cluster_before="$(snap)"
+nomark="$(manager "rm -rf /tmp/nomarker && mkdir -p /tmp/nomarker && $ADM install --prefix $T2 --config-dir /tmp/nomarker 2>&1; echo rc=\$?; rm -rf /tmp/nomarker")"
+assert_contains "$nomark" "not a Qontrol config dir" "--config-dir refuses a directory Qontrol has not initialized"
+assert_contains "$nomark" "rc=2" "and exits 2 before changing anything"
+manager "rm -rf $Q && mkdir -p $Q && chmod 755 $Q && echo '{}' > $Q/.qontrol-dir.json"
+moved="$(manager "$ADM install --apply --prefix $T2 --pe shimtest2 --config-dir $Q 2>&1; echo rc=\$?")"
+assert_contains "$moved" "rc=0" "install --config-dir succeeds"
+assert_contains "$moved" "pointer    $T2/etc/config-path -> $Q/slurm-shim/config.yaml written" "the pointer is written"
+assert_contains "$moved" "kept: another slurm-shim install still reads it" \
+  "the cell config is not moved from under the harness install"
+assert_contains "$(gridware "$T2/bin/slurm-shim config path --json; true")" '"source": "pointer"' \
+  "config path reports the pointer"
+dry2="$(gridware "source /opt/ocs/default/common/settings.sh && SLURM_SHIM_DRY_RUN=1 $T2/bin/sbatch -p slurm --wrap true 2>&1; true")"
+assert_contains "$dry2" "slurm_shim=TRUE" "a command of the tree reads the config-dir config without SLURM_SHIM_CONFIG"
+# Doctor run from this second tree FAILs the harness wiring (it points at the
+# main tree); only the config line matters here, so its exit code is ignored.
+doc2="$(gridware "source /opt/ocs/default/common/settings.sh && $T2/bin/slurm-shim doctor 2>&1; true")"
+assert_contains "$doc2" "PASS  config $Q/slurm-shim/config.yaml (pointer $T2/etc/config-path)" "doctor names the pointer"
+again2="$(manager "$ADM install --apply --prefix $T2 --pe shimtest2 2>&1; true")"
+assert_contains "$again2" "config     $Q/slurm-shim/config.yaml" "a re-run without --config follows the pointer"
+assert_contains "$again2" "0 change(s) applied" "and changes nothing in the cluster"
+assert_contains "$(gridware "$T2/bin/slurm-shim config check $Q/slurm-shim/config.yaml; true")" "valid" \
+  "config check accepts the written config"
+dangling="$(manager "mv $Q/slurm-shim/config.yaml $Q/away.yaml && SLURM_SHIM_DRY_RUN=1 $T2/bin/sbatch -p slurm --wrap true 2>&1; echo rc=\$?; mv $Q/away.yaml $Q/slurm-shim/config.yaml")"
+assert_contains "$dangling" "config pointer $T2/etc/config-path" "a dangling pointer fails the command, naming the pointer"
+case "$dangling" in *"rc=0"*) fail "a command ran on a dangling pointer" ;; *) pass "it does not run on another config" ;; esac
+undo2="$(manager "$ADM uninstall --apply --prefix $T2 2>&1; echo rc=\$?")"
+assert_contains "$undo2" "rc=0" "uninstall of the config-dir install succeeds"
+assert_contains "$undo2" "to use it again: slurm-shim install --apply --config-dir $Q" "uninstall says how to reuse the config"
+assert_eq "$(manager "ls $T2/etc/config-path 2>/dev/null | wc -l" | tr -d ' ')" "0" "the pointer is removed with the tree"
+assert_eq "$(manager "ls $Q/slurm-shim/config.yaml | wc -l" | tr -d ' ')" "1" "the config is kept"
+assert_eq "$(snap)" "$cluster_before" "the cluster is back as it was"
+manager "rm -rf $Q"
+
 # (8) --version names the scheduler build; the shimmed -V stays SLURM-parsable.
 ver="$(gridware "source /opt/ocs/default/common/settings.sh && $S --version")"
 assert_contains "$ver" "Open Cluster Scheduler 9." "base binary --version names the OCS build"

@@ -2,6 +2,10 @@
 # Reference Open Cluster Scheduler (fka Sun Grid Engine) starter_method for
 # slurm-shim (REQ-FAB-010).
 #
+# Managed by `slurm-shim install`: the next install overwrites edits here. Keep
+# it in the root-owned install tree; a copy elsewhere leaves the trust boundary
+# `slurm-shim install` and `doctor` check.
+#
 # Set it once per queue and every job in that queue gets the fabricated SLURM_*
 # environment with no line added to the job script -- an unmodified SLURM batch
 # script sees what it would see on a real SLURM cluster:

@@ -21,6 +21,72 @@ Without a `starter_method`, a job script sources the hook itself as its first
 line, or the site enables `wrapper_mode` in `config.yaml` so `sbatch` injects
 fabrication (covers only jobs submitted through the shim's `sbatch`).
 
+## Config location
+
+By default the config is the cell file
+`$SGE_ROOT/$SGE_CELL/common/slurm-shim/config.yaml`. To keep it outside
+`$SGE_ROOT`, so a scheduler reinstall does not delete it:
+
+```
+slurm-shim install --apply --config /shared/site/slurm-shim.yaml   # any location
+slurm-shim install --apply --config-dir /srv/qontrol               # a Qontrol config dir
+```
+
+Either writes `<prefix>/etc/config-path`, one line naming the file. Every
+command of the install finds its own tree from its executable and reads that
+pointer, on every host, so no `SLURM_SHIM_CONFIG` has to reach login shells,
+job environments or compute nodes. The rules:
+
+- The config must be on shared storage, at the same absolute path on every
+  submit host and every exec host: `sbatch`, `squeue` and `sinfo` read it
+  where they run, and `slurm-shim-env` and `srun` on the job's master host. A
+  host where the file is missing fails the command; a node-local copy is never
+  checked against the others.
+- `$SLURM_SHIM_CONFIG` still wins, for one-off overrides and per-queue vendor
+  configs; a config chosen that way never becomes the pointer.
+- A pointer whose file is missing or unreadable, or a pointer (or its `etc/`
+  directory) that is a symlink, writable by group or others, or owned by
+  anyone but root, the caller or the owner of `bin/slurm-shim`, fails the
+  command, naming the pointer. It never falls back to the cell config: a job
+  on the wrong config is harder to find than a job that fails.
+- The pointer lives in the root-owned tree, so where the config is read from
+  stays the installer's decision even when editing the file is delegated.
+- Re-running `install --apply` without `--config` follows the pointer;
+  `--config` with the cell path removes it. Moving to a new file carries the
+  current config along, and the old one is retired only once the pointer
+  names the new one.
+
+`--config-dir DIR` is for a Qontrol
+config dir. It refuses, before changing anything, a directory without Qontrol's
+`.qontrol-dir.json` marker (Qontrol would then refuse to start on it), one
+that group or others can write or that sits under such a directory without
+the sticky bit, one inside the cell, a path with characters other than
+letters, digits and `/ . _ -`, an existing `slurm-shim/` others can write, and
+an installing user who is neither root nor the directory's owner. As root it
+gives `DIR/slurm-shim/` and the config to the directory's owner, so Qontrol
+can edit it. Because that user can change anything in the directory, root
+never acts on a path there: every read, write and removal goes through a
+handle rooted at the directory, so no symlink planted in it leads elsewhere. The first such install carries the
+current config along; a cell config moved that way is renamed
+`config.yaml.moved-to-config-dir`, unless another install in the cluster still
+reads it.
+
+`slurm-shim uninstall` removes the pointer with the tree and keeps the config,
+printing the `install` command that uses it again; `--purge-config` removes it
+(and an empty `DIR/slurm-shim/`). `slurm-shim doctor` names where the config
+comes from and warns about a cell config the pointer makes ignored.
+
+For tools that manage the file:
+
+```
+slurm-shim config path --json         # which file this host loads, and why
+slurm-shim config check FILE --json   # validate a candidate before saving it
+```
+
+`config check` runs exactly the parse every command runs: it fails only on
+what a job would fail on (malformed YAML, a bad duration) and reports the rest
+as warnings.
+
 ## Shell requirement
 
 `slurm-shim-starter.sh` and `slurm-shim-source-hook.sh` are `#!/bin/sh` scripts

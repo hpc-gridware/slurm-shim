@@ -8,12 +8,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"io"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/hpc-gridware/slurm-shim/internal/cli/configcmd"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/doctor"
 	envcmd "github.com/hpc-gridware/slurm-shim/internal/cli/env"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/installcmd"
@@ -26,6 +26,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/cli/squeue"
 	"github.com/hpc-gridware/slurm-shim/internal/cli/srun"
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/stepper"
 	"github.com/hpc-gridware/slurm-shim/internal/version"
 )
@@ -60,6 +61,7 @@ var commands = map[string]string{
 	"install":   "install",
 	"uninstall": "uninstall",
 	"doctor":    "doctor",
+	"config":    "config",
 }
 
 func main() {
@@ -136,6 +138,8 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return installcmd.RunUninstall(args, stdout, stderr)
 	case "doctor":
 		return doctor.Run(args, stdout, stderr)
+	case "config":
+		return configcmd.Run(args, os.Stdin, stdout, stderr)
 	case "ports":
 		// Site diagnostic, not a SLURM command: prints the TCP ranges that must be
 		// open between nodes and the rules that open them.

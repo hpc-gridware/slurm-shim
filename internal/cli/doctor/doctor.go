@@ -95,15 +95,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	// -- config ---------------------------------------------------------------
 	r.section("config")
-	cfg, used, warns, err := config.LoadFrom(config.SearchPaths())
+	selfPrefix := config.SelfPrefix()
+	cfg, loc, warns, err := config.LoadFor(selfPrefix)
 	switch {
 	case err != nil:
 		r.fail("config: %v", err)
 		return 1
-	case used == "":
+	case !loc.Exists:
 		r.warn("no config file found (searched %s); compiled-in defaults apply", strings.Join(config.SearchPaths(), ", "))
+	case loc.Source == config.SourcePointer:
+		r.pass("config %s (pointer %s)", loc.Path, loc.Pointer)
 	default:
-		r.pass("config %s", used)
+		r.pass("config %s (%s)", loc.Path, loc.Source)
+	}
+	for _, w := range locationWarnings(selfPrefix, loc) {
+		r.warn("%s", w)
 	}
 	for _, w := range warns {
 		r.warn("config: %s", w)

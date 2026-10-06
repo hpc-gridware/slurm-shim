@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/install"
 )
@@ -398,6 +399,22 @@ var _ = Describe("removing the tree", func() {
 		Expect(filepath.Join(pfx, "share")).NotTo(BeADirectory())
 		Expect(filepath.Join(pfx, "etc", "site-notes.txt")).To(BeARegularFile(), "a foreign file stays, and so does its directory")
 		Expect(profileD).NotTo(BeAnExistingFile())
+	})
+
+	It("removes the config pointer with the tree, never the config it names", func() {
+		pfx := tree()
+		cfg := filepath.Join(GinkgoT().TempDir(), "slurm-shim", "config.yaml")
+		Expect(os.MkdirAll(filepath.Dir(cfg), 0o755)).To(Succeed())
+		Expect(os.WriteFile(cfg, []byte("a: 1\n"), 0o644)).To(Succeed())
+		Expect(config.WritePointer(pfx, cfg)).To(Succeed())
+
+		files, err := install.TreeFiles(pfx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(files).To(ContainElement(config.PointerRel))
+		_, err = install.RemoveTree(pfx, "", []string{pfx})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(filepath.Join(pfx, config.PointerRel)).NotTo(BeAnExistingFile())
+		Expect(cfg).To(BeARegularFile())
 	})
 
 	It("leaves a profile.d file that is not exactly this tree's", func() {

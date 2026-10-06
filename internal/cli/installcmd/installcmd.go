@@ -34,11 +34,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	force := fs.Bool("force", false, "overwrite an existing PE's start_proc_args or a queue's starter_method")
 	expose := fs.String("expose", "none", "put the commands on PATH: none, module, profile.d")
 	verify := fs.Bool("verify", false, "after --apply, submit a 2-node smoke job and check it")
-	cfgPath := fs.String("config", "", "config.yaml to write (default: the cell path)")
+	cfgPath := fs.String("config", "", "config.yaml to write; outside the cell, every command finds it through "+
+		"<prefix>/"+config.PointerRel+" (default: the install's current config, else the cell path)")
+	cfgDir := fs.String("config-dir", "", "a Qontrol config dir: the config goes to DIR/"+install.ConfigDirSub+
+		"/config.yaml, editable by DIR's owner")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-
 	sgeRoot := os.Getenv("SGE_ROOT")
 	if *prefix == "" {
 		if sgeRoot == "" {
@@ -47,8 +49,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		*prefix = filepath.Join(sgeRoot, "slurm-shim")
 	}
-	if *cfgPath == "" {
-		*cfgPath = config.CellPath()
+	target, code, err := resolveConfigTarget(*cfgPath, *cfgDir, *prefix, os.Geteuid())
+	if err != nil {
+		fmt.Fprintf(stderr, "install: error: %v; nothing has been changed\n", err)
+		return code
 	}
 	if *from == "" {
 		exe, err := os.Executable()
@@ -114,22 +118,37 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// refuses a file it cannot parse -- and refusing at write time would leave
 	// the cluster already modified with no config to match. Better to stop
 	// before touching anything.
-	existing, cfgUsed, _, cfgErr := config.LoadFrom([]string{*cfgPath})
+	//
+	// A run that moves the config carries the config the install reads today
+	// along: the target is tried first, then that one.
+	candidates := []string{target.Path}
+	if target.Previous != "" {
+		candidates = append(candidates, target.Previous)
+	}
+	existing, cfgUsed, cfgErr := loadConfig(candidates, target)
 	if cfgErr != nil {
-		fmt.Fprintf(stderr, "install: error: %s is not valid YAML: %v\n", *cfgPath, cfgErr)
+		fmt.Fprintf(stderr, "install: error: %s: %v\n", cfgUsed, cfgErr)
 		fmt.Fprintf(stderr, "install: fix or move it and re-run; nothing has been changed.\n")
 		return 1
 	}
-	if cfgUsed == "" {
-		existing = nil
-	}
 	cfg := install.GenerateConfig(plan, existing)
+	movedFrom := ""
+	if cfgUsed != "" && cfgUsed != target.Path {
+		movedFrom = cfgUsed
+	}
 
 	adminUser, _ := install.AdminUser(sgeRoot, os.Getenv("SGE_CELL"))
 
 	fmt.Fprintf(stdout, "slurm-shim %s on %s\n\n", version.Shim, build)
 	fmt.Fprintf(stdout, "files      %s  <-  %s\n", *prefix, *from)
-	fmt.Fprintf(stdout, "config     %s  (%s)\n", *cfgPath, mergeWord(cfgUsed))
+	if movedFrom != "" {
+		fmt.Fprintf(stdout, "config     %s  (moved here from %s)\n", target.Path, movedFrom)
+	} else {
+		fmt.Fprintf(stdout, "config     %s  (%s)\n", target.Path, mergeWord(cfgUsed))
+	}
+	if target.WritePointer {
+		fmt.Fprintf(stdout, "pointer    %s -> %s\n", filepath.Join(*prefix, config.PointerRel), target.Path)
+	}
 	fmt.Fprintf(stdout, "partitions %s  (default %s)\n", partitionList(plan), plan.DefaultPartition)
 	if plan.GPUComplex != "" {
 		fmt.Fprintf(stdout, "gpu        RSMAP complex %q -> gpu.gres_complex\n", plan.GPUComplex)
@@ -177,7 +196,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// interrupted mid-way still leaves a record a re-run or uninstall can use;
 	// then record what was done, so uninstall can undo exactly that (and
 	// restore what --force replaced).
-	st.Prefix, st.Config = *prefix, *cfgPath
+	st.Prefix, st.Config = *prefix, target.Path
 	st.Intend(plan)
 	if err := install.WriteState(*prefix, st); err != nil {
 		fmt.Fprintf(stderr, "install: error: writing the install record: %v; the cluster was not changed\n", err)
@@ -198,26 +217,34 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// MERGE, never overwrite. Rendering the struct over the file drops every key
 	// the running binary does not model -- which silently loses site settings on
 	// an upgrade, a rollback, or an install run from an older binary. See
-	// config.MergeInto.
-	prev, readErr := os.ReadFile(*cfgPath)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		fmt.Fprintf(stderr, "install: error: reading %s: %v\n", *cfgPath, readErr)
-		return 1
+	// config.MergeInto. A config being moved is the file merged into.
+	var prev []byte
+	if cfgUsed != "" {
+		if prev, err = readConfig(cfgUsed, target); err != nil {
+			fmt.Fprintf(stderr, "install: error: reading %s: %v\n", cfgUsed, err)
+			return 1
+		}
 	}
 	data, err := config.MergeInto(prev, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "install: error: rendering config: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(filepath.Dir(*cfgPath), 0o755); err != nil {
-		fmt.Fprintf(stderr, "install: error: %v\n", err)
+	if err := writeConfig(target, data); err != nil {
+		fmt.Fprintf(stderr, "install: error: writing %s: %v\n", target.Path, err)
 		return 1
 	}
-	if err := writeConfigAtomic(*cfgPath, data); err != nil {
-		fmt.Fprintf(stderr, "install: error: writing %s: %v\n", *cfgPath, err)
-		return 1
+	fmt.Fprintf(stdout, "config     %s written\n", target.Path)
+
+	// The pointer goes in once the file it names is complete, and the config
+	// jobs read until now is retired only after that: in between, every job
+	// still resolves a real config, never the defaults.
+	if code := updatePointer(*prefix, target, stdout, stderr); code != 0 {
+		return code
 	}
-	fmt.Fprintf(stdout, "config     %s written\n", *cfgPath)
+	if target.Previous != "" {
+		retireMovedConfig(target.Previous, *prefix, facts, stdout, stderr)
+	}
 
 	fmt.Fprintln(stdout)
 	ports.Run(cfg, stdout)
@@ -342,12 +369,14 @@ func writeConfigAtomic(path string, data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	// CreateTemp makes the file 0600; set the intended mode before it is visible
+	// under its real name -- on the descriptor, never by name, so nothing
+	// swapped in at that name in the meantime is changed instead.
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	// CreateTemp makes the file 0600; set the intended mode before it is visible
-	// under its real name.
-	if err := os.Chmod(tmpName, mode); err != nil {
+	if err := tmp.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, path)

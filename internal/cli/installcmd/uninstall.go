@@ -28,7 +28,7 @@ func RunUninstall(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	apply := fs.Bool("apply", false, "perform the plan (default: print it and change nothing)")
 	prefix := fs.String("prefix", "", "runtime tree to remove (default $SGE_ROOT/slurm-shim)")
-	cfgFlag := fs.String("config", "", "config.yaml to clean up or purge (default: the cell path)")
+	cfgFlag := fs.String("config", "", "config.yaml to clean up or purge (default: the install's config, through its pointer, else the cell path)")
 	purge := fs.Bool("purge-config", false, "remove the config file instead of only dropping the partitions it routed to what is deleted")
 	peName := fs.String("pe", "", "a PE install created under another name, for an install without a record")
 	ignoreJobs := fs.Bool("ignore-jobs", false, "do not stop for jobs that still use the shim's PE, queue or complex")
@@ -59,7 +59,7 @@ func RunUninstall(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "uninstall: fix or remove the install record and re-run; nothing has been changed.")
 		return 1
 	}
-	if st != nil && st.Prefix != "" && !sameTree(st.Prefix, abs) {
+	if st != nil && st.Prefix != "" && !install.SamePath(st.Prefix, abs) {
 		fmt.Fprintf(stderr, "uninstall: error: the install record in %s is for %s; uninstall that prefix (nothing has been changed)\n",
 			abs, st.Prefix)
 		return 1
@@ -82,7 +82,12 @@ func RunUninstall(args []string, stdout, stderr io.Writer) int {
 
 	cfgPath := *cfgFlag
 	if cfgPath == "" {
-		cfgPath = config.CellPath()
+		p, _, err := config.InstallPath(abs)
+		if err != nil {
+			fmt.Fprintf(stderr, "uninstall: error: %v; pass --config, or fix the pointer; nothing has been changed\n", err)
+			return 1
+		}
+		cfgPath = p
 	}
 	treeErr := install.IsShimTree(abs)
 	var files []string
@@ -106,6 +111,15 @@ func RunUninstall(args []string, stdout, stderr io.Writer) int {
 	}
 	if st != nil && st.Config != "" && st.Config != cfgPath {
 		fmt.Fprintf(stdout, "           install wrote %s; pass --config %s to act on that one\n", st.Config, st.Config)
+	}
+	if !*purge && cfgPath != config.CellPath() {
+		// Without the pointer, a later install goes back to the cell path; say how
+		// to find this config again.
+		if cd, ok := install.OpenConfigDir(cfgPath, os.Geteuid()); ok {
+			fmt.Fprintf(stdout, "           to use it again: slurm-shim install --apply --config-dir %s\n", cd.Dir)
+		} else {
+			fmt.Fprintf(stdout, "           to use it again: slurm-shim install --apply --config %s\n", cfgPath)
+		}
 	}
 	fmt.Fprintln(stdout)
 	if len(plan.Changes) == 0 {
@@ -162,7 +176,7 @@ func RunUninstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if code := cleanConfig(cfgPath, *purge, plan, after, stdout, stderr); code != 0 {
+	if code := cleanConfig(cfgPath, abs, *purge, plan, after, stdout, stderr); code != 0 {
 		return code
 	}
 	if treeErr != nil {
@@ -179,28 +193,45 @@ func RunUninstall(args []string, stdout, stderr io.Writer) int {
 
 // cleanConfig removes the config (--purge-config) or drops the partitions that
 // route to a queue or PE the plan deleted, so the config left behind never
-// sends a job to something that is gone. Purging the cell config is refused
-// while another slurm-shim install remains in the cluster: every install reads
-// that file by default.
-func cleanConfig(path string, purge bool, plan install.Plan, after install.Facts, stdout, stderr io.Writer) int {
-	fi, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "uninstall: error: %v\n", err)
-		return 1
-	}
-	if !fi.Mode().IsRegular() {
-		fmt.Fprintf(stderr, "uninstall: error: %s is not a regular file; the config was not touched\n", path)
-		return 1
+// sends a job to something that is gone. Purging is refused while another
+// slurm-shim install in the cluster reads the same file -- the cell config by
+// default, or whatever its pointer names. A purged config in a Qontrol config
+// dir takes its empty slurm-shim/ directory with it, and nothing else.
+func cleanConfig(path, prefix string, purge bool, plan install.Plan, after install.Facts, stdout, stderr io.Writer) int {
+	// A config in a Qontrol config dir is reached only through the dir's
+	// os.Root: its owner can swap anything in it, and this runs as root.
+	t := configTarget{Path: path}
+	if cd, ok := install.OpenConfigDir(path, os.Geteuid()); ok {
+		t.Dir = &cd
+	} else {
+		fi, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return 0
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "uninstall: error: %v\n", err)
+			return 1
+		}
+		if !fi.Mode().IsRegular() {
+			fmt.Fprintf(stderr, "uninstall: error: %s is not a regular file; the config was not touched\n", path)
+			return 1
+		}
 	}
 	if purge {
-		if other := otherInstall(after); other != "" && path == config.CellPath() {
+		if other := readerOf(path, prefix, after); other != "" {
 			fmt.Fprintf(stdout, "config     %s kept: another slurm-shim install may read it (%s)\n", path, other)
 			return 0
 		}
-		if err := os.Remove(path); err != nil {
+		var err error
+		if t.Dir != nil {
+			err = t.Dir.RemoveConfig()
+		} else {
+			err = os.Remove(path)
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return 0
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "uninstall: error: removing %s: %v\n", path, err)
 			return 1
 		}
@@ -214,9 +245,13 @@ func cleanConfig(path string, purge bool, plan install.Plan, after install.Facts
 			deleted[c.Object] = true
 		}
 	}
-	cfg, used, _, err := config.LoadFrom([]string{path})
-	if err != nil || used == "" {
+	prev, err := readConfig(path, t)
+	if err != nil {
 		return 0 // nothing readable to clean; install refuses such a file too
+	}
+	cfg, _, err := config.Parse(prev)
+	if err != nil {
+		return 0
 	}
 	var gone, left []string
 	for name, p := range cfg.Partitions {
@@ -238,14 +273,9 @@ func cleanConfig(path string, purge bool, plan install.Plan, after install.Facts
 			newDefault = "all"
 		}
 	}
-	prev, err := os.ReadFile(path)
-	if err != nil {
-		fmt.Fprintf(stderr, "uninstall: error: %v\n", err)
-		return 1
-	}
 	data, err := config.RemovePartitions(prev, gone, newDefault)
 	if err == nil {
-		err = writeConfigAtomic(path, data)
+		err = writeConfig(t, data)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "uninstall: error: cleaning %s: %v\n", path, err)
@@ -253,31 +283,4 @@ func cleanConfig(path string, purge bool, plan install.Plan, after install.Facts
 	}
 	fmt.Fprintf(stdout, "config     %s: dropped partition(s) %s\n", path, strings.Join(gone, " "))
 	return 0
-}
-
-// otherInstall names an object that belongs to some slurm-shim install
-// (its starter or slurm-shim-env), "" when there is none.
-func otherInstall(f install.Facts) string {
-	for _, q := range f.Queues {
-		if filepath.Base(strings.Fields(q.StarterMethod + " x")[0]) == "slurm-shim-starter" {
-			return "queue " + q.Name + " starter_method " + q.StarterMethod
-		}
-	}
-	for _, pe := range f.PEs {
-		if filepath.Base(strings.Fields(pe.StartProcArgs + " x")[0]) == "slurm-shim-env" {
-			return "pe " + pe.Name + " start_proc_args " + pe.StartProcArgs
-		}
-	}
-	return ""
-}
-
-// sameTree reports whether two prefixes name the same directory, lexically or
-// after following symlinks.
-func sameTree(a, b string) bool {
-	if filepath.Clean(a) == filepath.Clean(b) {
-		return true
-	}
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && ra == rb
 }

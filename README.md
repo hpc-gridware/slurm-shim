@@ -68,7 +68,8 @@ squeue
 The runtime tree lands at **`$SGE_ROOT/slurm-shim/`** -- the one path guaranteed
 identical on every node, which the `qrsh` envelope requires -- and the config at
 **`$SGE_ROOT/$SGE_CELL/common/slurm-shim/config.yaml`**, next to every other
-cluster-wide setting. On a per-node `$SGE_ROOT`, run step 2 on each node (or copy
+cluster-wide setting (or outside `$SGE_ROOT`, see
+[Configuration](#configuration)). On a per-node `$SGE_ROOT`, run step 2 on each node (or copy
 the tree); `slurm-shim doctor` lists the exec hosts that must match.
 
 **What `install --apply` refuses to do**, deliberately: overwrite an existing
@@ -453,7 +454,13 @@ reachable from outside the cluster.
 
 ## Configuration
 
-The shim reads a YAML file at `$SLURM_SHIM_CONFIG`, else `/etc/slurm-shim/config.yaml`. Key settings:
+The shim reads one YAML file: `$SLURM_SHIM_CONFIG` if set, else the file the
+install's config pointer names (below), else the cell config
+`$SGE_ROOT/$SGE_CELL/common/slurm-shim/config.yaml`, else
+`/etc/slurm-shim/config.yaml`; with none of them, the built-in defaults.
+`slurm-shim config path` prints which file a host loads and why, and
+`slurm-shim config check FILE` validates a file before you put it in place.
+Key settings:
 
 ```yaml
 partitions:                       # SLURM --partition -> GE queue + PE + slots
@@ -535,13 +542,24 @@ cluster-wide file exists, so it is the more fragile option. Do **not** run a mix
 cluster from one config: the vendor that loses will have its device variable
 cleared on hosts whose runtime needs it.
 
+**Config outside `$SGE_ROOT`.** The cell config is deleted by an `$SGE_ROOT`
+reinstall. `install --config PATH` puts it elsewhere, and `install --config-dir
+DIR` puts it in a Qontrol config dir
+(`DIR/slurm-shim/config.yaml`, editable by DIR's owner). Either writes
+`<prefix>/etc/config-path`, a pointer every command of that install follows on
+every host, with no environment variable. The file must be readable at the
+same absolute path on every submit and exec host (put it on shared storage):
+the pointer names one path for all of them. A pointer whose file is missing
+fails the command rather than falling back to another config. Details:
+[`docs/install`](docs/install/README.md#config-location).
+
 🚧 A full configuration reference is planned; the authoritative source today is [`internal/config`](internal/config/config.go).
 
 ### Environment variables
 
 | Variable | Effect | Off value |
 |---|---|---|
-| `SLURM_SHIM_CONFIG` | Path to the config file (overrides `/etc/slurm-shim/config.yaml`). | unset |
+| `SLURM_SHIM_CONFIG` | Path to the config file (overrides the config pointer, the cell config and `/etc/slurm-shim/config.yaml`). It is forwarded into the job, so the path must be readable on the exec hosts too. | unset |
 | `SLURM_SHIM_DRY_RUN` | Report what would happen; change nothing. See below. | anything but `1`/`true`/`yes`/`y`/`on` |
 | `SLURM_SHIM_DISABLE` | In-job scrub-only mode: no layout, no `SLURM_*` exports. | **unset only** — any value, including `0`, enables it |
 | `SLURM_SHIM_TASK_POLICY` | Per-job override of the PE's `task_policy`. | unset |
