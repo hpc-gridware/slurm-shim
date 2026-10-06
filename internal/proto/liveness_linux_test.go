@@ -14,10 +14,19 @@ var _ = Describe("control channel liveness on Linux [REQ-CHN-004]", func() {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(ln.Close)
-		go func() { c, _ := net.Dial("tcp", ln.Addr().String()); DeferCleanup(c.Close) }()
+		// Dial in a goroutine, close from the spec: a DeferCleanup registered by
+		// the goroutine can race the end of the spec, which Ginkgo refuses.
+		dialed := make(chan net.Conn, 1)
+		go func() {
+			c, _ := net.Dial("tcp", ln.Addr().String()) // nil on error
+			dialed <- c
+		}()
 		nc, err := ln.Accept()
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(nc.Close)
+		if client := <-dialed; client != nil {
+			DeferCleanup(client.Close)
+		}
 		c := &Conn{nc: nc}
 
 		Expect(c.SetLiveness(60*time.Second, 5*time.Second)).To(Succeed())

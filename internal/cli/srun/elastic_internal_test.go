@@ -405,17 +405,23 @@ var _ = Describe("hot spares: accepting the spare's stepper", func() {
 		late, err := proto.Dial(srv.Addr(), "tok", "node003")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(late.Close)
+		// The dialled conn comes back over a channel and is closed from the spec's
+		// own goroutine: acceptFrom can return before Dial does, and a
+		// DeferCleanup registered by the goroutine after the spec body ended is
+		// refused by Ginkgo ("cannot be called in a DeferCleanup callback").
+		dialed := make(chan *proto.Conn, 1)
 		go func() {
 			defer GinkgoRecover()
 			time.Sleep(200 * time.Millisecond)
 			c, err := proto.Dial(srv.Addr(), "tok", "node004")
 			Expect(err).NotTo(HaveOccurred())
-			DeferCleanup(c.Close)
+			dialed <- c
 		}()
 
 		c, err := s.acceptFrom("node004")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c.Host).To(Equal("node004"))
+		DeferCleanup((<-dialed).Close)
 		_, err = late.Recv()
 		Expect(err).To(HaveOccurred(), "the late stepper's channel is closed: it exits with a code")
 	})
