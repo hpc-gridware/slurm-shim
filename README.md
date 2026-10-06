@@ -58,6 +58,7 @@ slurm-shim install --apply --expose=profile.d   # /etc/profile.d/slurm-shim.sh f
 
 # 4. Check it, and keep this for support tickets:
 slurm-shim doctor             # also flags hosts that could oversubscribe
+slurm-shim doctor --json      # the same report as one JSON document, for tools
 
 # ---- users ----
 module load slurm-shim        # or whatever step 3 chose

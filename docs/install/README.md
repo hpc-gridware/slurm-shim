@@ -81,11 +81,20 @@ For tools that manage the file:
 ```
 slurm-shim config path --json         # which file this host loads, and why
 slurm-shim config check FILE --json   # validate a candidate before saving it
+slurm-shim doctor --json              # the health report, same checks and exit code
 ```
 
 `config check` runs exactly the parse every command runs: it fails only on
 what a job would fail on (malformed YAML, a bad duration) and reports the rest
 as warnings.
+
+`doctor --json` prints one document (`schema_version` 1) with the findings per
+section (`pass`, `warn`, `fail`, `info`), a `summary`, `skipped` sections
+(`--offline`), and `complete: false` with `stopped_in` when a run ended early --
+an incomplete report never reads as a healthy one. Messages carry queue, PE,
+host and path names from the cluster configuration: escape them before showing
+them as markup. A full run makes dozens of `qconf` calls; run it in the
+background or use `--offline` for a quick, config-only report.
 
 ## Shell requirement
 

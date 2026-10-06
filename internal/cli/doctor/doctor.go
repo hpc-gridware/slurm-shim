@@ -47,33 +47,21 @@ func CompatNotes(b gedata.OCSBuild) []string {
 	return notes
 }
 
-type report struct {
-	w       io.Writer
-	fails   int
-	warns   int
-	offline bool
-}
-
-func (r *report) pass(f string, a ...interface{}) { fmt.Fprintf(r.w, "PASS  "+f+"\n", a...) }
-func (r *report) warn(f string, a ...interface{}) { r.warns++; fmt.Fprintf(r.w, "WARN  "+f+"\n", a...) }
-func (r *report) fail(f string, a ...interface{}) { r.fails++; fmt.Fprintf(r.w, "FAIL  "+f+"\n", a...) }
-func (r *report) info(f string, a ...interface{}) { fmt.Fprintf(r.w, "      "+f+"\n", a...) }
-func (r *report) section(name string)             { fmt.Fprintf(r.w, "\n== %s\n", name) }
-
-// Run is the entry point. Exit 0 with no FAIL lines, 1 otherwise.
+// Run is the entry point. Exit 0 with no FAIL lines, 1 with one or when the
+// run stopped early, 2 on a usage error. --json prints the same report as one
+// Document on stdout and nothing else.
 func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("slurm-shim doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	offline := fs.Bool("offline", false, "skip everything that needs qmaster (package CI)")
+	asJSON := fs.Bool("json", false, "print the report as one JSON document (schema_version 1) for tools")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	r := &report{w: stdout, offline: *offline}
+	r := newReport(stdout, *asJSON, *offline)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	runner := gedata.ExecRunner{}
-
-	fmt.Fprintf(stdout, "slurm-shim doctor  (paste this whole output into a support ticket)\n")
 
 	// -- versions -------------------------------------------------------------
 	r.section("versions")
@@ -100,7 +88,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case err != nil:
 		r.fail("config: %v", err)
-		return 1
+		r.stop("config")
+		return r.finish()
 	case !loc.Exists:
 		r.warn("no config file found (searched %s); compiled-in defaults apply", strings.Join(config.SearchPaths(), ", "))
 	case loc.Source == config.SourcePointer:
@@ -178,8 +167,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *offline {
-		r.section("skipped (--offline)")
-		r.info("wiring, memory, spool, IJS, scheduler health need qmaster")
+		skipped := []string{"wiring"}
+		if cfg.GPU.Isolation == "cgroup" {
+			skipped = append(skipped, "gpu isolation")
+		}
+		skipped = append(skipped, "memory", "network", "security", "scheduler")
+		r.skip("wiring, memory, spool, IJS, scheduler health need qmaster", "needs qmaster (--offline)", skipped...)
 		return r.finish()
 	}
 
@@ -188,6 +181,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	admin, err := gedata.NewAdmin()
 	if err != nil {
 		r.fail("%v", err)
+		r.stop("wiring")
 		return r.finish()
 	}
 	seenPE := map[string]bool{}
@@ -379,14 +373,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	_ = build
 	_ = ports.Run
 	return r.finish()
-}
-
-func (r *report) finish() int {
-	fmt.Fprintf(r.w, "\n%d FAIL, %d WARN\n", r.fails, r.warns)
-	if r.fails > 0 {
-		return 1
-	}
-	return 0
 }
 
 func memSemantics(scope string) string {
