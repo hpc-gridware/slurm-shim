@@ -102,6 +102,9 @@ func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, 
 		w.kv("gpus per node", strconv.Itoa(n))
 	}
 	w.kv("script", script+scriptNote)
+	if opt.wait {
+		w.kv("then", "wait for the job to end and exit with its exit status (--wait)")
+	}
 
 	nodes, spread, fatal := predictNodes(opt, pe, slots, par)
 	w.kv("predicted spread", spread)

@@ -1,13 +1,13 @@
 package srun
 
 import (
-	"io"
 	"os"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/layout"
 )
 
 // srun used to resolve the per-job state dir to a shared /tmp/slurm_shim when
@@ -29,9 +29,46 @@ var _ = Describe("srun per-job state resolution [REQ-FAB-010]", func() {
 
 	It("reports the standalone case rather than reading /tmp for the layout", func() {
 		GinkgoT().Setenv("TMPDIR", "")
-		cfg := &config.Config{Standalone: "reject"}
-		_, err := loadLayout(cfg, io.Discard)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("not inside a slurm-shim allocation"))
+		_, err := loadLayout()
+		Expect(err).To(MatchError(errNoAllocation))
+	})
+})
+
+var _ = Describe("srun outside an allocation", func() {
+	BeforeEach(func() {
+		GinkgoT().Setenv("JOB_ID", "")
+		GinkgoT().Setenv("SLURM_JOB_ID", "")
+	})
+
+	It("may create a new allocation outside any job", func() {
+		GinkgoT().Setenv("TMPDIR", "")
+		_, err := loadLayout()
+		Expect(allocationRefusal(err)).To(Succeed())
+	})
+
+	It("refuses a new allocation inside a Grid Engine job without a layout", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		GinkgoT().Setenv("JOB_ID", "4711")
+		_, err := loadLayout()
+		refusal := allocationRefusal(err)
+		Expect(refusal).To(HaveOccurred())
+		Expect(refusal.Error()).To(ContainSubstring("Grid Engine job 4711 is not a slurm-shim allocation"))
+	})
+
+	It("reports an unreadable layout instead of creating a new allocation", func() {
+		tmp := GinkgoT().TempDir()
+		GinkgoT().Setenv("TMPDIR", tmp)
+		Expect(os.MkdirAll(filepath.Join(tmp, "slurm_shim", layout.LayoutFile), 0o700)).To(Succeed())
+		_, err := loadLayout()
+		refusal := allocationRefusal(err)
+		Expect(refusal).To(HaveOccurred())
+		Expect(refusal.Error()).To(ContainSubstring("reading layout"))
+	})
+
+	It("keeps the master-host message on a slave host", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		GinkgoT().Setenv("SLURM_JOB_ID", "4711")
+		_, err := loadLayout()
+		Expect(allocationRefusal(err)).To(MatchError(ContainSubstring("master host of job 4711")))
 	})
 })

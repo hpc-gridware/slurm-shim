@@ -38,6 +38,7 @@ var _ = Describe("arg0 dispatch", func() {
 		Entry("srun --version", "srun", "--version"),
 		Entry("sbatch -V", "sbatch", "-V"),
 		Entry("sinfo -V", "sinfo", "-V"),
+		Entry("salloc --version", "salloc", "--version"),
 		Entry("scontrol --version", "scontrol", "--version"),
 		Entry("squeue --version", "squeue", "--version"),
 		Entry("scancel -V", "scancel", "-V"),

@@ -200,6 +200,15 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	} else {
 		fmt.Fprintf(stdout, "Submitted batch job %s\n", id)
 	}
+	if opt.wait {
+		tasks := 1
+		if opt.haveArray {
+			tasks = (opt.arrayMax-opt.arrayMin)/opt.arrayStep + 1
+		}
+		interrupt, stop := interruptSignals()
+		defer stop()
+		return waitForJob(runner, id, tasks, stderr, interrupt)
+	}
 	return 0
 }
 

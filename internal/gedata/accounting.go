@@ -33,18 +33,22 @@ type AccountingRecord struct {
 	TaskID    int64  // GE 1-based array task id; 0 for a non-array job
 	State     string // synthesized SLURM state (COMPLETED/FAILED/CANCELLED/...)
 	ExitCode  string // synthesized SLURM "code:signal"
-	JobName   string
-	User      string
-	Queue     string // GE cluster queue, reported as the SLURM partition
-	Account   string
-	Host      string
-	Slots     int64
-	Submit    time.Time
-	Start     time.Time
-	End       time.Time
-	Elapsed   time.Duration
-	MaxRSS    float64 // bytes
-	TotalCPU  time.Duration
+	// Failed and ExitStatus are GE's own failed code and exit_status, which
+	// sbatch --wait turns into a process exit code.
+	Failed     int64
+	ExitStatus int64
+	JobName    string
+	User       string
+	Queue      string // GE cluster queue, reported as the SLURM partition
+	Account    string
+	Host       string
+	Slots      int64
+	Submit     time.Time
+	Start      time.Time
+	End        time.Time
+	Elapsed    time.Duration
+	MaxRSS     float64 // bytes
+	TotalCPU   time.Duration
 }
 
 // JobAccounting runs qacct through the runner and returns the finished records
@@ -97,21 +101,23 @@ func JobAccounting(ctx context.Context, runner Runner, q AcctQuery) ([]Accountin
 			continue
 		}
 		rec := AccountingRecord{
-			JobNumber: d.JobNumber,
-			TaskID:    d.TaskID,
-			State:     acctState(d.Failed, d.ExitStatus),
-			ExitCode:  acctExitCode(d.Failed, d.ExitStatus),
-			JobName:   d.JobName,
-			User:      d.Owner,
-			Queue:     d.QName,
-			Account:   d.Account,
-			Host:      d.HostName,
-			Slots:     d.Slots,
-			Submit:    geTime(d.SubmitTime),
-			Start:     geTime(d.StartTime),
-			End:       geTime(d.EndTime),
-			MaxRSS:    d.JobUsage.Usage.MaxRSS,
-			TotalCPU:  time.Duration((d.JobUsage.RUsage.RuUtime + d.JobUsage.RUsage.RuStime) * float64(time.Second)),
+			JobNumber:  d.JobNumber,
+			TaskID:     d.TaskID,
+			State:      acctState(d.Failed, d.ExitStatus),
+			ExitCode:   acctExitCode(d.Failed, d.ExitStatus),
+			Failed:     d.Failed,
+			ExitStatus: d.ExitStatus,
+			JobName:    d.JobName,
+			User:       d.Owner,
+			Queue:      d.QName,
+			Account:    d.Account,
+			Host:       d.HostName,
+			Slots:      d.Slots,
+			Submit:     geTime(d.SubmitTime),
+			Start:      geTime(d.StartTime),
+			End:        geTime(d.EndTime),
+			MaxRSS:     d.JobUsage.Usage.MaxRSS,
+			TotalCPU:   time.Duration((d.JobUsage.RUsage.RuUtime + d.JobUsage.RUsage.RuStime) * float64(time.Second)),
 		}
 		rec.Elapsed = elapsed(d.JobUsage.RUsage.RuWallclock, rec.Start, rec.End)
 		recs = append(recs, rec)

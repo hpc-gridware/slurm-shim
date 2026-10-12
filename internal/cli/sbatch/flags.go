@@ -65,6 +65,9 @@ type options struct {
 	// prose -- and when the flag was merely warn-and-ignored, the job still ran,
 	// so the caller silently held a string that was not an id.
 	parsable bool
+	// wait is -W/--wait: block until the job ends and exit with its exit
+	// status, the highest over an array's tasks.
+	wait bool
 
 	// Hot spares (shim extensions, also accepted on #SHIM lines): --x-spares=k
 	// adds k idle nodes that replace a lost node during a step; --x-elastic
@@ -84,6 +87,7 @@ type options struct {
 var boolLong = map[string]bool{
 	"test-only": true,
 	"parsable":  true,
+	"wait":      true,
 }
 
 // setBool applies a valueless long flag.
@@ -94,6 +98,9 @@ func setBool(o *options, name string) error {
 		return nil
 	case "parsable":
 		o.parsable = true
+		return nil
+	case "wait":
+		o.wait = true
 		return nil
 	}
 	return fmt.Errorf("sbatch: error: --%s is not a boolean flag", name)
@@ -114,7 +121,7 @@ func truthyFlag(v string) bool {
 // EXCEPT those also listed in boolLong, which take none. Anything absent is
 // warn-and-ignored (REQ-SBT-001).
 var knownLong = map[string]bool{
-	"test-only": true, "parsable": true,
+	"test-only": true, "parsable": true, "wait": true,
 	"nodes": true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
 	"partition": true, "job-name": true, "output": true, "error": true,
 	"chdir": true, "wrap": true, "array": true,
@@ -292,6 +299,8 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 						"translated (licenses: --licenses; other resources: a site complex)")
 				}
 			}
+		case tok == "-W":
+			opt.wait = true // -W is --wait, the one short flag without a value
 		case strings.HasPrefix(tok, "-") && len(tok) > 1:
 			flag := tok[1]
 			long, ok := shortToLong[flag]

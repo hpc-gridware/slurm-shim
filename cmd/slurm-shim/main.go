@@ -41,6 +41,7 @@ import (
 var commands = map[string]string{
 	"srun":     "srun",
 	"sbatch":   "sbatch",
+	"salloc":   "salloc",
 	"sacct":    "sacct",
 	"scancel":  "scancel",
 	"scontrol": "scontrol",
@@ -120,6 +121,8 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return srun.Run(args, stdout, stderr)
 	case "sbatch":
 		return sbatch.Run(args, stdout, stderr)
+	case "salloc":
+		return srun.RunSalloc(args, stdout, stderr)
 	case "sacct":
 		return sacct.Run(args, stdout, stderr)
 	case "scontrol":

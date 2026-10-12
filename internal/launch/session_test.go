@@ -12,7 +12,7 @@ import (
 // SessionArgs is the single qrsh-argv builder for an interactive session; the
 // exec and the dry run both read it, so these specs pin the exact verified argv.
 var _ = Describe("interactive SessionArgs [srun --pty]", func() {
-	base := launch.SessionSpec{Queue: "all.q", PE: "make", Slots: 2, Command: []string{"bash"}}
+	base := launch.SessionSpec{Pty: true, Queue: "all.q", PE: "make", Slots: 2, Command: []string{"bash"}}
 
 	joined := func(s launch.SessionSpec) string { return strings.Join(launch.SessionArgs(s), " ") }
 
@@ -20,6 +20,17 @@ var _ = Describe("interactive SessionArgs [srun --pty]", func() {
 		// -now no (queue and wait), -pty y (force a terminal), -cwd (SLURM's
 		// working dir) -- all verified required on OCS 9.1.5.
 		Expect(joined(base)).To(HavePrefix("-now no -pty y -cwd -q all.q -pe make 2"))
+	})
+
+	It("passes no -pty flag at all without a terminal, and -now yes for -I", func() {
+		s := base
+		s.Pty = false
+		// An explicit -pty no failed every job in the shepherd and put the queue
+		// instance into error state (verified, OCS 9.1.6); the default is right.
+		Expect(joined(s)).To(HavePrefix("-now no -cwd -q all.q"))
+		Expect(launch.SessionArgs(s)).NotTo(ContainElement("-pty"))
+		s.Immediate = true
+		Expect(joined(s)).To(HavePrefix("-now yes -cwd"))
 	})
 
 	It("ends with the command, verbatim and last", func() {

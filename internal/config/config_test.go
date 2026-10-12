@@ -22,7 +22,6 @@ var _ = Describe("Config loading", func() {
 			Expect(cfg.Launcher).To(Equal("qrsh-inherit"))
 			Expect(cfg.KillOnBadExit).To(BeTrue())
 			Expect(cfg.KillWait.Duration).To(Equal(30 * time.Second))
-			Expect(cfg.Standalone).To(Equal("reject"))
 			Expect(cfg.GPU.Discovery).To(Equal("qstat-gres"))
 		})
 
@@ -393,6 +392,13 @@ var _ = Describe("removed keys [todo 079]", func() {
 		// It must say how to make it stop, because Parse runs on EVERY command:
 		// without the cleanup step this warning is permanent noise on stderr.
 		Expect(warns).To(ContainElement(ContainSubstring("install --apply")))
+	})
+
+	It("reports standalone as obsolete: srun outside an allocation always creates one", func() {
+		_, warns, err := config.Parse([]byte("standalone: reject\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`config key "standalone" is obsolete`)))
+		Expect(warns).To(ContainElement(ContainSubstring("always creates one")))
 	})
 })
 

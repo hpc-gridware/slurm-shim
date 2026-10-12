@@ -204,6 +204,7 @@ func withComments(src, old *yaml.Node) *yaml.Node {
 var retiredKeys = map[string]string{
 	"launch_ramp":  "it was never read -- no launch throttle existed to tune",
 	"control_port": "superseded by control_port_base and control_port_range",
+	"standalone":   "srun outside an allocation now always creates one, as SLURM does",
 }
 
 // retiredKeyWarning describes a key the shim has retired, or "" if the key is

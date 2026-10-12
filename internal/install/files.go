@@ -15,7 +15,7 @@ import (
 // Commands are the SLURM command names (and the shim's own helpers) linked to
 // the binary. Kept in one place with the dispatch table in cmd/slurm-shim.
 var Commands = []string{
-	"srun", "sbatch", "sacct", "squeue", "scancel", "scontrol", "sinfo",
+	"srun", "sbatch", "salloc", "sacct", "squeue", "scancel", "scontrol", "sinfo",
 	"slurm-shim-env", "slurm-shim-stepper",
 }
 

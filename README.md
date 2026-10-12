@@ -170,13 +170,13 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `sbatch` | ✅ | `#SBATCH` directives -> `qsub -terse`; prints `Submitted batch job <id>`. Flag coverage is limited (below). `--test-only` / `SLURM_SHIM_DRY_RUN` report without submitting ([dry run](#dry-run)). |
 | `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + the vendor device mask (`CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`). See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
 | `srun --pty` (interactive) | ✅ | Outside an allocation, `srun --pty [flags] <cmd>` becomes an interactive `qrsh -now no -pty y` session on a compute node, with the full `SLURM_*` environment; `srun` inside it launches steps. See [Interactive sessions](#interactive-sessions). |
-| `srun` (standalone, no `--pty`) | ❌ | A non-interactive `srun` outside an allocation exits 1 (`standalone: reject`). Run it inside an interactive session, or via `sbatch`. |
+| `srun` (outside an allocation, no `--pty`) | ✅ | Creates an allocation, runs the command as one step over it, and returns the step's exit status, as SLURM does: `srun -N 2 -n 8 ./a.out` from a login node. Output streams back; the tasks get no stdin. `-I/--immediate` starts at once or fails (`qrsh -now yes`). Ctrl-C, SIGTERM or SIGHUP cancel a waiting job and stop a running one; srun then exits 128+signal. See [Interactive sessions](#interactive-sessions). |
 | `squeue` | ⚠️ | Backed by `qstat -xml`, plus `qstat -xml -j` for the node columns. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`; other options warn and are not applied. No `--json`. Array elements carry SLURM's 0-based index (`4711_0`), a pending range reads `4711_[0-9]`, as in `sacct` and `scancel`. All eight default columns are real: `TIME` is elapsed run time, and `NODES`/`NODELIST` describe the **granted** allocation, so a 3-node job reads as 3 nodes with a compressed hostlist, in the order the scheduler granted them. Running, suspended and completing jobs all keep their elapsed time and their allocation. The second query runs only when the format asks for a node column, and is narrowed by `-j`. If it fails, or a job started between the two queries, that job falls back to `NODES 1` and its master host, and squeue names the job on stderr so the guess is not mistaken for a real single-node answer. For a **pending** job `NODES` reads `1` and `NODELIST(REASON)` reads `(None)`: qstat does not report a requested node count back, and SLURM's reason strings have no faithful source here. |
 | `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based). Filters `-u`, `--me`, `-n/--name`, `-t/--state`, `-p/--partition`, `-w/--nodelist` all have to match, as in SLURM: `scancel -u alice 4711` cancels 4711 only if it is alice's, and `-t PENDING` on a half-running array cancels only its pending elements. `-s/--signal`: `TERM`/`USR1`/`USR2` reschedule (`qmod -rj`: a `-notify` job gets SIGUSR2 and restarts -- submitit's checkpoint-preempt), `STOP`/`CONT` suspend and resume, `KILL` cancels; other signals are refused. Honors [dry run](#dry-run). |
 | `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`), whose `NodeList` is the full granted allocation and so agrees with `squeue`; `requeue` -> `qmod -rj` (task-scoped: `<id>_<k>` is GE task k+1, the element `scancel <id>_<k>` cancels); honors [dry run](#dry-run). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
 | `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-s/--state`, `-S`/`-E`; `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NodeList, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); SLURM's default columns when `-o` is absent; `-P`/`--parsable2`/`-n`/`-X`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
-| `salloc` | ❌ | Not implemented. |
+| `salloc` | ✅ | Creates an allocation and runs one command on its first node -- the user's shell when none is given, with a terminal when salloc runs on one. `srun` inside it launches steps across the allocation; salloc returns the command's exit status. This is SLURM's `LaunchParameters=use_interactive_step` behaviour: the shell runs on the allocation, not on the submit host. `--no-shell` is refused. |
 
 ### `sbatch` flags
 
@@ -202,6 +202,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--dependency` | ⚠️ | GE has one primitive, `-hold_jid`, which releases when every predecessor **finishes**. Only `afterany` means exactly that. `after` is *start*-gated in SLURM, so it becomes a wait-for-exit here (it will never release on a long-lived predecessor); `afterok`/`aftercorr` are approximated (they run anyway on failure, and `aftercorr` loses its per-element pairing); `afternotok` is inverted outright; `singleton` and the `+time` offset form yield no id, so **nothing is held**. Every one of those warns at submit time |
 | `--signal` | ✅ | `qsub -notify -r y` (GE sends SIGUSR2 before a kill/reschedule -- submitit's preempt signal -- and the job is rerunnable), plus `-l s_rt=h_rt-lead` as an early SIGUSR1 warning. With `scancel --signal`/`scontrol requeue` -> `qmod -rj`, this makes submitit checkpoint-then-requeue work |
 | `--export` | ✅ | SLURM default `ALL` -> `qsub -V` (full submit env forwarded, so `PATH`/`PYTHON_BIN` reach the job like on SLURM); `NONE` -> nothing; a `VAR=val` list -> `qsub -v` per entry; `ALL,VAR=val` composes. Newline-valued vars are flattened to spaces by GE |
+| `-W/--wait` | ✅ | prints the job id, then blocks until the job ends and exits with its exit status (an array's highest). It polls (`qstat -j`, then `qacct`) rather than `qsub -sync y`, which holds a qmaster event client per waiting job. Ctrl-C stops the waiting, not the job. Exit codes of parallel jobs are recorded from OCS 9.1.5; older versions warn |
 | `--x-spares` | ✅ shim extension | `k` hot-spare nodes: `k` more nodes of the same width (`-pe ... (N+k)*per-node -par per-node`), kept idle until one replaces a lost node. Needs `--nodes` of 2 or more, OCS 9.1.5+. Also as a partition default (`spares: 1`) and on a `#SHIM` line. See [Hot spare nodes](#hot-spare-nodes) |
 | `--x-elastic` | ✅ shim extension | `auto` (default: torchrun steps), `on`, `off`: which steps replace a lost node with a spare |
 | `--exclusive` | ❌ | not translated: it means *all of whatever the node has*, and sbatch does not query per-host capacity. Since 9.1.5 the shim does pin slots-per-node per job, so ask for the width explicitly (`--ntasks-per-node=<cores>`), or use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or add an exclusive complex. Warn-and-ignored, with that advice in the warning |
@@ -219,6 +220,8 @@ Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) a
 | `-o/--output`, `-e/--error` (`%j %J %t %n %N %s %%` patterns) | ✅ |
 | `-l/--label`, `-K/--kill-on-bad-exit`, `-J/--job-name`, `-D/--chdir`, `--quiet`, `-v`, `-V` | ✅ |
 | `--pty` (outside an allocation) | ✅ interactive session via `qrsh`; with `-p/--partition`, `-N/-n/--ntasks-per-node/-c`, `--time`, `--mem`, `--gres`/`--gpus`, `-A/--account`, `-J`. `--qos` warned (no GE analogue). See [Interactive sessions](#interactive-sessions) |
+| no `--pty` (outside an allocation) | ✅ a new allocation (same flags as `--pty`) running the command as a step; `-I/--immediate` -> `qrsh -now yes` |
+| `--overlap` | ✅ accepted: steps already share their allocation |
 | `--x-elastic=auto\|on\|off` | ✅ shim extension: whether this step replaces a lost node with a [hot spare](#hot-spare-nodes) |
 | `--mpi=none` | ✅ (no-op) |
 | `--mpi=<anything else>` (e.g. `pmix`) | ❌ (hard-errors by design — no PMI/PMIx; see below) |
@@ -248,7 +251,7 @@ This is the strongest area — the fabricated environment is the whole point, an
 - `srun` launches one process per task over **`qrsh -inherit` tight integration**, starting up to 64 nodes at once: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
 - **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
 - **Lost nodes.** The control channel has kernel liveness (TCP keepalive and, on Linux, `TCP_USER_TIMEOUT`). A node whose host stops answering -- crash, power loss, network partition -- is declared lost after `ping_deadline` (60 s) and its tasks count as failed, so `srun` never hangs on a dead host. A suspended or slow step keeps its hosts answering and is never touched. A stepper that loses `srun`'s host stops its tasks after `orphan_grace` (45 s).
-- **Not replicated:** full SLURM job-step semantics (`--overlap`, heterogeneous steps), `sattach` and `salloc`. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
+- **Not replicated:** full SLURM job-step semantics (heterogeneous steps, `--exclusive` steps), `sattach`, and stdin to tasks. Steps already share their allocation, so `--overlap` is accepted as is. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
 
 ### Hot spare nodes
 
@@ -299,17 +302,29 @@ What maps to what: `--partition` -> queue + PE + slots; `-N`/`--ntasks-per-node`
 pin the layout via `qsub -par` on OCS 9.1.5+ (as with `sbatch`); `--time` ->
 `h_rt`, `--mem` -> the memory complex, `--gres=gpu:N`/`--gpus` -> the GPU complex;
 `--account` -> `-A` (surfaces as `SLURM_JOB_ACCOUNT`); `--export` -> `-V`/`-v`.
-`--qos` has no Grid Engine analogue and is warned; `--x11`/`--overlap`/`--no-kill`
-are accepted and ignored.
+`--qos` has no Grid Engine analogue and is warned; `--x11`/`--no-kill` are
+accepted and ignored.
+
+Without `--pty`, `srun` outside an allocation runs the command as a step on a new
+allocation and returns its exit status; `salloc` runs a shell (or a command) there:
+
+```bash
+srun -N 2 --ntasks-per-node=4 ./a.out     # 8 tasks, then srun exits with their status
+salloc -N 2 -p batch                      # a shell on the first node; srun inside it
+                                          # launches steps across both nodes
+sbatch --wait job.sh                      # submit, block, exit with the job's status
+```
 
 Notes and limits:
 - The session starts in the directory you ran `srun` from (like SLURM), not `$HOME`.
 - `qrsh` uses `-now no`, so the request **queues and waits** for resources rather
   than being rejected immediately -- and it may land on a `BATCH`-type queue.
 - `SLURM_SHIM_DRY_RUN` / `--test-only` print the `qrsh` line and create no job.
-- No `salloc` / `sattach`: `salloc`'s shell runs on the submit host, which has no
-  Grid Engine analogue worth emulating. A non-`--pty` `srun` outside an allocation
-  still exits 1.
+- `salloc`'s shell runs on the allocation's first node (SLURM's
+  `use_interactive_step`), not on the submit host, which has no Grid Engine
+  equivalent. No `sattach`.
+- A blocking `srun` killed with SIGTERM or SIGHUP cancels its job: the shim passes
+  the signal on to `qrsh` as SIGINT, the one signal it acts on while waiting.
 - GPU sessions see every device on the node under `gpu.isolation: shim`
   (the device mask is set per rank by `srun`, not at the session level);
   run the workload through `srun` inside the session, or use `gpu.isolation: cgroup`.
@@ -383,7 +398,7 @@ succeeds). It enforces nothing.
 
 ### Known limitations
 
-- No `salloc` / `sattach`; no job-step overlap or heterogeneous steps. Interactive shells use `srun --pty` (above), not `salloc`.
+- No `sattach`; no heterogeneous steps. `salloc` and `srun --pty` both start their shell on the allocation (above).
 - `sbatch` translates `--time`/`--mem`/`--array`/`--dependency`/`--gpus`/`--gres`/`--signal` (all verified against a live cluster by `test/e2e/31_sbatch_resources.sh`) and pins `--nodes`/`--ntasks-per-node` on OCS 9.1.5+ (`test/e2e/32_par_allocation.sh`); `--exclusive` is warn-and-ignored.
 - **A layout Grid Engine cannot grant evenly is not pinned.** A fixed allocation rule puts the *same* slot count on every node, so SLURM's `-N 3 -n 7` (3,2,2) has no faithful translation: the shim warns and lets the PE place the nodes, as it did before.
 - **Pinning the layout changes the per-node memory ceiling.** `--mem` is per node on SLURM but the memory complex is per slot on most GE sites, so a job whose 6 slots used to land on one host now gets its grant on each of three. `sbatch` prints a `note:` line with the arithmetic when `--mem` and a pinned rule are both present. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.

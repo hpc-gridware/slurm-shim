@@ -82,3 +82,17 @@ func (b OCSBuild) String() string {
 	}
 	return b.Release + " (" + b.Stamp + ")"
 }
+
+// AccountingFixRelease and AccountingFixStamp name the OCS build that records a
+// parallel job's exit_status in qacct; below it every PE job reads as exit 0
+// (docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
+const (
+	AccountingFixRelease = "9.1.5"
+	AccountingFixStamp   = "250826-0734"
+)
+
+// RecordsPEExitStatus reports whether this build records a parallel job's
+// exit status in accounting, which sacct and sbatch --wait read it from.
+func (b OCSBuild) RecordsPEExitStatus() bool {
+	return b.AtLeast(AccountingFixRelease, AccountingFixStamp)
+}

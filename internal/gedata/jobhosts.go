@@ -291,3 +291,20 @@ func hostFromQueueInstance(queue string) string {
 	}
 	return ""
 }
+
+// JobPresent reports whether Grid Engine still knows the job (queued, held,
+// running or finishing). `qstat -j` exits 1 and says the job does "not exist"
+// once it has left; any other failure is an error, not an answer.
+func JobPresent(ctx context.Context, r Runner, jobID string) (bool, error) {
+	out, errOut, exit, err := r.Run(ctx, "qstat", "-j", jobID)
+	if err != nil {
+		return false, fmt.Errorf("qstat -j %s: %w", jobID, err)
+	}
+	if exit == 0 {
+		return true, nil
+	}
+	if strings.Contains(string(out)+string(errOut), "do not exist") {
+		return false, nil
+	}
+	return false, fmt.Errorf("qstat -j %s: exit %d: %s", jobID, exit, strings.TrimSpace(string(errOut)))
+}

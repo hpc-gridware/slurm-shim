@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -22,11 +23,11 @@ func TestLaunch(t *testing.T) {
 }
 
 var _ = Describe("qrsh argv and env [REQ-RUN-009]", func() {
-	It("builds the tight-integration argv with the token via -v", func() {
-		args := buildQrshArgs("/opt/shim", "node002", "ENVB64", "deadbeef")
+	It("builds the tight-integration argv, naming the token variable without its value", func() {
+		args := buildQrshArgs("/opt/shim", "node002", "ENVB64")
 		Expect(args).To(Equal([]string{
 			"-inherit", "-nostdin", "-noshell",
-			"-v", "SLURM_SHIM_TOKEN=deadbeef",
+			"-v", "SLURM_SHIM_TOKEN",
 			"node002",
 			"/opt/shim", "stepper", "--envelope", "ENVB64",
 		}))
@@ -34,12 +35,43 @@ var _ = Describe("qrsh argv and env [REQ-RUN-009]", func() {
 
 	It("scrubs QRSH_WRAPPER and SGE_RSH_COMMAND from the child env [SI-23]", func() {
 		in := []string{"PATH=/bin", "QRSH_WRAPPER=/x", "HOME=/h", "SGE_RSH_COMMAND=/y", "FOO=bar"}
-		Expect(qrshEnv(in)).To(Equal([]string{"PATH=/bin", "HOME=/h", "FOO=bar"}))
+		Expect(qrshEnv(in, "")).To(Equal([]string{"PATH=/bin", "HOME=/h", "FOO=bar"}))
 	})
 
-	It("redacts the token argv element for logging [REQ-CHN-003]", func() {
-		args := buildQrshArgs("/opt/shim", "node002", "E", "secrettoken")
-		red := redactArgs(args)
+	It("puts the token in the qrsh child's environment, never in argv [REQ-CHN-002]", func() {
+		const token = "4f1c0de5ec7e70ce4f1c0de5ec7e70ce4f1c0de5ec7e70ce4f1c0de5ec7e70ce"
+		// A token inherited from an enclosing step must not survive beside the new one.
+		GinkgoT().Setenv("SLURM_SHIM_TOKEN", "stale-token-from-the-caller")
+		var gotArgs, gotEnv []string
+		l := QrshLauncher{
+			Self: "/opt/shim",
+			spawn: func(_ context.Context, args, env []string, _ io.Writer) (childProc, error) {
+				gotArgs, gotEnv = args, env
+				return &fakeProc{}, nil // still running: the launch succeeded
+			},
+		}
+		_, err := l.Start(context.Background(), "node002", proto.Envelope{JobID: 7}, token)
+		Expect(err).NotTo(HaveOccurred())
+
+		for _, a := range gotArgs {
+			Expect(a).NotTo(ContainSubstring(token), "argv is world-readable via /proc/<pid>/cmdline")
+		}
+		// spawnQrsh hands exactly this env to the qrsh exec.Cmd.
+		cmd := qrshCommand(context.Background(), gotArgs, gotEnv)
+		Expect(cmd.Args[1:]).To(Equal(gotArgs))
+		n := 0
+		for _, kv := range cmd.Env {
+			if strings.HasPrefix(kv, "SLURM_SHIM_TOKEN=") {
+				n++
+				Expect(kv).To(Equal("SLURM_SHIM_TOKEN=" + token))
+			}
+		}
+		Expect(n).To(Equal(1), "cmd.Env carries the token exactly once")
+		Expect(os.Getenv("SLURM_SHIM_TOKEN")).To(Equal("stale-token-from-the-caller"), "the parent environment is untouched")
+	})
+
+	It("still redacts a token value in a logged argv [REQ-CHN-003]", func() {
+		red := redactArgs([]string{"-v", "SLURM_SHIM_TOKEN=secrettoken", "node002"})
 		Expect(red).To(ContainElement("SLURM_SHIM_TOKEN=<redacted>"))
 		for _, a := range red {
 			Expect(a).NotTo(ContainSubstring("secrettoken"))
