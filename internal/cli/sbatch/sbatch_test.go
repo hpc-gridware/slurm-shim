@@ -77,6 +77,46 @@ var _ = Describe("sbatch flag parsing [REQ-SBT-001]", func() {
 	})
 })
 
+var _ = Describe("stepping over options the shim does not translate [REQ-RUN-005]", func() {
+	DescribeTable("a SLURM option consumes exactly its value, never the script",
+		func(args []string) {
+			opt, warns, err := parseFlags(args)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opt.script).To(Equal("job.sh"))
+			Expect(opt.scriptArgs).To(Equal([]string{"a1"}))
+			Expect(warns).NotTo(BeEmpty(), "the untranslated option is still warned")
+		},
+		Entry("long, space form", []string{"--qos", "normal", "job.sh", "a1"}),
+		Entry("short, space form", []string{"-q", "normal", "job.sh", "a1"}),
+		Entry("constraint", []string{"-C", "avx512", "job.sh", "a1"}),
+		Entry("licenses", []string{"--licenses", "spectre:2", "job.sh", "a1"}),
+		Entry("short, attached value", []string{"-qnormal", "job.sh", "a1"}),
+		Entry("long, = form", []string{"--qos=normal", "job.sh", "a1"}),
+		Entry("no value: --wait", []string{"--wait", "job.sh", "a1"}),
+		Entry("no value: -H", []string{"-H", "job.sh", "a1"}),
+		Entry("optional value is only attached: --exclusive", []string{"--exclusive", "job.sh", "a1"}),
+	)
+
+	It("steps over a directive's value, but never takes it from the command line", func() {
+		opt, _, err := parseArgs([]string{"--qos", "normal", "--licenses", "spectre:2", "-p", "batch", "job.sh"}, 4)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.partition).To(Equal("batch"))
+		Expect(opt.script).To(Equal("job.sh"))
+
+		_, _, err = parseArgs([]string{"--qos", "job.sh"}, 1)
+		Expect(err).NotTo(HaveOccurred(), "a directive missing its value does not eat the command line")
+	})
+})
+
+var _ = Describe("--gres beyond gpus", func() {
+	It("translates the gpu entry and warns about the rest instead of dropping it", func() {
+		opt, warns, err := parseFlags([]string{"--gres=gpu:2,license:3", "job.sh"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.gpus).To(Equal(2))
+		Expect(warns).To(ContainElement(ContainSubstring("--gres license:3 ignored")))
+	})
+})
+
 var _ = Describe("quote-aware directive tokenizing [REQ-SBT-001]", func() {
 	It("keeps a quoted value with spaces as one token", func() {
 		script := "#!/bin/bash\n#SBATCH --job-name=\"my job\" -p gpu\nsrun x\n"

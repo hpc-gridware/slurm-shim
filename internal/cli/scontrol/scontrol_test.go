@@ -77,7 +77,7 @@ var _ = Describe("scontrol requeue [REQ-SCT-002]", func() {
 		Expect(code).To(Equal(0))
 		Expect(r.Calls).To(HaveLen(1))
 		Expect(r.Calls[0].Name).To(Equal("qmod"))
-		Expect(r.Calls[0].Args).To(Equal([]string{"-rj", "4711.2"}))
+		Expect(r.Calls[0].Args).To(Equal([]string{"-rj", "4711.3"}), "SLURM index 2 is GE task 3, as scancel")
 	})
 
 	It("maps a bare job id directly", func() {
@@ -273,12 +273,12 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response {
 			return fake.Response{Stdout: []byte(qstatArray)}
 		}}
-		// Task 5 is RUNNING (first row); task 2 is PENDING. Asking for 4711_2 must
-		// report task 2's state/node, not task 5's.
+		// GE task 5 is RUNNING (first row); GE task 2 -- SLURM index 1 -- is
+		// PENDING. Asking for 4711_1 must report that task, not task 5.
 		var out bytes.Buffer
-		Expect(run(r, []string{"show", "job", "4711_2"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, []string{"show", "job", "4711_1"}, &out, io.Discard)).To(Equal(0))
 		s := out.String()
-		Expect(s).To(ContainSubstring("JobId=4711_2"))
+		Expect(s).To(ContainSubstring("JobId=4711_1"))
 		Expect(s).To(ContainSubstring("JobState=PENDING"))
 		Expect(s).To(ContainSubstring("NodeList=(null)"))
 		Expect(s).NotTo(ContainSubstring("node5"))
@@ -381,7 +381,7 @@ var _ = Describe("scontrol dry run [SLURM_SHIM_DRY_RUN]", func() {
 
 		Expect(code).To(Equal(0))
 		Expect(inner.Calls).To(BeEmpty(), "a dry run must not reach the cluster")
-		Expect(errBuf.String()).To(ContainSubstring("would run: qmod -rj 4711.2"))
+		Expect(errBuf.String()).To(ContainSubstring("would run: qmod -rj 4711.3"))
 	})
 
 	// The read-only client behind `show job` must still run, or the wrapper would

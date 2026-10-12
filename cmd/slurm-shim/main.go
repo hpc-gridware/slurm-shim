@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/cli/configcmd"
@@ -27,6 +28,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/cli/srun"
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
+	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 	"github.com/hpc-gridware/slurm-shim/internal/stepper"
 	"github.com/hpc-gridware/slurm-shim/internal/version"
 )
@@ -78,7 +80,7 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 	// subcommand. A bare "slurm-shim --version" is handled before
 	// the shift so it reports the top-level version.
 	if name == "slurm-shim" {
-		if hasVersionFlag(args) {
+		if hasVersionFlag(args, slurmopts.Table{}) {
 			// The base binary may say more than the shimmed commands: their -V is
 			// parsed by submitit and friends and must stay byte-identical, but
 			// nothing parses `slurm-shim --version`, so it names the OCS build and
@@ -104,7 +106,7 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 	// Every shimmed command answers --version/-V with the SLURM-parsable string
 	// because frameworks feature-detect on it. Config-driven
 	// compat version arrives with the config package; the default holds for now.
-	if hasVersionFlag(args) {
+	if hasVersionFlag(args, slurmopts.For(name)) {
 		fmt.Fprintln(stdout, version.String(version.DefaultCompat))
 		return 0
 	}
@@ -161,11 +163,20 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 }
 
 // hasVersionFlag reports whether args request the version string. SLURM accepts
-// both --version and -V across its client commands.
-func hasVersionFlag(args []string) bool {
-	for _, a := range args {
-		if a == "--version" || a == "-V" {
+// both --version and -V across its client commands -- as the command's own
+// option: before the first positional (the job script, the command to run),
+// stepping over option values with the command's SLURM table. A -V later on
+// belongs to the script or command (`sbatch job.sh --version` submits).
+func hasVersionFlag(args []string, opts slurmopts.Table) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--version" || a == "-V":
 			return true
+		case a == "--" || a == "-" || !strings.HasPrefix(a, "-"):
+			return false
+		case opts.TakesNext(a):
+			i++
 		}
 	}
 	return false

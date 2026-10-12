@@ -306,6 +306,38 @@ type Config struct {
 	GPU              GPU                  `yaml:"gpu"`
 }
 
+// PartitionOf names the partition a job's queue instance ("gpu.q@node001") is
+// shown under: its cluster queue's partition_aliases entry, else the queue
+// name. squeue's PARTITION column and scancel -p share it.
+func (c *Config) PartitionOf(queueInstance string) string {
+	cluster, _, _ := strings.Cut(queueInstance, "@")
+	if c != nil {
+		if alias, ok := c.PartitionAliases[cluster]; ok {
+			return alias
+		}
+	}
+	return cluster
+}
+
+// QueuesOf names the cluster queues a SLURM partition name stands for: the
+// queue of the partition of that name, every queue aliased to it, and a queue
+// of that very name. scancel -p filters with it.
+func (c *Config) QueuesOf(partition string) []string {
+	out := []string{partition}
+	if c == nil {
+		return out
+	}
+	if p, ok := c.Partitions[partition]; ok && p.Queue != "" {
+		out = append(out, p.Queue)
+	}
+	for queue, alias := range c.PartitionAliases {
+		if alias == partition {
+			out = append(out, queue)
+		}
+	}
+	return out
+}
+
 // Default returns the built-in configuration (spec section 9 defaults, SI-37).
 func Default() *Config {
 	return &Config{

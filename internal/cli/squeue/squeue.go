@@ -12,6 +12,7 @@ import (
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
+	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 )
 
 // defaultFormat is SLURM's default squeue output (verified vs squeue.c):
@@ -23,6 +24,8 @@ type options struct {
 	user     string
 	noHeader bool
 	format   string
+	// warnings name the options squeue does not translate (REQ-RUN-005).
+	warnings []string
 }
 
 // Run is the squeue entry point. The config error is surfaced rather than
@@ -42,6 +45,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr io.Writer) int {
 	opt := parse(args)
+	for _, w := range opt.warnings {
+		fmt.Fprintln(stderr, "squeue: warning: "+w)
+	}
 	if opt.format == "" {
 		opt.format = defaultFormat
 	}
@@ -94,7 +100,7 @@ func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr
 	var guessed []string
 	for _, r := range rows {
 		if v.degraded(r) {
-			guessed = append(guessed, r.Key())
+			guessed = append(guessed, slurmID(r))
 		}
 		fmt.Fprintln(stdout, v.formatRow(opt.format, r))
 	}
@@ -139,24 +145,39 @@ func parse(args []string) options {
 			opt.format = a[len("--format="):]
 		case strings.HasPrefix(a, "-o") && len(a) > 2:
 			opt.format = a[2:]
+		case strings.HasPrefix(a, "-") && a != "-":
+			// Not translated: say so, and step over its value (SLURM's arity)
+			// rather than let it pass as nothing.
+			opt.warnings = append(opt.warnings, "option "+a+" ignored (slurm-shim)")
+			if squeueOpts.TakesNext(a) {
+				i++
+			}
 		}
 	}
 	return opt
 }
 
+// squeueOpts is SLURM's squeue option table, for the arity of the options the
+// shim does not translate.
+var squeueOpts = slurmopts.For("squeue")
+
 // filterByJob keeps rows matching a SLURM job id, including the array form
 // "4711_2" (REQ-SQU-002).
 func filterByJob(rows []gedata.JobRow, jobID string) []gedata.JobRow {
-	baseID, taskID := jobID, ""
+	baseID, task := jobID, ""
 	if i := strings.IndexByte(jobID, '_'); i >= 0 {
-		baseID, taskID = jobID[:i], jobID[i+1:]
+		var ok bool
+		if task, ok = gedata.GETask(jobID[i+1:]); !ok {
+			return nil // not an array index: matches nothing, as in SLURM
+		}
+		baseID = jobID[:i]
 	}
 	var out []gedata.JobRow
 	for _, r := range rows {
 		if r.JobID != baseID {
 			continue
 		}
-		if taskID != "" && r.TaskID != taskID {
+		if task != "" && !gedata.TaskInRange(r.TaskID, task) {
 			continue
 		}
 		out = append(out, r)
