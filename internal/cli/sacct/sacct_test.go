@@ -202,3 +202,13 @@ var _ = Describe("sacct", func() {
 		Expect(errBuf.String()).To(ContainSubstring("sacct: error"))
 	})
 })
+
+var _ = Describe("sacct options it does not translate [REQ-RUN-005]", func() {
+	It("warns, steps over the value, and keeps the options it does translate", func() {
+		opt, err := parse([]string{"--name", "train", "-a", "-j", "4711", "--delimiter=,", "-P"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.ids).To(Equal([]string{"4711"}))
+		Expect(opt.parsable).To(BeTrue())
+		Expect(opt.warnings).To(ConsistOf(ContainSubstring("--name ignored"), ContainSubstring("--delimiter=, ignored")))
+	})
+})

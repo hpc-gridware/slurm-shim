@@ -12,6 +12,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
+	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
@@ -107,10 +108,12 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		jobName     = fs.StringP("job-name", "J", "", "")
 		// No GE analogue; defined so their values are not read as the command, then
 		// warned. --exclusive reuses sbatch's guidance.
-		x11       = fs.Bool("x11", false, "")
+		// --x11, --no-kill and --exclusive take an optional value in SLURM
+		// (--x11=all, --exclusive=user): strings with a bare-form default.
+		x11       = fs.String("x11", "", "")
 		overlap   = fs.Bool("overlap", false, "")
-		noKill    = fs.Bool("no-kill", false, "")
-		exclusive = fs.Bool("exclusive", false, "")
+		noKill    = fs.StringP("no-kill", "k", "", "")
+		exclusive = fs.String("exclusive", "", "")
 		// Hot spares: --x-elastic picks whether this step replaces a lost node
 		// with a spare. --x-spares belongs to sbatch, which grants the spares.
 		elastic = fs.String("x-elastic", "", "")
@@ -118,8 +121,14 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 	)
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"
+	for _, n := range []string{"x11", "no-kill", "exclusive"} {
+		fs.Lookup(n).NoOptDefVal = "set"
+	}
+	// Every other SLURM srun option, with SLURM's arity, so its value is never
+	// read as the command (REQ-RUN-005). Used ones warn below.
+	untranslated := defineSlurmOptions(fs, slurmopts.For("srun"))
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(longForms(args, fs, slurmopts.For("srun"))); err != nil {
 		return nil, err
 	}
 
@@ -163,13 +172,13 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 	if err := applyInteractiveFlags(opt, *timeVal, *memVal, *gres, *gpus, *gpusPerNode, *account, *qos); err != nil {
 		return nil, err
 	}
-	if *x11 {
+	if *x11 != "" {
 		opt.warnings = append(opt.warnings, "--x11 is not translated: DISPLAY is forwarded with the environment but xauth is not, so X clients will not connect")
 	}
-	if *exclusive {
+	if *exclusive != "" {
 		opt.warnings = append(opt.warnings, "--exclusive is not translated: ask for the node width explicitly (--ntasks-per-node=<cores>) or use a partition sized to the node")
 	}
-	if *overlap || *noKill {
+	if *overlap || *noKill != "" {
 		opt.warnings = append(opt.warnings, "--overlap/--no-kill are accepted and ignored (no Grid Engine analogue)")
 	}
 	_ = qos // consumed by applyInteractiveFlags's warning
@@ -181,6 +190,21 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		opt.req.Nodelist = hosts
 	}
 
+	// SLURM options the shim does not translate: parsed with their arity, then
+	// warned. strict makes them fatal.
+	var used []string
+	fs.Visit(func(f *pflag.Flag) {
+		if untranslated[f.Name] {
+			used = append(used, "--"+f.Name)
+		}
+	})
+	for _, name := range used {
+		if strict {
+			return nil, fmt.Errorf("srun: error: option %s is not supported by slurm-shim", name)
+		}
+		opt.warnings = append(opt.warnings, fmt.Sprintf("option %s ignored (slurm-shim)", name))
+	}
+
 	// Surface unknown flags (pflag whitelisted them). strict makes them fatal.
 	for _, a := range unknownFlags(args, fs) {
 		if strict {
@@ -189,6 +213,99 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		opt.warnings = append(opt.warnings, fmt.Sprintf("option %s ignored (slurm-shim)", a))
 	}
 	return opt, nil
+}
+
+// defineSlurmOptions defines on fs every option of SLURM's table that fs does
+// not define yet, with SLURM's arity: a value option as a string, an
+// optional-value option as a string with a bare-form default, the rest as
+// booleans. A short spelling is added where it is still free. It returns the
+// long names it defined, which the shim does not translate.
+func defineSlurmOptions(fs *pflag.FlagSet, table slurmopts.Table) map[string]bool {
+	defined := map[string]bool{}
+	for _, o := range table.Options() {
+		long, short := "", ""
+		for _, n := range o.Names {
+			switch {
+			case strings.HasPrefix(n, "--"):
+				if long == "" {
+					long = n[2:]
+				}
+			case len(n) == 2:
+				short = n[1:]
+			}
+		}
+		if long == "" || fs.Lookup(long) != nil {
+			continue
+		}
+		if short != "" && fs.ShorthandLookup(short) != nil {
+			short = ""
+		}
+		switch o.Value {
+		case slurmopts.None:
+			fs.BoolP(long, short, false, "")
+		default:
+			fs.StringP(long, short, "", "")
+			if o.Value == slurmopts.Optional {
+				fs.Lookup(long).NoOptDefVal = "set"
+			}
+		}
+		fs.Lookup(long).Hidden = true
+		defined[long] = true
+	}
+	return defined
+}
+
+// longForms rewrites SLURM short options whose long form fs defines without
+// that shorthand (-G for --gpus, -u for --unbuffered) to the long form, so
+// pflag parses them with the right arity instead of swallowing the next token.
+// It stops at the first positional (the command) and steps over each option's
+// value on the way.
+func longForms(args []string, fs *pflag.FlagSet, table slurmopts.Table) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" || a == "-" || !strings.HasPrefix(a, "-") {
+			return append(out, args[i:]...)
+		}
+		var f *pflag.Flag
+		if strings.HasPrefix(a, "--") {
+			name, _, _ := strings.Cut(a[2:], "=")
+			f = fs.Lookup(name)
+		} else {
+			f = fs.ShorthandLookup(a[1:2])
+			o, ok := table.Lookup(a)
+			long := ""
+			if ok {
+				long = longName(o)
+			}
+			switch {
+			case long == "" || fs.Lookup(long) == nil:
+			case len(a) > 2 && o.Value != slurmopts.None:
+				// -I60, -G2: pflag would read an optional value's digits as
+				// more shorthands, so pass every attached value in long form.
+				f, a = fs.Lookup(long), "--"+long+"="+a[2:]
+			case f == nil && len(a) == 2:
+				f, a = fs.Lookup(long), "--"+long
+			}
+		}
+		out = append(out, a)
+		// A value flag written without its value takes the next token.
+		if f != nil && f.NoOptDefVal == "" && !strings.Contains(a, "=") &&
+			(strings.HasPrefix(a, "--") || len(a) == 2) && i+1 < len(args) {
+			i++
+			out = append(out, args[i])
+		}
+	}
+	return out
+}
+
+func longName(o slurmopts.Option) string {
+	for _, n := range o.Names {
+		if strings.HasPrefix(n, "--") {
+			return n[2:]
+		}
+	}
+	return ""
 }
 
 // unknownFlags returns the flag-shaped tokens in args (before the first

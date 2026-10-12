@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 )
 
 // options is the parsed sbatch request.
@@ -144,6 +146,10 @@ var unmappableLong = map[string]string{
 		"sized to the node, or add an exclusive complex",
 }
 
+// sbatchOpts is SLURM's sbatch option table: the arity of every option, used
+// to step over the ones the shim does not translate.
+var sbatchOpts = slurmopts.For("sbatch")
+
 var shortToLong = map[byte]string{
 	'N': "nodes", 'n': "ntasks", 'c': "cpus-per-task", 'p': "partition",
 	'J': "job-name", 'o': "output", 'e': "error", 'D': "chdir",
@@ -203,6 +209,19 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 			i++
 		}
 	}
+	// skipSlurmValue steps over the value of an option the shim does not
+	// translate, when SLURM's own table says the option takes one in this
+	// spelling. It reports whether the table knew the option. A directive's
+	// value is never taken from the command line.
+	skipSlurmValue := func(tok string) bool {
+		if _, known := sbatchOpts.Lookup(tok); !known {
+			return false
+		}
+		if sbatchOpts.TakesNext(tok) && (i >= nDirective || i+1 < nDirective) {
+			_, _ = next()
+		}
+		return true
+	}
 
 	for ; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -231,13 +250,14 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 					}
 					warned[name] = true
 				}
-				// Known value-taking Pyxis flags consume their space-form value so
-				// it is not mistaken for the script; boolean flags consume nothing.
-				// Other unknown space-form flags cannot have their arity inferred
-				// without the SLURM flag table (REQ-RUN-005, deferred) - clearml
-				// templates use the = form, avoiding the ambiguity.
+				// A SLURM option steps over exactly its value, per SLURM's own
+				// table (REQ-RUN-005), so `sbatch --qos normal job.sh` does not
+				// submit "normal". Known value-taking Pyxis flags consume theirs;
+				// any other unknown flag consumes a bare word only inside a
+				// directive block.
 				switch {
 				case hasVal:
+				case skipSlurmValue(tok):
 				case containerValueFlags[name]:
 					_, _ = next()
 				case i < nDirective:
@@ -266,6 +286,12 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 			if err := setLong(&opt, name, val); err != nil {
 				return opt, warns, err
 			}
+			if name == "gres" {
+				if other := nonGPUGres(val); len(other) > 0 {
+					warns = append(warns, "--gres "+strings.Join(other, ",")+" ignored: only gpu gres is "+
+						"translated (licenses: --licenses; other resources: a site complex)")
+				}
+			}
 		case strings.HasPrefix(tok, "-") && len(tok) > 1:
 			flag := tok[1]
 			long, ok := shortToLong[flag]
@@ -274,7 +300,7 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 					warns = append(warns, "unknown directive -"+string(flag)+" ignored")
 					warned[string(flag)] = true
 				}
-				if len(tok) == 2 && i < nDirective {
+				if !skipSlurmValue(tok) && len(tok) == 2 && i < nDirective {
 					skipDirectiveValue()
 				}
 				continue
@@ -488,6 +514,19 @@ func parseGPUCount(val string) (int, error) {
 		return 0, fmt.Errorf("sbatch: error: --gpus: invalid count %q", val)
 	}
 	return n, nil
+}
+
+// nonGPUGres returns the entries of a --gres value that are not gpu requests
+// ("license:2" in "gpu:2,license:2"), so they are warned rather than dropped.
+func nonGPUGres(val string) []string {
+	var out []string
+	for _, entry := range strings.Split(val, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" && entry != "gpu" && !strings.HasPrefix(entry, "gpu:") {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // gresGPUCount extracts the gpu count from a --gres value like "gpu:2" or

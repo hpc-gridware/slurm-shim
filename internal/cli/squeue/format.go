@@ -184,7 +184,7 @@ func headerTitle(verb byte) string {
 func (v view) rowValue(verb byte, row gedata.JobRow) string {
 	switch verb {
 	case 'i':
-		return row.Key()
+		return slurmID(row)
 	case 'P':
 		return partition(row.Queue, v.cfg)
 	case 'j':
@@ -264,14 +264,7 @@ func squeueElapsed(row gedata.JobRow, now time.Time) string {
 
 // partition maps a queue instance to a SLURM partition via the aliases map.
 func partition(queue string, cfg *config.Config) string {
-	cluster := queue
-	if at := strings.IndexByte(queue, '@'); at >= 0 {
-		cluster = queue[:at]
-	}
-	if alias, ok := cfg.PartitionAliases[cluster]; ok {
-		return alias
-	}
-	return cluster
+	return cfg.PartitionOf(queue)
 }
 
 // hostOf returns the host part of a "queue@host" instance.
@@ -280,4 +273,10 @@ func hostOf(queue string) string {
 		return queue[at+1:]
 	}
 	return ""
+}
+
+// slurmID is the job id as SLURM shows it: an array element by its 0-based
+// index ("4711_0"), a pending range as "4711_[0-9]" (SI-14).
+func slurmID(row gedata.JobRow) string {
+	return gedata.JobKey(row.JobID, gedata.SlurmTask(row.TaskID))
 }

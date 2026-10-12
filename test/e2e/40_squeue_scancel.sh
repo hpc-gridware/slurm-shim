@@ -118,6 +118,22 @@ gridware "qdel '$sid' >/dev/null 2>&1 || true"
 
 gridware "qdel '$mid' >/dev/null 2>&1"
 
+# Filters intersect with the ids, as in SLURM: another user's filter leaves the
+# job alone (it used to qdel -u that user's whole job set instead).
+gridware "scancel -u root '$id' >/dev/null 2>&1 || true"
+if gridware "squeue -h -j '$id' 2>/dev/null | grep -q ."; then
+  pass "scancel -u <other user> <id> leaves a job it does not own"
+else
+  fail "scancel -u <other user> <id> cancelled the job"
+fi
+# An untranslated option steps over its value: --qos normal does not become the
+# script (it used to be submitted as one).
+qid="$(gridware "cd '$JOB_HOME' && sbatch --parsable --qos normal '$remote' 2>/dev/null" | tr -d '\r' | tail -1)"
+case "$qid" in
+  ''|*[!0-9]*) fail "sbatch --qos normal <script> did not submit the script (got: $qid)" ;;
+  *) pass "sbatch --qos normal <script> submits the script"; gridware "qdel '$qid' >/dev/null 2>&1 || true" ;;
+esac
+
 gridware "scancel '$id' >/dev/null 2>&1"
 gone=""
 for _ in $(seq 1 20); do

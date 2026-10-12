@@ -49,6 +49,39 @@ var _ = Describe("srun flag parsing", func() {
 		Expect(opt.command).To(Equal([]string{"hostname"}))
 	})
 
+	DescribeTable("steps over SLURM options it does not translate, never the command [REQ-RUN-005]",
+		func(args []string, wantWarn string) {
+			opt, err := parse(args...)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opt.command).To(Equal([]string{"python", "x.py"}))
+			if wantWarn != "" {
+				Expect(opt.warnings).To(ContainElement(ContainSubstring(wantWarn)))
+			}
+		},
+		Entry("-u is --unbuffered, no value", []string{"-u", "python", "x.py"}, ""),
+		Entry("-I takes its value only attached", []string{"-I", "python", "x.py"}, "--immediate"),
+		Entry("-I60", []string{"-I60", "python", "x.py"}, "--immediate"),
+		Entry("-x takes a value", []string{"-x", "node3", "python", "x.py"}, "--exclude"),
+		Entry("--exclude=", []string{"--exclude=node3", "python", "x.py"}, "--exclude"),
+		Entry("-m takes a value", []string{"-m", "block", "python", "x.py"}, "--distribution"),
+		Entry("--multi-prog takes no value", []string{"--multi-prog", "python", "x.py"}, "--multi-prog"),
+		Entry("--exclusive=user", []string{"--exclusive=user", "python", "x.py"}, "--exclusive"),
+		Entry("--x11=all", []string{"--x11=all", "python", "x.py"}, "--x11"),
+	)
+
+	It("translates -G as --gpus instead of dropping its value", func() {
+		opt, err := parse("--pty", "-G", "2", "python", "x.py")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.command).To(Equal([]string{"python", "x.py"}))
+		Expect(opt.haveGPUs).To(BeTrue())
+		Expect(opt.gpus).To(Equal(2))
+	})
+
+	It("fails a SLURM option it does not translate under strict_flags [REQ-RUN-005]", func() {
+		_, err := parseFlags([]string{"-x", "node3", "hostname"}, true, io.Discard)
+		Expect(err).To(MatchError(ContainSubstring("--exclude")))
+	})
+
 	It("fails an unknown flag under strict_flags [REQ-RUN-005]", func() {
 		_, err := parseFlags([]string{"--frobnicate", "hostname"}, true, io.Discard)
 		Expect(err).To(HaveOccurred())

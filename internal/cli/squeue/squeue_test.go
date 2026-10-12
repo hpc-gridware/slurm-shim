@@ -81,7 +81,7 @@ var _ = Describe("squeue [REQ-SQU-002]", func() {
 		rows := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
 		Expect(rows).To(ContainElement("4711 R"))
 		Expect(rows).To(ContainElement("4712 PD"))
-		Expect(rows).To(ContainElement("4713_2 PD")) // array task rendered 4713_2
+		Expect(rows).To(ContainElement("4713_1 PD")) // GE task 2 is SLURM index 1 (SI-14)
 	})
 
 	It("maps a running job's queue to its partition alias [REQ-SQU-002]", func() {
@@ -96,10 +96,10 @@ var _ = Describe("squeue [REQ-SQU-002]", func() {
 		Expect(strings.TrimSpace(out.String())).To(Equal("4711"))
 	})
 
-	It("filters to a single array task", func() {
+	It("filters to a single array task by its 0-based SLURM index", func() {
 		var out bytes.Buffer
-		Expect(run(fakeQstat(), testCfg(), []string{"-h", "-j", "4713_2", "-o", "%i"}, &out, io.Discard)).To(Equal(0))
-		Expect(strings.TrimSpace(out.String())).To(Equal("4713_2"))
+		Expect(run(fakeQstat(), testCfg(), []string{"-h", "-j", "4713_1", "-o", "%i"}, &out, io.Discard)).To(Equal(0))
+		Expect(strings.TrimSpace(out.String())).To(Equal("4713_1"))
 	})
 
 	It("shows only the header for a completed (absent) job [REQ-SQU-003]", func() {
@@ -308,8 +308,8 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 		// them together: job 24 task 2 is on two hosts, neither of them the master
 		// instance the plain view reports.
 		var out bytes.Buffer
-		Expect(run(twoViewQstat(), testCfg(), []string{"-h", "-j", "24_2", "-o", "%i %D %N"}, &out, io.Discard)).To(Equal(0))
-		Expect(strings.TrimSpace(out.String())).To(Equal("24_2 2 ocs-worker[2,1]"))
+		Expect(run(twoViewQstat(), testCfg(), []string{"-h", "-j", "24_1", "-o", "%i %D %N"}, &out, io.Discard)).To(Equal(0))
+		Expect(strings.TrimSpace(out.String())).To(Equal("24_1 2 ocs-worker[2,1]"))
 	})
 
 	It("leaves CPUS alone", func() {
@@ -505,5 +505,26 @@ var _ = Describe("squeue TIME column [REQ-SQU-002]", func() {
 		row := gedata.JobRow{State: "r", Start: time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC)}
 		now := time.Date(2026, 9, 15, 7, 0, 0, 0, time.UTC)
 		Expect(squeueElapsed(row, now)).To(Equal("0:00"))
+	})
+})
+
+var _ = Describe("squeue options it does not translate [REQ-RUN-005]", func() {
+	It("warns, steps over the value, and keeps the options it does translate", func() {
+		opt := parse([]string{"-t", "PD", "--me", "-p", "gpu", "-h", "-j", "4711"})
+		Expect(opt.jobID).To(Equal("4711"))
+		Expect(opt.noHeader).To(BeTrue())
+		Expect(opt.warnings).To(ConsistOf(
+			ContainSubstring("-t ignored"), ContainSubstring("--me ignored"), ContainSubstring("-p ignored")))
+	})
+})
+
+var _ = Describe("squeue array ids are SLURM's 0-based indices [SI-14]", func() {
+	It("renders a pending range as SLURM does and finds an element inside it", func() {
+		row := gedata.JobRow{JobID: "4720", State: "qw", TaskID: "1-10:1"}
+		Expect(slurmID(row)).To(Equal("4720_[0-9]"))
+		Expect(slurmID(gedata.JobRow{JobID: "4720", TaskID: "1-9:2"})).To(Equal("4720_[0-8:2]"))
+		Expect(filterByJob([]gedata.JobRow{row}, "4720_9")).To(HaveLen(1))
+		Expect(filterByJob([]gedata.JobRow{row}, "4720_10")).To(BeEmpty())
+		Expect(filterByJob([]gedata.JobRow{row}, "4720_x")).To(BeEmpty())
 	})
 })

@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
+	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 )
 
 // options is the parsed sacct request.
@@ -50,7 +51,13 @@ type options struct {
 	parsable  bool
 	trailing  bool // -P keeps the trailing delimiter, --parsable2 does not
 	noHeader  bool
+	// warnings name the options sacct does not translate (REQ-RUN-005).
+	warnings []string
 }
+
+// sacctOpts is SLURM's sacct option table, for the arity of the options the
+// shim does not translate.
+var sacctOpts = slurmopts.For("sacct")
 
 // Run is the sacct entry point.
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -62,6 +69,9 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
+	}
+	for _, w := range opt.warnings {
+		fmt.Fprintln(stderr, "sacct: warning: "+w)
 	}
 	fields := splitFields(opt.format)
 	if len(fields) == 0 {
@@ -180,15 +190,19 @@ func parse(args []string) (options, error) {
 			opt.parsable, opt.trailing = true, true
 		case a == "--parsable2":
 			opt.parsable, opt.trailing = true, false
+		case a == "-a" || a == "--allusers":
+			// No-op: without -u the report already covers every user.
 		case a == "-X" || a == "--allocations":
 			// No-op: we never emit step rows, so allocations-only is what we do.
 		default:
+			matched := false
 			for _, p := range []string{"--jobs", "--job", "--user", "--uid",
 				"--format", "--fields", "--starttime", "--endtime", "--state"} {
 				v, ok := val(p)
 				if !ok {
 					continue
 				}
+				matched = true
 				switch p {
 				case "--jobs", "--job":
 					opt.ids = append(opt.ids, splitList(v)...)
@@ -208,6 +222,14 @@ func parse(args []string) (options, error) {
 						return opt, err
 					}
 					opt.end = geStamp(opt.endTime)
+				}
+			}
+			if !matched && strings.HasPrefix(a, "-") && a != "-" {
+				// Not translated: say so, and step over its value (SLURM's
+				// arity) rather than let it pass as nothing.
+				opt.warnings = append(opt.warnings, "option "+a+" ignored (slurm-shim)")
+				if sacctOpts.TakesNext(a) {
+					i++
 				}
 			}
 		}

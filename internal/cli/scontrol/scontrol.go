@@ -114,8 +114,16 @@ func showJob(runner gedata.Runner, args []string, stdout, stderr io.Writer) int 
 	}
 
 	// Look the job up in GE. Array-task ids (4711_2) match the base job number and,
-	// when a task is given, that specific task (same rule as squeue, REQ-SQU-002).
-	base, task, _ := strings.Cut(id, "_")
+	// when a task is given, that specific task: SLURM index 2 is GE task 3 (same
+	// rule as squeue, REQ-SQU-002, SI-14).
+	base, task, isTask := strings.Cut(id, "_")
+	if isTask {
+		var ok bool
+		if task, ok = gedata.GETask(task); !ok {
+			fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
+			return 1
+		}
+	}
 	out, errOut, exit, err := runner.Run(context.Background(), "qstat", "-xml", "-u", "*")
 	if err != nil {
 		fmt.Fprintf(stderr, "scontrol: error: running qstat: %v\n", err)
@@ -135,7 +143,7 @@ func showJob(runner gedata.Runner, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	for _, r := range rows {
-		if r.JobID != base || (task != "" && r.TaskID != task) {
+		if r.JobID != base || (task != "" && !gedata.TaskInRange(r.TaskID, task)) {
 			continue
 		}
 		// The plain view carries only the master queue instance, so on its own it
@@ -241,7 +249,8 @@ func printFields(stdout io.Writer, fields [][2]string) {
 }
 
 // requeueCmd maps a SLURM job (or array-task) id to a GE reschedule (REQ-SCT-002).
-// The compound array form "4711_2" targets only that task as "4711.2".
+// The compound array form "4711_2" targets only that task: SLURM index 2 is GE
+// task 3, so "4711.3" (SI-14) -- the same element scancel 4711_2 cancels.
 func requeueCmd(runner gedata.Runner, args []string, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "scontrol: error: requeue needs a job id")
@@ -249,7 +258,12 @@ func requeueCmd(runner gedata.Runner, args []string, stderr io.Writer) int {
 	}
 	target := args[0]
 	if i := strings.IndexByte(target, '_'); i >= 0 {
-		target = target[:i] + "." + target[i+1:] // 4711_2 -> 4711.2
+		task, ok := gedata.GETask(target[i+1:])
+		if !ok {
+			fmt.Fprintf(stderr, "scontrol: error: invalid job id %s\n", target)
+			return 1
+		}
+		target = target[:i] + "." + task // 4711_2 -> 4711.3
 	}
 	_, errOut, exit, err := runner.Run(context.Background(), "qmod", "-rj", target)
 	if err != nil {

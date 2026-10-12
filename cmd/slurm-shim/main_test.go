@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 
+	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -41,6 +42,14 @@ var _ = Describe("arg0 dispatch", func() {
 		Entry("squeue --version", "squeue", "--version"),
 		Entry("scancel -V", "scancel", "-V"),
 	)
+
+	It("leaves a --version after the script or command to the script or command", func() {
+		Expect(hasVersionFlag([]string{"job.sh", "--version"}, slurmopts.For("sbatch"))).To(BeFalse())
+		Expect(hasVersionFlag([]string{"-n", "2", "python", "-V"}, slurmopts.For("srun"))).To(BeFalse())
+		Expect(hasVersionFlag([]string{"-p", "-V"}, slurmopts.For("sbatch"))).To(BeFalse(), "-V is -p's value")
+		Expect(hasVersionFlag([]string{"-p", "gpu", "-V"}, slurmopts.For("sbatch"))).To(BeTrue())
+		Expect(hasVersionFlag([]string{"sbatch", "job.sh", "-V"}, slurmopts.Table{})).To(BeFalse())
+	})
 
 	It("prints version to stdout, never stderr [REQ-LOG-003]", func() {
 		run("srun", []string{"--version"}, stdout, stderr)
@@ -99,7 +108,7 @@ var _ = Describe("dry-run wiring at the command entry points [SLURM_SHIM_DRY_RUN
 		code := run("scontrol", []string{"requeue", "4711_2"}, stdout, stderr)
 
 		Expect(code).To(Equal(0))
-		Expect(stderr.String()).To(ContainSubstring("would run: qmod -rj 4711.2"))
+		Expect(stderr.String()).To(ContainSubstring("would run: qmod -rj 4711.3"))
 		Expect(stdout.String()).To(BeEmpty())
 	})
 })
