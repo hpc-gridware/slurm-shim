@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -11,12 +12,16 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
-// SessionSpec is an interactive allocation request: what `srun --pty` outside
-// an allocation asks for, already translated to Grid Engine terms.
+// SessionSpec is an allocation that runs one command: what `srun` and `salloc`
+// outside an allocation ask for, already translated to Grid Engine terms.
 type SessionSpec struct {
-	Queue string
-	PE    string
-	Slots int
+	// Pty gives the command a terminal (srun --pty, salloc at a terminal).
+	Pty bool
+	// Immediate is srun/salloc -I: start at once or fail, never queue.
+	Immediate bool
+	Queue     string
+	PE        string
+	Slots     int
 	// AllocationRule is the -par value pinning the layout, or "" for none.
 	AllocationRule string
 	// VerifyGeometry adds -w e alongside -par. False when the request names a
@@ -43,9 +48,13 @@ type SessionSpec struct {
 //
 //   - -now no: qrsh's default is an immediate job, rejected if it cannot start at
 //     once and confined to INTERACTIVE-type queues; -now no queues and waits, as
-//     srun does, and may use batch queues.
+//     srun does, and may use batch queues. -I asks for exactly that immediate
+//     job (-now yes).
 //   - -pty y: a qrsh with a command gets no pty by default; -pty y forces one, so
-//     the session lands on a real terminal.
+//     the session lands on a real terminal. Without Pty no -pty flag is passed
+//     at all: an explicit -pty no failed every job in the shepherd ("fd for in
+//     is not 0") and set the queue instance to error state (OCS 9.1.6), while
+//     the default streams stdin, stdout, stderr and the exit status.
 //   - -cwd: without it the session starts in $HOME; SLURM starts in the
 //     invocation directory. -wd overrides it when --chdir was given.
 //
@@ -54,7 +63,14 @@ type SessionSpec struct {
 // the caller runs as the user and can only affect its own job, but srun should
 // reject such a command rather than mis-submit it.
 func SessionArgs(s SessionSpec) []string {
-	args := []string{"-now", "no", "-pty", "y"}
+	now := "no"
+	if s.Immediate {
+		now = "yes"
+	}
+	args := []string{"-now", now}
+	if s.Pty {
+		args = append(args, "-pty", "y")
+	}
 	if s.Chdir != "" {
 		args = append(args, "-wd", s.Chdir)
 	} else {
@@ -102,18 +118,94 @@ func ExecSession(s SessionSpec) error {
 	// syscall.Exec does no PATH lookup, so an absolute path is required.
 	// ResolveCommand returns a bare name when qrsh is on PATH (it is built for
 	// exec.Command, which resolves PATH itself), so resolve it the rest of the way.
-	qrsh := gedata.ResolveCommand("qrsh")
-	if !filepath.IsAbs(qrsh) {
-		abs, err := exec.LookPath(qrsh)
-		if err != nil {
-			return fmt.Errorf("locating qrsh: %w", err)
-		}
-		qrsh = abs
+	qrsh, err := qrshPath()
+	if err != nil {
+		return err
 	}
 	argv := append([]string{qrsh}, SessionArgs(s)...)
-	env := qrshEnv(os.Environ())
+	env := qrshEnv(os.Environ(), "")
 	if err := syscall.Exec(qrsh, argv, env); err != nil {
 		return fmt.Errorf("exec %s: %w", qrsh, err)
 	}
 	return nil // unreachable on success: the process image is replaced
+}
+
+// RunSession runs a session without a terminal as a child qrsh and returns its
+// exit status. Unlike ExecSession it stays in front of qrsh, because qrsh
+// itself does not react to the signals a caller ends a command with (verified,
+// OCS 9.1.6): waiting for its job it ignores SIGTERM and SIGHUP and stays
+// queued, so a killed caller would leave a job that starts later with no one
+// to talk to. Only SIGINT ends it in every state -- a queued job is deleted, a
+// running command is stopped and its job removed. So SIGINT, SIGTERM and
+// SIGHUP received here are passed on as SIGINT, and the session then exits
+// 128+signal, as a process killed by that signal would (qrsh itself exits 0
+// or 1 there, which reads as success or a plain error).
+//
+// nullStdin gives qrsh /dev/null for input instead of the caller's stdin. qrsh's
+// own -nostdin is not used: the remote command then waits for input that never
+// comes (verified with cat), and qrsh ignores SIGTERM meanwhile.
+func RunSession(s SessionSpec, nullStdin bool) (int, error) {
+	qrsh, err := qrshPath()
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(qrsh, SessionArgs(s)...)
+	cmd.Env = qrshEnv(os.Environ(), "")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if !nullStdin {
+		cmd.Stdin = os.Stdin
+	}
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	return supervise(cmd, sigs)
+}
+
+// supervise starts cmd, passes every signal from sigs on to it as SIGINT, and
+// returns its exit status -- 128+signal for the first signal received.
+func supervise(cmd *exec.Cmd, sigs <-chan os.Signal) (int, error) {
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("starting %s: %w", cmd.Path, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var got syscall.Signal
+	for {
+		select {
+		case sig := <-sigs:
+			if got == 0 {
+				got = sig.(syscall.Signal)
+			}
+			_ = cmd.Process.Signal(syscall.SIGINT)
+		case err := <-done:
+			if got != 0 {
+				return 128 + int(got), nil
+			}
+			return exitStatus(cmd, err)
+		}
+	}
+}
+
+// exitStatus is a finished command's exit code, 128+signal when it was killed.
+func exitStatus(cmd *exec.Cmd, err error) (int, error) {
+	if cmd.ProcessState == nil {
+		return 0, err
+	}
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal()), nil
+	}
+	return cmd.ProcessState.ExitCode(), nil
+}
+
+// qrshPath resolves qrsh to an absolute path.
+func qrshPath() (string, error) {
+	qrsh := gedata.ResolveCommand("qrsh")
+	if filepath.IsAbs(qrsh) {
+		return qrsh, nil
+	}
+	abs, err := exec.LookPath(qrsh)
+	if err != nil {
+		return "", fmt.Errorf("locating qrsh: %w", err)
+	}
+	return abs, nil
 }

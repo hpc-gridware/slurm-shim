@@ -92,7 +92,7 @@ var _ = Describe("stepping over options the shim does not translate [REQ-RUN-005
 		Entry("licenses", []string{"--licenses", "spectre:2", "job.sh", "a1"}),
 		Entry("short, attached value", []string{"-qnormal", "job.sh", "a1"}),
 		Entry("long, = form", []string{"--qos=normal", "job.sh", "a1"}),
-		Entry("no value: --wait", []string{"--wait", "job.sh", "a1"}),
+		Entry("no value: --requeue", []string{"--requeue", "job.sh", "a1"}),
 		Entry("no value: -H", []string{"-H", "job.sh", "a1"}),
 		Entry("optional value is only attached: --exclusive", []string{"--exclusive", "job.sh", "a1"}),
 	)

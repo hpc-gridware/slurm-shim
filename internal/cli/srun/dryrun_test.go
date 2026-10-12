@@ -108,7 +108,9 @@ var _ = Describe("srun dry run [REQ-DRY-002] [REQ-DRY-003] [REQ-DRY-004]", func(
 
 		out := errOf(sess)
 		Expect(out).To(ContainSubstring("qrsh -inherit -nostdin -noshell"))
-		Expect(out).To(ContainSubstring("SLURM_SHIM_TOKEN=<per-step token>"))
+		// The argv names the token variable without its value (REQ-CHN-002).
+		Expect(out).To(ContainSubstring("-v SLURM_SHIM_TOKEN "))
+		Expect(out).NotTo(ContainSubstring("SLURM_SHIM_TOKEN="))
 		Expect(out).NotTo(MatchRegexp(`[0-9a-f]{64}`))
 	})
 

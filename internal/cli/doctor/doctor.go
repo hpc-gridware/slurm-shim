@@ -30,8 +30,8 @@ import (
 // parallel job's exit_status in qacct; below it sacct reports every PE job as
 // exit 0 (docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
 const (
-	AccountingFixRelease = "9.1.5"
-	AccountingFixStamp   = "250826-0734"
+	AccountingFixRelease = gedata.AccountingFixRelease
+	AccountingFixStamp   = gedata.AccountingFixStamp
 )
 
 // CompatNotes lists what a build older than the accounting fix cannot do.

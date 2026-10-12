@@ -65,8 +65,8 @@ func (l QrshLauncher) Start(ctx context.Context, host string, env proto.Envelope
 	if err != nil {
 		return nil, err
 	}
-	args := buildQrshArgs(l.Self, host, arg, token)
-	childEnv := qrshEnv(os.Environ())
+	args := buildQrshArgs(l.Self, host, arg)
+	childEnv := qrshEnv(os.Environ(), token)
 
 	slotBound := l.SlotRetry
 	if slotBound <= 0 {
@@ -125,24 +125,25 @@ func (l QrshLauncher) Start(ctx context.Context, host string, env proto.Envelope
 	}
 }
 
-// QrshPreview renders the qrsh argv for display, with the caller's placeholders
-// standing in for the routing envelope and the per-step token. It delegates to the
-// same builder the launcher uses so a reported command line cannot drift from the
-// one Grid Engine actually receives (REQ-RUN-009).
-//
-// The token placeholder must never be a real token (REQ-CHN-003, SI-51).
-func QrshPreview(self, host, envelopePlaceholder, tokenPlaceholder string) []string {
-	return buildQrshArgs(self, host, envelopePlaceholder, tokenPlaceholder)
+// QrshPreview renders the qrsh argv for display, with the caller's placeholder
+// standing in for the routing envelope. It delegates to the same builder the
+// launcher uses so a reported command line cannot drift from the one Grid
+// Engine actually receives (REQ-RUN-009). The argv holds no token to hide.
+func QrshPreview(self, host, envelopePlaceholder string) []string {
+	return buildQrshArgs(self, host, envelopePlaceholder)
 }
 
 // buildQrshArgs builds the qrsh argv (REQ-RUN-009). The command line carries only
-// routing data in the envelope - never the environment - and the per-step token
-// travels via -v (REQ-CHN-002), landing in the remote owner-readable environ.
-// Launched without -V so no client environment leaks.
-func buildQrshArgs(self, host, envelopeArg, token string) []string {
+// routing data in the envelope - never the environment, never the token: argv is
+// world-readable via /proc/<pid>/cmdline. `-v SLURM_SHIM_TOKEN` names the
+// variable without a value, so qrsh exports the value from its own environment
+// (qrshEnv puts it there), landing in the remote owner-readable environ
+// (REQ-CHN-002; verified with qrsh -inherit on OCS 9.1.6). Launched without -V
+// so no client environment leaks.
+func buildQrshArgs(self, host, envelopeArg string) []string {
 	return []string{
 		"-inherit", "-nostdin", "-noshell",
-		"-v", "SLURM_SHIM_TOKEN=" + token,
+		"-v", "SLURM_SHIM_TOKEN",
 		host,
 		self, "stepper", "--envelope", envelopeArg,
 	}
@@ -150,24 +151,30 @@ func buildQrshArgs(self, host, envelopeArg, token string) []string {
 
 // qrshEnv is the child environment for qrsh: the caller's environment with
 // QRSH_WRAPPER unset and SGE_RSH_COMMAND removed so neither redirects the
-// builtin transport (SI-23).
-func qrshEnv(base []string) []string {
-	out := make([]string, 0, len(base))
+// builtin transport (SI-23). A non-empty token becomes the child's only
+// SLURM_SHIM_TOKEN, which `-v SLURM_SHIM_TOKEN` exports to the remote side; it
+// is set here, in the child, never in this process's environment.
+func qrshEnv(base []string, token string) []string {
+	out := make([]string, 0, len(base)+1)
 	for _, kv := range base {
 		key := kv
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			key = kv[:i]
 		}
-		if key == "QRSH_WRAPPER" || key == "SGE_RSH_COMMAND" {
+		if key == "QRSH_WRAPPER" || key == "SGE_RSH_COMMAND" || (token != "" && key == "SLURM_SHIM_TOKEN") {
 			continue
 		}
 		out = append(out, kv)
 	}
+	if token != "" {
+		out = append(out, "SLURM_SHIM_TOKEN="+token)
+	}
 	return out
 }
 
-// redactArgs returns a copy of args safe to log: the token value in
-// `-v SLURM_SHIM_TOKEN=<hex>` is masked (REQ-CHN-003, SI-51).
+// redactArgs returns a copy of args safe to log, masking any
+// `SLURM_SHIM_TOKEN=<value>` element (REQ-CHN-003, SI-51). buildQrshArgs no
+// longer puts the value in argv; this stays as a guard for the error message.
 func redactArgs(args []string) []string {
 	out := make([]string, len(args))
 	for i, a := range args {

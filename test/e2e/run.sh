@@ -18,6 +18,7 @@ checks=(
   08_install
   10_env
   20_srun
+  22_blocking
   30_sbatch
   31_sbatch_resources
   32_par_allocation

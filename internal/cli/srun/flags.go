@@ -34,6 +34,10 @@ type options struct {
 	version     bool
 	gpuBind     string // --gpu-bind: "" unset, "none", "per_task[:n]"
 	testOnly    bool   // --test-only: report the step, launch nothing
+	// immediate is -I/--immediate ("" unset, "set" bare, else seconds): start
+	// the allocation at once or fail. input is -i/--input ("none" closes stdin).
+	immediate string
+	input     string
 
 	// Interactive-session request (--pty outside an allocation -> qrsh). These are
 	// meaningful only on that path; inside an allocation srun ignores them with a
@@ -50,6 +54,9 @@ type options struct {
 	// interactiveFlagsSet records that at least one allocation-shaping flag was
 	// given, so the inside-an-allocation path can warn that it ignored them.
 	interactiveFlagsSet bool
+	// untranslated lists the SLURM options given that the shim does not
+	// translate (each also warned), for a caller that must refuse one.
+	untranslated []string
 	// warnings accumulated during parsing (unknown flags, etc.).
 	warnings []string
 }
@@ -58,6 +65,12 @@ type options struct {
 // the command, passed through verbatim (REQ-RUN-006). Unknown flags warn and are
 // skipped unless strict (REQ-RUN-005). --mpi accepts only "none" (REQ-RUN-004).
 func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) {
+	return parseFlagsWith(slurmopts.For("srun"), args, strict, stderr)
+}
+
+// parseFlagsWith is parseFlags with another command's SLURM option table, for
+// salloc, which shares srun's allocation options.
+func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io.Writer) (*options, error) {
 	fs := pflag.NewFlagSet("srun", pflag.ContinueOnError)
 	fs.SetOutput(stderr)
 	// Stop at the first positional so the command and its flags pass through
@@ -110,6 +123,10 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		// warned. --exclusive reuses sbatch's guidance.
 		// --x11, --no-kill and --exclusive take an optional value in SLURM
 		// (--x11=all, --exclusive=user): strings with a bare-form default.
+		// -I and -i shape the session srun or salloc starts outside an
+		// allocation (qrsh -now yes, stdin).
+		immediate = fs.StringP("immediate", "I", "", "")
+		input     = fs.StringP("input", "i", "", "")
 		x11       = fs.String("x11", "", "")
 		overlap   = fs.Bool("overlap", false, "")
 		noKill    = fs.StringP("no-kill", "k", "", "")
@@ -121,14 +138,14 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 	)
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"
-	for _, n := range []string{"x11", "no-kill", "exclusive"} {
+	for _, n := range []string{"x11", "no-kill", "exclusive", "immediate"} {
 		fs.Lookup(n).NoOptDefVal = "set"
 	}
-	// Every other SLURM srun option, with SLURM's arity, so its value is never
-	// read as the command (REQ-RUN-005). Used ones warn below.
-	untranslated := defineSlurmOptions(fs, slurmopts.For("srun"))
+	// Every other SLURM option of the command, with SLURM's arity, so its value
+	// is never read as the command (REQ-RUN-005). Used ones warn below.
+	untranslated := defineSlurmOptions(fs, table)
 
-	if err := fs.Parse(longForms(args, fs, slurmopts.For("srun"))); err != nil {
+	if err := fs.Parse(longForms(args, fs, table)); err != nil {
 		return nil, err
 	}
 
@@ -165,6 +182,8 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 		gpuBind:     *gpuBind,
 		testOnly:    *testOnly,
 		pty:         *pty,
+		immediate:   *immediate,
+		input:       *input,
 		elastic:     strings.ToLower(*elastic),
 		partition:   *partition,
 		jobName:     *jobName,
@@ -178,8 +197,11 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 	if *exclusive != "" {
 		opt.warnings = append(opt.warnings, "--exclusive is not translated: ask for the node width explicitly (--ntasks-per-node=<cores>) or use a partition sized to the node")
 	}
-	if *overlap || *noKill != "" {
-		opt.warnings = append(opt.warnings, "--overlap/--no-kill are accepted and ignored (no Grid Engine analogue)")
+	// --overlap is what every step here already does: steps share the
+	// allocation's resources. Nothing to translate, nothing to warn about.
+	_ = overlap
+	if *noKill != "" {
+		opt.warnings = append(opt.warnings, "--no-kill is accepted and ignored (no Grid Engine analogue)")
 	}
 	_ = qos // consumed by applyInteractiveFlags's warning
 	if *nodelist != "" {
@@ -198,6 +220,7 @@ func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) 
 			used = append(used, "--"+f.Name)
 		}
 	})
+	opt.untranslated = used
 	for _, name := range used {
 		if strict {
 			return nil, fmt.Errorf("srun: error: option %s is not supported by slurm-shim", name)
@@ -313,7 +336,7 @@ func longName(o slurmopts.Option) string {
 func unknownFlags(args []string, fs *pflag.FlagSet) []string {
 	var out []string
 	for _, a := range args {
-		if !strings.HasPrefix(a, "-") || a == "-" {
+		if !strings.HasPrefix(a, "-") || a == "-" || a == "--" {
 			break // first positional; the rest is the command
 		}
 		name := strings.TrimLeft(a, "-")

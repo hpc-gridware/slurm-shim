@@ -86,9 +86,10 @@ assert_eq "$new_ids" "0" "dry run created no job"
 out="$(ptyrun 'QRSH_WRAPPER=/bin/echo srun --pty -p batch bash -c "echo REAL JOB=\$SLURM_JOB_ID"')"
 assert_contains "$out" "REAL JOB=" "QRSH_WRAPPER is scrubbed; the real command runs"
 
-# (8) srun without --pty outside an allocation still rejects (unchanged).
-out="$(gridware 'srun hostname 2>&1 || true')"
-assert_contains "$out" "not inside a slurm-shim allocation" "non-pty standalone srun still rejects"
+# (8) srun without --pty outside an allocation creates one and runs the step
+# (covered in depth by 22_blocking).
+out="$(gridware 'timeout -s INT 180 srun hostname </dev/null 2>&1; echo rc=$?')"
+assert_contains "$out" "rc=0" "srun without --pty outside an allocation runs the command"
 
 gridware "rm -f $JOB_HOME/e2e-07.sh"
 finish

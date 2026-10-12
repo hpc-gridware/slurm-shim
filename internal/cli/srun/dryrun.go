@@ -14,11 +14,6 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/stepper"
 )
 
-// tokenPlaceholder stands in for the per-step control-channel token in the
-// reported qrsh argv. A dry run never generates a token, and a real one must
-// never be printed (REQ-CHN-003, SI-51).
-const tokenPlaceholder = "<per-step token>"
-
 // dryRun reports the step instead of launching it: where each rank would land,
 // the qrsh command line that would carry its stepper, and the exact environment
 // every rank would run with.
@@ -83,7 +78,7 @@ func (s *supervisor) dryRun() int {
 		// Rendered by the launcher's own argv builder so it cannot drift from the
 		// command line Grid Engine actually receives.
 		fmt.Fprintf(out, "  %s: %s\n", node.Host, dryrun.Command("qrsh",
-			launch.QrshPreview(s.self, node.Host, "<routing>", tokenPlaceholder)))
+			launch.QrshPreview(s.self, node.Host, "<routing>")))
 	}
 
 	fmt.Fprintf(out, "\nranks:\n")

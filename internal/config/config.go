@@ -221,7 +221,6 @@ type Config struct {
 	CompatVersion    string   `yaml:"compat_version"`
 	Launcher         string   `yaml:"launcher"`
 	StrictFlags      bool     `yaml:"strict_flags"`
-	Standalone       string   `yaml:"standalone"`
 	KillOnBadExit    bool     `yaml:"kill_on_bad_exit"`
 	KillWait         Duration `yaml:"kill_wait"`
 	MasterInterface  string   `yaml:"master_interface"`
@@ -344,7 +343,6 @@ func Default() *Config {
 		CompatVersion:    "24.05.0",
 		Launcher:         "qrsh-inherit",
 		StrictFlags:      false,
-		Standalone:       "reject",
 		KillOnBadExit:    true,
 		KillWait:         Duration{30 * time.Second},
 		MasterInterface:  "",

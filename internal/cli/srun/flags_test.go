@@ -59,8 +59,8 @@ var _ = Describe("srun flag parsing", func() {
 			}
 		},
 		Entry("-u is --unbuffered, no value", []string{"-u", "python", "x.py"}, ""),
-		Entry("-I takes its value only attached", []string{"-I", "python", "x.py"}, "--immediate"),
-		Entry("-I60", []string{"-I60", "python", "x.py"}, "--immediate"),
+		Entry("-I takes its value only attached", []string{"-I", "python", "x.py"}, ""),
+		Entry("-I60", []string{"-I60", "python", "x.py"}, ""),
 		Entry("-x takes a value", []string{"-x", "node3", "python", "x.py"}, "--exclude"),
 		Entry("--exclude=", []string{"--exclude=node3", "python", "x.py"}, "--exclude"),
 		Entry("-m takes a value", []string{"-m", "block", "python", "x.py"}, "--distribution"),

@@ -2,6 +2,7 @@ package srun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,16 +61,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	lay, err := loadLayout(cfg, stderr)
+	lay, err := loadLayout()
 	if err != nil {
-		// Outside an allocation. --pty means "give me an interactive session":
-		// translate to qrsh. SLURM_JOB_ID set (a slave host / inside a rank) is a
-		// different error loadLayout already phrased, and must not become one.
-		if opt.pty && os.Getenv("SLURM_JOB_ID") == "" {
+		// Outside an allocation, srun creates one, as SLURM does: --pty gives
+		// the command a terminal, otherwise the command runs as a step and srun
+		// returns its exit status.
+		if refusal := allocationRefusal(err); refusal != nil {
+			errln(stderr, refusal.Error())
+			return 1
+		}
+		if opt.pty {
 			return runInteractive(cfg, opt, stderr)
 		}
-		errln(stderr, err.Error())
-		return 1
+		return runStandalone(cfg, opt, stderr)
 	}
 	// Inside an allocation: --pty and the allocation-shaping flags do not apply to
 	// a step; run the step but say so, so a user does not think they got a session.
@@ -823,12 +827,14 @@ func resolveKill(flag string, cfg *config.Config) bool {
 	return cfg.KillOnBadExit
 }
 
-func loadLayout(cfg *config.Config, stderr io.Writer) (*layout.Layout, error) {
+// errNoAllocation is loadLayout's error when srun runs outside any allocation.
+var errNoAllocation = errors.New("srun: error: not inside a slurm-shim allocation")
+
+func loadLayout() (*layout.Layout, error) {
 	dir, err := stateDir()
 	if err != nil {
-		// No TMPDIR means no allocation to be inside of, which is exactly the
-		// standalone case this function already reports below.
-		return nil, fmt.Errorf("srun: error: not inside a slurm-shim allocation (standalone: %s)", cfg.Standalone)
+		// No TMPDIR means no allocation to be inside of.
+		return nil, errNoAllocation
 	}
 	path := filepath.Join(dir, layout.LayoutFile)
 	lay, err := layout.Read(path)
@@ -842,7 +848,25 @@ func loadLayout(cfg *config.Config, stderr io.Writer) (*layout.Layout, error) {
 	if job := os.Getenv("SLURM_JOB_ID"); job != "" {
 		return nil, fmt.Errorf("srun: error: srun must run on the master host of job %s", job)
 	}
-	return nil, fmt.Errorf("srun: error: not inside a slurm-shim allocation (standalone: %s)", cfg.Standalone)
+	return nil, errNoAllocation
+}
+
+// allocationRefusal returns nil when srun, given loadLayout's error, may
+// create a new allocation, else the error to report. Only "no allocation"
+// qualifies, and only outside any Grid Engine job: inside one (a plain qsub
+// job, or a session whose parallel environment wrote no layout) a new
+// allocation would nest a job in a job -- and repeat in that job's own srun
+// until the cluster is full. A layout that exists but cannot be read is
+// reported, never replaced by a new allocation.
+func allocationRefusal(layoutErr error) error {
+	if !errors.Is(layoutErr, errNoAllocation) {
+		return layoutErr
+	}
+	if job := os.Getenv("JOB_ID"); job != "" {
+		return fmt.Errorf("srun: error: Grid Engine job %s is not a slurm-shim allocation (no layout): "+
+			"run srun in a job started by sbatch or salloc", job)
+	}
+	return nil
 }
 
 // stateDir resolves the per-job state directory, refusing an unset TMPDIR

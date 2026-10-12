@@ -61,7 +61,7 @@ var _ = Describe("starter_method / qrsh argv contract [REQ-RUN-009]", func() {
 	// remoteCommand is the tail of the qrsh argv: everything the remote host is
 	// asked to execute, which is exactly what the starter receives in "$@".
 	remoteCommand := func(self, host string) []string {
-		argv := launch.QrshPreview(self, host, "ENVELOPE", "TOKEN")
+		argv := launch.QrshPreview(self, host, "ENVELOPE")
 		for i, a := range argv {
 			if a == host {
 				return argv[i+1:]
