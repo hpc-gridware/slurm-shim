@@ -1,0 +1,48 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-master          
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-emb              
+jobnumber                          1385                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:24:36.180426
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -N sx-emb /tmp/sx-embed.sh
+start_time                         2026-10-12 13:24:36.185683
+end_time                           2026-10-12 13:24:37.294523
+granted_pe                         NONE                
+slots                              1                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       1            
+ru_utime                           0.052        
+ru_stime                           0.053        
+ru_maxrss                          6824                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1513                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         32                  
+ru_oublock                         40                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           13                  
+ru_nivcsw                          17                  
+wallclock                          2.025        
+cpu                                0.105        
+mem                                0.000             
+io                                 0.000             
+ioops                              99           
+iow                                0.000             
+maxvmem                            8962048           
+maxrss                             4894720           

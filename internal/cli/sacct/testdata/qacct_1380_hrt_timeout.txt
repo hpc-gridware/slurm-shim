@@ -1,0 +1,49 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker2         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-hrt              
+jobnumber                          1380                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:24:36.163682
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -b y -N sx-hrt -l h_rt=5 sleep 60
+start_time                         2026-10-12 13:24:36.172872
+end_time                           2026-10-12 13:24:42.223140
+granted_pe                         NONE                
+slots                              1                   
+failed                             100 : assumedly after job
+exit_status                        137                 
+deleted_by                         execd@ocs-worker2   
+ru_wallclock                       6            
+ru_utime                           0.046        
+ru_stime                           0.061        
+ru_maxrss                          6712                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1334                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         32                  
+ru_oublock                         8                   
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           13                  
+ru_nivcsw                          50                  
+wallclock                          7.062        
+cpu                                0.107        
+mem                                0.000             
+io                                 0.000             
+ioops                              89           
+iow                                0.000             
+maxvmem                            5042176           
+maxrss                             2154496           

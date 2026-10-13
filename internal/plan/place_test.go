@@ -60,6 +60,25 @@ var _ = Describe("Step placement", func() {
 		Expect(p.Nodes[0].Host).To(Equal("node002"))
 	})
 
+	It("leaves --exclude hosts out of the step", func() {
+		p, err := plan.Place(alloc(), plan.StepRequest{Exclude: []string{"node001"}, NTasks: 2})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.Nodes).To(HaveLen(1))
+		Expect(p.Nodes[0].Host).To(Equal("node002"))
+	})
+
+	It("refuses an --exclude that leaves no node", func() {
+		_, err := plan.Place(alloc(), plan.StepRequest{Exclude: []string{"node001", "node002"}})
+		Expect(err).To(MatchError(ContainSubstring("leaves no node")))
+		_, err = plan.Place(alloc(), plan.StepRequest{Nodelist: []string{"node002"}, Exclude: []string{"node002"}})
+		Expect(err).To(MatchError(ContainSubstring("leave no node")))
+	})
+
+	It("counts -N from the hosts --exclude leaves", func() {
+		_, err := plan.Place(alloc(), plan.StepRequest{Nodes: 2, Exclude: []string{"node001"}})
+		Expect(err).To(MatchError(ContainSubstring("requested 2 nodes, allocation has 1")))
+	})
+
 	It("rejects a --nodelist host outside the allocation [REQ-RUN-002]", func() {
 		_, err := plan.Place(alloc(), plan.StepRequest{Nodelist: []string{"node999"}})
 		Expect(err).To(HaveOccurred())

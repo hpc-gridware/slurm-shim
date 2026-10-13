@@ -1,0 +1,48 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker1         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-wd               
+jobnumber                          1384                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:24:36.177310
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -b y -N sx-wd -wd /tmp -l mem_free=100M,h_rt=600 sleep 2
+start_time                         2026-10-12 13:24:36.182706
+end_time                           2026-10-12 13:24:38.298878
+granted_pe                         NONE                
+slots                              1                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       2            
+ru_utime                           0.046        
+ru_stime                           0.061        
+ru_maxrss                          6844                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1342                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         0                   
+ru_oublock                         8                   
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           11                  
+ru_nivcsw                          49                  
+wallclock                          3.030        
+cpu                                0.107        
+mem                                0.000             
+io                                 0.000             
+ioops                              89           
+iow                                0.000             
+maxvmem                            5042176           
+maxrss                             2301952           

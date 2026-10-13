@@ -1,0 +1,48 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-master          
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-pe               
+jobnumber                          1382                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:24:36.170712
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -N sx-pe -pe slurm-shim 4 -par 2 /tmp/sx-pe.sh
+start_time                         2026-10-12 13:24:37.327996
+end_time                           2026-10-12 13:24:40.437933
+granted_pe                         slurm-shim          
+slots                              4                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       3            
+ru_utime                           0.056        
+ru_stime                           0.055        
+ru_maxrss                          6904                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          3697                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         72                  
+ru_oublock                         16                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           44                  
+ru_nivcsw                          11                  
+wallclock                          4.021        
+cpu                                0.111        
+mem                                0.000             
+io                                 0.000             
+ioops                              215          
+iow                                0.000             
+maxvmem                            8962048           
+maxrss                             4923392           

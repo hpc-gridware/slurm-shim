@@ -1,0 +1,49 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker1         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-del              
+jobnumber                          1387                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:24:36.187493
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -b y -N sx-del -l h_rt=600 sleep 60
+start_time                         2026-10-12 13:24:36.192743
+end_time                           2026-10-12 13:24:44.487130
+granted_pe                         NONE                
+slots                              1                   
+failed                             100 : assumedly after job
+exit_status                        137                 
+deleted_by                         gridware@ocs-master 
+ru_wallclock                       8            
+ru_utime                           0.052        
+ru_stime                           0.052        
+ru_maxrss                          6852                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1341                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         0                   
+ru_oublock                         8                   
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           11                  
+ru_nivcsw                          22                  
+wallclock                          9.303        
+cpu                                0.104        
+mem                                0.000             
+io                                 0.000             
+ioops                              89           
+iow                                0.000             
+maxvmem                            5042176           
+maxrss                             2236416           

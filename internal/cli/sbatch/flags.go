@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
 // options is the parsed sbatch request.
@@ -69,6 +70,35 @@ type options struct {
 	// status, the highest over an array's tasks.
 	wait bool
 
+	// Cluster resources beyond geometry (-L, -C, --exclusive, -w, -x, --tmp),
+	// checked against the cluster's complexes and resolved by submit.
+	licenses      string
+	constraint    string
+	exclusive     bool
+	exclusiveMode string // --exclusive=user|mcs|topo, which has no GE form
+	nodelist      string // -w hostlist, as given
+	exclude       string // -x hostlist, as given
+	tmp           string // GE-formatted --tmp
+	// Filled by run() once the cluster was consulted, for buildQsubArgs: the
+	// -l entries for the above, whether -w e can judge them, and the qsub
+	// job-control flags.
+	resourceEntries []string
+	unverifiable    string // why -w e must not judge the job, "" when it may
+	controlArgs     []string
+	// memKind is which memory flag set mem: "mem" (per node), "mem-per-cpu" or
+	// "mem-per-gpu" (per unit, scaled by submit.MemoryForScope at submit).
+	memKind string
+
+	// Job control (Phase 1c): -H, --begin, --requeue/--no-requeue, mail and
+	// --nice map to qsub -h, -a, -r, -m/-M and -p.
+	hold     bool
+	begin    string
+	requeue  string // "" unset, "y" or "n"
+	mailType string
+	mailUser string
+	haveNice bool
+	nice     int
+
 	// Hot spares (shim extensions, also accepted on #SHIM lines): --x-spares=k
 	// adds k idle nodes that replace a lost node during a step; --x-elastic
 	// picks which steps do that (auto, on, off).
@@ -88,6 +118,16 @@ var boolLong = map[string]bool{
 	"test-only": true,
 	"parsable":  true,
 	"wait":      true,
+	"hold":      true,
+	"requeue":   true, "no-requeue": true,
+}
+
+// optionalLong are the long flags whose value may only be attached
+// (--exclusive, --exclusive=user): bare, they take none, so the next token --
+// often the script -- is never consumed.
+var optionalLong = map[string]bool{
+	"exclusive": true,
+	"nice":      true,
 }
 
 // setBool applies a valueless long flag.
@@ -101,6 +141,15 @@ func setBool(o *options, name string) error {
 		return nil
 	case "wait":
 		o.wait = true
+		return nil
+	case "hold":
+		o.hold = true
+		return nil
+	case "requeue":
+		o.requeue = "y"
+		return nil
+	case "no-requeue":
+		o.requeue = "n"
 		return nil
 	}
 	return fmt.Errorf("sbatch: error: --%s is not a boolean flag", name)
@@ -122,6 +171,11 @@ func truthyFlag(v string) bool {
 // warn-and-ignored (REQ-SBT-001).
 var knownLong = map[string]bool{
 	"test-only": true, "parsable": true, "wait": true,
+	"hold": true, "requeue": true, "no-requeue": true,
+	"exclusive": true, "nice": true,
+	"licenses": true, "constraint": true, "exclude": true, "nodelist": true,
+	"mem-per-gpu": true, "tmp": true,
+	"begin": true, "mail-type": true, "mail-user": true,
 	"nodes": true, "ntasks": true, "ntasks-per-node": true, "cpus-per-task": true,
 	"partition": true, "job-name": true, "output": true, "error": true,
 	"chdir": true, "wrap": true, "array": true,
@@ -135,24 +189,6 @@ var knownLong = map[string]bool{
 	"open-mode": true, "wckey": true,
 }
 
-// unmappableLong are flags the shim recognizes but deliberately does not
-// translate, mapped to the reason. They are still ignored; this only upgrades
-// the generic "unknown directive" warning to one that names the Grid Engine
-// equivalent. Keep them out of knownLong -- these are booleans, and everything
-// in that set consumes a value, which here would be the script path.
-var unmappableLong = map[string]string{
-	// On OCS 9.1.5+ the shim does pin slots-per-node per job (qsub -par), so the
-	// old advice -- that whole-node allocation is site configuration and never a
-	// submission flag -- is no longer true. What is still missing is the target
-	// host's capacity: --exclusive means "all of whatever this node has", and
-	// sbatch does not query per-host slot counts.
-	"exclusive": "--exclusive is not translated: it means all of whatever the node " +
-		"has, and sbatch does not query per-host capacity. Ask for the width you " +
-		"need explicitly (--ntasks-per-node=<cores>, which IS pinned per job on " +
-		"OCS 9.1.5+), or use a partition whose PE has allocation_rule $pe_slots " +
-		"sized to the node, or add an exclusive complex",
-}
-
 // sbatchOpts is SLURM's sbatch option table: the arity of every option, used
 // to step over the ones the shim does not translate.
 var sbatchOpts = slurmopts.For("sbatch")
@@ -161,6 +197,7 @@ var shortToLong = map[byte]string{
 	'N': "nodes", 'n': "ntasks", 'c': "cpus-per-task", 'p': "partition",
 	'J': "job-name", 'o': "output", 'e': "error", 'D': "chdir",
 	'a': "array", 't': "time", 'd': "dependency", 'A': "account",
+	'L': "licenses", 'C': "constraint", 'x': "exclude", 'w': "nodelist", 'b': "begin",
 }
 
 // containerValueFlags are the Pyxis --container-* directives known to take a
@@ -250,11 +287,7 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 			}
 			if !knownLong[name] {
 				if !warned[name] {
-					if why, ok := unmappableLong[name]; ok {
-						warns = append(warns, why)
-					} else {
-						warns = append(warns, "unknown directive --"+name+" ignored")
-					}
+					warns = append(warns, "unknown directive --"+name+" ignored")
 					warned[name] = true
 				}
 				// A SLURM option steps over exactly its value, per SLURM's own
@@ -283,6 +316,12 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 				}
 				continue
 			}
+			if optionalLong[name] {
+				if err := setLong(&opt, name, val); err != nil {
+					return opt, warns, err
+				}
+				continue
+			}
 			if !hasVal {
 				v, ok := next()
 				if !ok {
@@ -300,7 +339,9 @@ func parseArgs(tokens []string, nDirective int) (options, []string, error) {
 				}
 			}
 		case tok == "-W":
-			opt.wait = true // -W is --wait, the one short flag without a value
+			opt.wait = true // -W is --wait; -H is --hold: the short flags without a value
+		case tok == "-H":
+			opt.hold = true
 		case strings.HasPrefix(tok, "-") && len(tok) > 1:
 			flag := tok[1]
 			long, ok := shortToLong[flag]
@@ -403,29 +444,68 @@ func setLong(opt *options, name, val string) error {
 		opt.haveArray = true
 		opt.arrayMin, opt.arrayMax, opt.arrayStep, opt.arrayThrottle = min, max, step, throttle
 	case "time":
-		sec, err := parseSlurmTime(val)
+		sec, err := submit.ParseSlurmTime(val)
 		if err != nil {
-			return err
+			return fmt.Errorf("sbatch: error: %w", err)
 		}
 		opt.timeSec, opt.haveTime = sec, true
-	case "mem", "mem-per-cpu":
-		opt.mem = convertMem(val)
-	case "gpus", "gpus-per-node":
-		n, err := parseGPUCount(val)
+	case "mem", "mem-per-cpu", "mem-per-gpu":
+		// Last wins, as for every flag here; the per-unit kinds are scaled to
+		// the memory complex's scope once the job's shape is known.
+		mem, err := submit.ConvertMem(val)
 		if err != nil {
-			return err
+			return fmt.Errorf("sbatch: error: --%s: %w", name, err)
+		}
+		opt.mem, opt.memKind = mem, name
+	case "tmp":
+		tmp, err := submit.ConvertMem(val)
+		if err != nil {
+			return fmt.Errorf("sbatch: error: --tmp: %w", err)
+		}
+		opt.tmp = tmp
+	case "licenses":
+		opt.licenses = val
+	case "constraint":
+		opt.constraint = val
+	case "nodelist":
+		opt.nodelist = val
+	case "exclude":
+		opt.exclude = val
+	case "exclusive":
+		opt.exclusive, opt.exclusiveMode = submit.ParseExclusive(val)
+	case "begin":
+		opt.begin = val
+	case "mail-type":
+		opt.mailType = val
+	case "mail-user":
+		opt.mailUser = val
+	case "nice":
+		// Bare --nice lowers the priority by 100, as SLURM does.
+		n := 100
+		if val != "" {
+			v, err := atoi()
+			if err != nil {
+				return err
+			}
+			n = v
+		}
+		opt.nice, opt.haveNice = n, true
+	case "gpus", "gpus-per-node":
+		n, err := submit.ParseGPUCount(val)
+		if err != nil {
+			return fmt.Errorf("sbatch: error: %w", err)
 		}
 		opt.gpus, opt.haveGPUs = n, true
 	case "gpus-per-task":
-		n, err := parseGPUCount(val)
+		n, err := submit.ParseGPUCount(val)
 		if err != nil {
-			return err
+			return fmt.Errorf("sbatch: error: %w", err)
 		}
 		opt.gpusPerTask, opt.haveGPUsPerTask = n, true
 	case "gpu-bind":
 		opt.gpuBind = val
 	case "gres":
-		if n, ok := gresGPUCount(val); ok {
+		if n, ok := submit.GresGPUCount(val); ok {
 			opt.gpus, opt.haveGPUs = n, true
 		}
 	case "signal":
@@ -446,85 +526,6 @@ func setLong(opt *options, name, val string) error {
 	return nil
 }
 
-// parseSlurmTime converts a SLURM --time value to seconds. It accepts plain
-// minutes ("60"), "MM:SS", "HH:MM:SS", and the day forms "D-HH", "D-HH:MM",
-// "D-HH:MM:SS".
-func parseSlurmTime(val string) (int, error) {
-	val = strings.TrimSpace(val)
-	days := 0
-	hasDays := false
-	if d := strings.IndexByte(val, '-'); d >= 0 {
-		n, err := strconv.Atoi(val[:d])
-		if err != nil {
-			return 0, fmt.Errorf("sbatch: error: --time: invalid days in %q", val)
-		}
-		days, val, hasDays = n, val[d+1:], true
-	}
-	parts := strings.Split(val, ":")
-	nums := make([]int, len(parts))
-	for i, p := range parts {
-		n, err := strconv.Atoi(strings.TrimSpace(p))
-		if err != nil {
-			return 0, fmt.Errorf("sbatch: error: --time: invalid value %q", val)
-		}
-		nums[i] = n
-	}
-	var h, m, s int
-	switch {
-	case hasDays: // D-HH[:MM[:SS]] -- keyed on the dash, not days>0, so "0-12:30" works
-		h = nums[0]
-		if len(nums) > 1 {
-			m = nums[1]
-		}
-		if len(nums) > 2 {
-			s = nums[2]
-		}
-	case len(nums) == 1: // minutes
-		m = nums[0]
-	case len(nums) == 2: // MM:SS
-		m, s = nums[0], nums[1]
-	default: // HH:MM:SS
-		h, m, s = nums[0], nums[1], nums[2]
-	}
-	return days*86400 + h*3600 + m*60 + s, nil
-}
-
-// convertMem rewrites a SLURM memory value ("4GB", "512MB", "1024") into GE's
-// single-letter suffix form ("4G", "512M", "1024M"). SLURM's default unit is
-// megabytes, so a bare number gains an M.
-func convertMem(val string) string {
-	v := strings.TrimSpace(val)
-	if v == "" {
-		return ""
-	}
-	up := strings.ToUpper(v)
-	for _, suf := range []struct{ slurm, ge string }{
-		{"KB", "K"}, {"MB", "M"}, {"GB", "G"}, {"TB", "T"},
-	} {
-		if strings.HasSuffix(up, suf.slurm) {
-			return strings.TrimSpace(up[:len(up)-2]) + suf.ge
-		}
-	}
-	last := up[len(up)-1]
-	if last == 'K' || last == 'M' || last == 'G' || last == 'T' {
-		return up
-	}
-	return up + "M" // bare number: SLURM default unit is MB
-}
-
-func parseGPUCount(val string) (int, error) {
-	// --gpus may be "N" or "type:N"; take the trailing count.
-	v := val
-	if c := strings.LastIndexByte(v, ':'); c >= 0 {
-		v = v[c+1:]
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("sbatch: error: --gpus: invalid count %q", val)
-	}
-	return n, nil
-}
-
 // nonGPUGres returns the entries of a --gres value that are not gpu requests
 // ("license:2" in "gpu:2,license:2"), so they are warned rather than dropped.
 func nonGPUGres(val string) []string {
@@ -536,23 +537,6 @@ func nonGPUGres(val string) []string {
 		}
 	}
 	return out
-}
-
-// gresGPUCount extracts the gpu count from a --gres value like "gpu:2" or
-// "gpu:a100:2"; it returns ok=false for a non-gpu gres.
-func gresGPUCount(val string) (int, bool) {
-	for _, entry := range strings.Split(val, ",") {
-		entry = strings.TrimSpace(entry)
-		if !strings.HasPrefix(entry, "gpu:") && entry != "gpu" {
-			continue
-		}
-		fields := strings.Split(entry, ":")
-		if n, err := strconv.Atoi(fields[len(fields)-1]); err == nil && n >= 0 {
-			return n, true
-		}
-		return 1, true // "gpu" or "gpu:type" without a count means one
-	}
-	return 0, false
 }
 
 // parseSignalDelay extracts the lead time (seconds) from a --signal value such

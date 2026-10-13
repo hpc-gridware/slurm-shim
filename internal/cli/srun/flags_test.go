@@ -61,11 +61,15 @@ var _ = Describe("srun flag parsing", func() {
 		Entry("-u is --unbuffered, no value", []string{"-u", "python", "x.py"}, ""),
 		Entry("-I takes its value only attached", []string{"-I", "python", "x.py"}, ""),
 		Entry("-I60", []string{"-I60", "python", "x.py"}, ""),
-		Entry("-x takes a value", []string{"-x", "node3", "python", "x.py"}, "--exclude"),
-		Entry("--exclude=", []string{"--exclude=node3", "python", "x.py"}, "--exclude"),
+		Entry("-x takes a value", []string{"-x", "node3", "python", "x.py"}, ""),
+		Entry("--exclude=", []string{"--exclude=node3", "python", "x.py"}, ""),
+		Entry("-L takes a value", []string{"-L", "lic:2", "python", "x.py"}, ""),
+		Entry("-C takes a value", []string{"-C", "avx512", "python", "x.py"}, ""),
+		Entry("-B takes a value", []string{"-B", "2:4", "python", "x.py"}, "--extra-node-info"),
 		Entry("-m takes a value", []string{"-m", "block", "python", "x.py"}, "--distribution"),
 		Entry("--multi-prog takes no value", []string{"--multi-prog", "python", "x.py"}, "--multi-prog"),
-		Entry("--exclusive=user", []string{"--exclusive=user", "python", "x.py"}, "--exclusive"),
+		Entry("--exclusive=user", []string{"--exclusive=user", "python", "x.py"}, ""),
+		Entry("bare --exclusive", []string{"--exclusive", "python", "x.py"}, ""),
 		Entry("--x11=all", []string{"--x11=all", "python", "x.py"}, "--x11"),
 	)
 
@@ -78,8 +82,8 @@ var _ = Describe("srun flag parsing", func() {
 	})
 
 	It("fails a SLURM option it does not translate under strict_flags [REQ-RUN-005]", func() {
-		_, err := parseFlags([]string{"-x", "node3", "hostname"}, true, io.Discard)
-		Expect(err).To(MatchError(ContainSubstring("--exclude")))
+		_, err := parseFlags([]string{"-m", "block", "hostname"}, true, io.Discard)
+		Expect(err).To(MatchError(ContainSubstring("--distribution")))
 	})
 
 	It("fails an unknown flag under strict_flags [REQ-RUN-005]", func() {
@@ -107,4 +111,34 @@ var _ = Describe("srun flag parsing", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(opt.req.Nodelist).To(Equal([]string{"node001", "node002", "node003"}))
 	})
+})
+
+var _ = Describe("srun allocation memory and value checks [todos 207, 208]", func() {
+	parse := func(args ...string) (*options, error) { return parseFlags(args, false, io.Discard) }
+
+	DescribeTable("takes the last of --mem, --mem-per-cpu and --mem-per-gpu",
+		func(wantMem, wantKind string, args ...string) {
+			opt, err := parse(append(args, "hostname")...)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opt.mem).To(Equal(wantMem))
+			Expect(opt.memKind).To(Equal(wantKind))
+		},
+		// SALLOC_MEM_PER_CPU arrives prepended, so a --mem on the command line wins.
+		Entry("--mem after an environment --mem-per-cpu", "8G", "", "--mem-per-cpu=2G", "--mem=8G"),
+		Entry("--mem-per-cpu after --mem", "2G", "mem-per-cpu", "--mem=8G", "--mem-per-cpu=2G"),
+		Entry("--mem-per-cpu after --mem-per-gpu", "1G", "mem-per-cpu", "--mem-per-gpu=4G", "--mem-per-cpu", "1G"),
+		Entry("--mem-per-gpu after --mem-per-cpu", "4G", "mem-per-gpu", "--mem-per-cpu=1G", "--mem-per-gpu=4G"),
+	)
+
+	DescribeTable("refuses values that would change the request they land in",
+		func(msg string, args ...string) {
+			_, err := parse(append(args, "hostname")...)
+			Expect(err).To(MatchError(ContainSubstring(msg)))
+		},
+		Entry("--mem with an extra -l entry", "invalid memory value", "--mem=1G,slots=9"),
+		Entry("--tmp with an extra -l entry", "invalid memory value", "--tmp=1G,h_rt=99999"),
+		Entry("--mem-per-cpu that is not a size", "invalid memory value", "--mem-per-cpu=lots"),
+		Entry("an -x host with an operator", "is not a host name", "-x", "a,!b"),
+		Entry("a -w host with a request", "is not a host name", "-w", "n1,h_vmem=1"),
+	)
 })

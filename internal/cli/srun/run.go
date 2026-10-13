@@ -23,6 +23,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/mux"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 	"github.com/hpc-gridware/slurm-shim/internal/version"
 )
 
@@ -40,6 +41,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		errln(stderr, "srun: warning: "+w)
 	}
 
+	// SRUN_* input variables go first, so a flag on the command line wins.
+	args = append(submit.InputEnv(submit.SrunInputEnv, os.LookupEnv), args...)
 	opt, err := parseFlags(args, cfg.StrictFlags, stderr)
 	if err != nil {
 		errln(stderr, err.Error())
@@ -77,10 +80,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	// Inside an allocation: --pty and the allocation-shaping flags do not apply to
 	// a step; run the step but say so, so a user does not think they got a session.
+	// Licenses, features, local disk and per-unit memory are requests a step
+	// cannot make; strict_flags refuses them as it refuses untranslated flags.
+	if opt.strictFlags && len(opt.allocationOnly) > 0 {
+		errln(stderr, "srun: error: "+strings.Join(opt.allocationOnly, ", ")+
+			" shape a new allocation and cannot apply to a step inside one (strict_flags)")
+		return 1
+	}
 	if opt.pty {
 		errln(stderr, "srun: warning: --pty inside an allocation runs a step with no terminal; start an interactive session from a login node")
 	} else if opt.interactiveFlagsSet {
-		errln(stderr, "srun: warning: --partition/--time/--mem/--gres/--account apply only to an interactive session (--pty) started outside an allocation; ignored for this step")
+		errln(stderr, "srun: warning: allocation options (--partition, --time, --mem, --gres, --account, "+
+			"--licenses, --constraint, --exclusive, --tmp, --immediate, --input) shape a new allocation, "+
+			"from srun or salloc outside one; ignored for this step")
 	}
 
 	p, err := plan.Place(lay, opt.req)

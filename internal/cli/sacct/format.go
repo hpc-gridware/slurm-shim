@@ -30,15 +30,21 @@ type row struct {
 	elapsed   time.Duration
 	maxRSS    float64
 	totalCPU  time.Duration
+	// The request-derived columns are rendered when the row is built, "" where
+	// the record cannot tell (always for a live row: qstat's listing carries no
+	// requests).
+	nnodes    string
+	reqMem    string
+	timelimit string
+	workDir   string
 }
 
 // fieldAliases maps the alternate spellings SLURM accepts onto the canonical
 // field name. Lookup is case-insensitive, as it is in sacct.
-// Only true synonyms belong here. NNodes and UID are deliberately absent: GE's
-// accounting record carries neither a node count nor a numeric uid, and aliasing
-// them onto AllocCPUS/User would report a slot count as a node count and a name
-// as an id -- both under the wrong column title, since header() resolves the
-// alias before choosing one. They fall through to an empty column instead.
+// Only true synonyms belong here. UID is deliberately absent: GE's accounting
+// record carries no numeric uid, and aliasing it onto User would report a name
+// as an id under the wrong column title, since header() resolves the alias
+// before choosing one. It falls through to an empty column instead.
 var fieldAliases = map[string]string{
 	"jobidraw": "jobid",
 	"job":      "jobid",
@@ -91,6 +97,14 @@ func (r row) value(field string) string {
 		return acctDuration(r.totalCPU)
 	case "maxrss":
 		return acctBytes(r.maxRSS)
+	case "nnodes":
+		return r.nnodes
+	case "reqmem":
+		return r.reqMem
+	case "timelimit":
+		return r.timelimit
+	case "workdir":
+		return r.workDir
 	default:
 		return ""
 	}
@@ -118,6 +132,8 @@ func header(field string) string {
 		"exitcode": "ExitCode", "nodelist": "NodeList", "user": "User",
 		"submit": "Submit", "start": "Start", "end": "End",
 		"elapsed": "Elapsed", "totalcpu": "TotalCPU", "maxrss": "MaxRSS",
+		"nnodes": "NNodes", "reqmem": "ReqMem", "timelimit": "Timelimit",
+		"workdir": "WorkDir",
 	}
 	if t, ok := titles[canonicalField(field)]; ok {
 		return t
@@ -175,10 +191,11 @@ func acctBytes(b float64) string {
 	return strconv.FormatInt(int64(b/1024), 10) + "K"
 }
 
-// render turns rows into output lines. parsable emits "|"-delimited fields
-// (trailing delimiter only for -P, matching SLURM); otherwise it prints sacct's
-// right-justified table with the dashed rule under the header.
-func render(fields []string, rows []row, parsable, trailing, noHeader bool) []string {
+// render turns rows into output lines. -p/-P emit delimited fields ("|" unless
+// --delimiter says otherwise; trailing delimiter only for -p, matching SLURM);
+// otherwise it prints sacct's right-justified table with the dashed rule under
+// the header.
+func render(fields []string, rows []row, opt options) []string {
 	head := make([]string, len(fields))
 	for i, f := range fields {
 		head[i] = header(f)
@@ -192,16 +209,16 @@ func render(fields []string, rows []row, parsable, trailing, noHeader bool) []st
 		cells = append(cells, line)
 	}
 
-	if parsable {
+	if opt.parsable {
 		out := make([]string, 0, len(cells)+1)
 		join := func(c []string) string {
-			s := strings.Join(c, "|")
-			if trailing {
-				s += "|"
+			s := strings.Join(c, opt.delimiter)
+			if opt.trailing {
+				s += opt.delimiter
 			}
 			return s
 		}
-		if !noHeader {
+		if !opt.noHeader {
 			out = append(out, join(head))
 		}
 		for _, c := range cells {
@@ -234,7 +251,7 @@ func render(fields []string, rows []row, parsable, trailing, noHeader bool) []st
 	}
 
 	out := make([]string, 0, len(cells)+2)
-	if !noHeader {
+	if !opt.noHeader {
 		rule := make([]string, len(fields))
 		for i := range fields {
 			rule[i] = strings.Repeat("-", widths[i])

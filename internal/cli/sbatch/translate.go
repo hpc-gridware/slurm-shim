@@ -10,31 +10,22 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
-// resolveGeometry derives the SLURM task geometry from the parsed options,
-// applying SLURM's defaults: -N without -n/--ntasks-per-node is one task per
-// node; --ntasks wins over an inconsistent --ntasks-per-node.
-func (o options) resolveGeometry() (ntasks, cpusPerTask int) {
-	cpusPerTask = o.cpusPerTask
-	if cpusPerTask < 1 {
-		cpusPerTask = 1
+// request is the job as the shared submit package sees it, so sbatch, srun
+// and salloc derive geometry, GPUs and the -l list the same way.
+func (o options) request() submit.Request {
+	return submit.Request{
+		Partition: o.partition,
+		Nodes:     o.nodes, NTasks: o.ntasks, NTasksPerNode: o.ntasksPerNode, CPUsPerTask: o.cpusPerTask,
+		HaveNTasks: o.haveNtasks, HavePerNode: o.havePerNode,
+		HaveTime: o.haveTime, TimeSec: o.timeSec, HaveSignal: o.haveSignal, SignalDelay: o.signalDelay,
+		Mem:      o.mem,
+		HaveGPUs: o.haveGPUs, GPUs: o.gpus, HaveGPUsPerTask: o.haveGPUsPerTask, GPUsPerTask: o.gpusPerTask,
+		ExportSpec: o.exportSpec,
 	}
-	switch {
-	case o.haveNtasks:
-		ntasks = o.ntasks
-	case o.nodes > 0 && o.havePerNode:
-		ntasks = o.nodes * o.ntasksPerNode
-	case o.nodes > 0:
-		ntasks = o.nodes
-	case o.havePerNode:
-		ntasks = o.ntasksPerNode
-	default:
-		ntasks = 1
-	}
-	if ntasks < 1 {
-		ntasks = 1
-	}
-	return ntasks, cpusPerTask
 }
+
+// resolveGeometry derives the task count and cpus-per-task SLURM would use.
+func (o options) resolveGeometry() (ntasks, cpusPerTask int) { return o.request().ResolveGeometry() }
 
 // maxGeometry bounds the task-geometry flags. Grid Engine rejects an absurd slot
 // request at submit time, but the shim itself now models the allocation for the
@@ -116,8 +107,10 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 		// byte-identical to what it was before this feature.
 		args = append(args, "-par", rule.Value)
 		// -w e only when it can actually judge the request: it cannot see
-		// load-sensor memory complexes and would refuse a runnable job.
-		if submit.VerifyGeometry(cfg, requestFor(opt)) {
+		// load-sensor values (memory, a non-consumable license count) or treats
+		// a running job's exclusive complex as taken, and would refuse a job that
+		// only has to wait.
+		if submit.VerifyGeometry(cfg, requestFor(opt)) && opt.unverifiable == "" {
 			args = append(args, "-w", "e")
 		}
 	}
@@ -168,11 +161,12 @@ func buildQsubArgs(cfg *config.Config, opt options, part config.Partition, slots
 		// A --signal request means the job wants a catchable warning before it is
 		// killed/preempted (submitit's checkpoint-then-requeue). GE delivers that
 		// via -notify (SIGUSR2 before a kill/reschedule -- exactly submitit's
-		// default preempt signal), and the job must be rerunnable (-r y) so the
-		// scheduler restarts it after the requeue. scancel --signal / scontrol
+		// default preempt signal); controlArgs makes the job rerunnable (-r y) so
+		// the scheduler restarts it after the requeue. scancel --signal / scontrol
 		// requeue then map to `qmod -rj`, which delivers SIGUSR2 and reschedules.
-		args = append(args, "-notify", "-r", "y")
+		args = append(args, "-notify")
 	}
+	args = append(args, opt.controlArgs...)
 	// Carry the task/device binding intent to the step: srun reads SLURM_GPU_BIND
 	// (as it would on SLURM, where an #SBATCH --gpu-bind propagates that way), and
 	// --gpus-per-task implies per-task binding.
@@ -252,24 +246,8 @@ func gpuBindSpec(opt options) string {
 	return ""
 }
 
-// gpuRequest resolves the per-node GPU count to request. --gpus/--gpus-per-node
-// are already per-node; --gpus-per-task is per task, so it scales by the tasks
-// placed on a node. Returns ok=false when no GPU request was made.
-func gpuRequest(opt options) (int, bool) {
-	if opt.haveGPUs {
-		return opt.gpus, true
-	}
-	if opt.haveGPUsPerTask {
-		return opt.gpusPerTask * opt.tasksPerNode(), true
-	}
-	return 0, false
-}
-
-// tasksPerNode is how many tasks land on one node, used to scale a per-task GPU
-// request. --ntasks-per-node states it outright; otherwise it is derived from the
-// resolved task count spread over the requested nodes (rounding up, since a
-// remainder still needs devices on some node). Defaults to one task per node.
-func (o options) tasksPerNode() int { return o.tasksOnNode(o.nodes) }
+// gpuRequest resolves the per-node GPU count to request (submit.GPURequest).
+func gpuRequest(opt options) (int, bool) { return submit.GPURequest(opt.request()) }
 
 // tasksOnNode is how many TASKS land on one node when the job occupies nodeCount
 // of them. Both the emitted `-l <gres>` request and the dry run's per-node device
@@ -280,19 +258,7 @@ func (o options) tasksPerNode() int { return o.tasksOnNode(o.nodes) }
 // `-N 3 --ntasks-per-node=2 -c 4 --gpus-per-task=1` pins -par 8 while only 2 tasks
 // land on each node -- deriving devices from 8 would request four times the GPUs
 // the job can use, on a host that likely has none to spare.
-func (o options) tasksOnNode(nodeCount int) int {
-	if o.havePerNode && o.ntasksPerNode > 0 {
-		return o.ntasksPerNode
-	}
-	if nodeCount < 1 {
-		nodeCount = 1
-	}
-	ntasks, _ := o.resolveGeometry()
-	if perNode := (ntasks + nodeCount - 1) / nodeCount; perNode > 0 {
-		return perNode
-	}
-	return 1
-}
+func (o options) tasksOnNode(nodeCount int) int { return o.request().TasksOnNode(nodeCount) }
 
 // buildResourceList assembles a single comma-joined GE -l value from the mapped
 // resource requests. Wall time -> h_rt (with s_rt as a pre-kill grace when a
@@ -300,20 +266,12 @@ func (o options) tasksOnNode(nodeCount int) int {
 // hard kill); memory -> the site's memory complex; GPUs -> the site's gres
 // complex. Empty when nothing was requested.
 func buildResourceList(cfg *config.Config, opt options) string {
-	var l []string
-	if opt.haveTime {
-		l = append(l, "h_rt="+strconv.Itoa(opt.timeSec))
-		if opt.haveSignal && opt.signalDelay > 0 && opt.signalDelay < opt.timeSec {
-			l = append(l, "s_rt="+strconv.Itoa(opt.timeSec-opt.signalDelay))
-		}
+	l := submit.ResourceList(cfg, opt.request())
+	if len(opt.resourceEntries) > 0 {
+		l = strings.Join(append([]string{l}, opt.resourceEntries...), ",")
+		l = strings.TrimPrefix(l, ",")
 	}
-	if opt.mem != "" && cfg.MemoryComplex != "" {
-		l = append(l, cfg.MemoryComplex+"="+opt.mem)
-	}
-	if n, ok := gpuRequest(opt); ok && cfg.GPU.GresComplex != "" {
-		l = append(l, cfg.GPU.GresComplex+"="+strconv.Itoa(n))
-	}
-	return strings.Join(l, ",")
+	return l
 }
 
 // buildArrayArgs translates a SLURM --array request into GE array flags. GE task
@@ -566,7 +524,11 @@ func withSpares(cfg *config.Config, opt options, slots int, rule allocationRule)
 	if cfg.MaxSpares > 0 && opt.spares > cfg.MaxSpares {
 		return 0, rule, fmt.Errorf("sbatch: error: --x-spares=%d exceeds this site's max_spares %d", opt.spares, cfg.MaxSpares)
 	}
-	if cannotTakeSpares(rule) != "" {
+	if opt.nodelist != "" {
+		return 0, rule, fmt.Errorf("sbatch: error: --x-spares cannot be combined with --nodelist: " +
+			"the job runs on exactly the listed hosts, so there is no other host to hold a spare")
+	}
+	if cannotTakeSpares(opt, rule) != "" {
 		return 0, rule, fmt.Errorf("sbatch: error: --x-spares needs a job pinned to at least 2 nodes: " +
 			"give --nodes=2 or more on a per-task partition, on OCS 9.1.5+ (qsub -par). " +
 			"The master node runs the batch script and cannot be replaced, so a 1-node job has nothing to spare")
@@ -577,7 +539,11 @@ func withSpares(cfg *config.Config, opt options, slots int, rule allocationRule)
 }
 
 // cannotTakeSpares says why a job cannot have hot spares, or "" when it can.
-func cannotTakeSpares(rule allocationRule) string {
+func cannotTakeSpares(opt options, rule allocationRule) string {
+	if opt.nodelist != "" {
+		// The spares' extra nodes would have to come from outside the -w list.
+		return "it runs on exactly its --nodelist hosts"
+	}
 	if !rule.emit() {
 		return "its nodes are not pinned: that needs --nodes on a per-task partition and OCS 9.1.5+ (qsub -par)"
 	}

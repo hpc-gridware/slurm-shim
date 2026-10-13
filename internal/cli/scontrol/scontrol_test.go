@@ -34,7 +34,7 @@ var _ = Describe("per-job state resolution [REQ-FAB-010]", func() {
 	It("reports no-job rather than reading /tmp when asked for its own job", func() {
 		GinkgoT().Setenv("TMPDIR", "")
 		var errBuf bytes.Buffer
-		code := run(&fake.Runner{}, []string{"show", "job"}, io.Discard, &errBuf)
+		code := run(&fake.Runner{}, nil, []string{"show", "job"}, io.Discard, &errBuf)
 		Expect(code).To(Equal(1))
 		Expect(errBuf.String()).To(ContainSubstring("not inside a job"))
 	})
@@ -43,14 +43,14 @@ var _ = Describe("per-job state resolution [REQ-FAB-010]", func() {
 var _ = Describe("scontrol show hostnames [REQ-SCT-001]", func() {
 	It("expands a nodelist to one hostname per line (AC4)", func() {
 		var out bytes.Buffer
-		code := run(&fake.Runner{}, []string{"show", "hostnames", "node[001-003,007]"}, &out, io.Discard)
+		code := run(&fake.Runner{}, nil, []string{"show", "hostnames", "node[001-003,007]"}, &out, io.Discard)
 		Expect(code).To(Equal(0))
 		Expect(out.String()).To(Equal("node001\nnode002\nnode003\nnode007\n"))
 	})
 
 	It("accepts the singular 'show hostname' alias", func() {
 		var out bytes.Buffer
-		code := run(&fake.Runner{}, []string{"show", "hostname", "n[1-2]"}, &out, io.Discard)
+		code := run(&fake.Runner{}, nil, []string{"show", "hostname", "n[1-2]"}, &out, io.Discard)
 		Expect(code).To(Equal(0))
 		Expect(out.String()).To(Equal("n1\nn2\n"))
 	})
@@ -58,13 +58,13 @@ var _ = Describe("scontrol show hostnames [REQ-SCT-001]", func() {
 	It("reads $SLURM_JOB_NODELIST when no argument is given", func() {
 		GinkgoT().Setenv("SLURM_JOB_NODELIST", "gpu[01-02]")
 		var out bytes.Buffer
-		Expect(run(&fake.Runner{}, []string{"show", "hostnames"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(&fake.Runner{}, nil, []string{"show", "hostnames"}, &out, io.Discard)).To(Equal(0))
 		Expect(out.String()).To(Equal("gpu01\ngpu02\n"))
 	})
 
 	It("errors on a malformed hostlist", func() {
 		var errBuf bytes.Buffer
-		code := run(&fake.Runner{}, []string{"show", "hostnames", "node[1-"}, io.Discard, &errBuf)
+		code := run(&fake.Runner{}, nil, []string{"show", "hostnames", "node[1-"}, io.Discard, &errBuf)
 		Expect(code).To(Equal(1))
 		Expect(errBuf.String()).To(ContainSubstring("Invalid hostlist"))
 	})
@@ -73,7 +73,7 @@ var _ = Describe("scontrol show hostnames [REQ-SCT-001]", func() {
 var _ = Describe("scontrol requeue [REQ-SCT-002]", func() {
 	It("maps a compound array id to a task-scoped qmod -rj", func() {
 		r := &fake.Runner{}
-		code := run(r, []string{"requeue", "4711_2"}, io.Discard, io.Discard)
+		code := run(r, nil, []string{"requeue", "4711_2"}, io.Discard, io.Discard)
 		Expect(code).To(Equal(0))
 		Expect(r.Calls).To(HaveLen(1))
 		Expect(r.Calls[0].Name).To(Equal("qmod"))
@@ -82,7 +82,7 @@ var _ = Describe("scontrol requeue [REQ-SCT-002]", func() {
 
 	It("maps a bare job id directly", func() {
 		r := &fake.Runner{}
-		Expect(run(r, []string{"requeue", "4711"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(run(r, nil, []string{"requeue", "4711"}, io.Discard, io.Discard)).To(Equal(0))
 		Expect(r.Calls[0].Args).To(Equal([]string{"-rj", "4711"}))
 	})
 
@@ -91,7 +91,7 @@ var _ = Describe("scontrol requeue [REQ-SCT-002]", func() {
 			return fake.Response{Exit: 1, Stderr: []byte("job 4711 is not rerunnable")}
 		}}
 		var errBuf bytes.Buffer
-		code := run(r, []string{"requeue", "4711"}, io.Discard, &errBuf)
+		code := run(r, nil, []string{"requeue", "4711"}, io.Discard, &errBuf)
 		Expect(code).To(Equal(1))
 		Expect(errBuf.String()).To(ContainSubstring("not rerunnable"))
 	})
@@ -110,7 +110,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
 
 		var out bytes.Buffer
-		Expect(run(&fake.Runner{}, []string{"show", "job", "4711"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(&fake.Runner{}, nil, []string{"show", "job", "4711"}, &out, io.Discard)).To(Equal(0))
 		s := out.String()
 		Expect(s).To(ContainSubstring("JobId=4711"))
 		Expect(s).To(ContainSubstring("NodeList=node[001-002]"))
@@ -132,7 +132,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		}
 		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
 		var buf bytes.Buffer
-		Expect(run(&fake.Runner{}, []string{"show", "job", "42"}, &buf, io.Discard)).To(Equal(0))
+		Expect(run(&fake.Runner{}, nil, []string{"show", "job", "42"}, &buf, io.Discard)).To(Equal(0))
 		out := buf.String()
 		Expect(out).To(ContainSubstring("NodeList=node[001,003]"))
 		Expect(out).To(ContainSubstring("NumNodes=2"))
@@ -150,7 +150,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		}
 		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
 		var buf bytes.Buffer
-		Expect(run(&fake.Runner{}, []string{"show", "job", "42"}, &buf, io.Discard)).To(Equal(0))
+		Expect(run(&fake.Runner{}, nil, []string{"show", "job", "42"}, &buf, io.Discard)).To(Equal(0))
 		Expect(buf.String()).NotTo(ContainSubstring("SpareNodes"))
 	})
 
@@ -160,7 +160,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 			return fake.Response{Stdout: []byte(qstatRunning)}
 		}}
 		var out bytes.Buffer
-		Expect(run(r, []string{"show", "job", "14"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "14"}, &out, io.Discard)).To(Equal(0))
 		s := out.String()
 		Expect(s).To(ContainSubstring("JobId=14"))
 		Expect(s).To(ContainSubstring("JobName=wrap.sh"))
@@ -187,7 +187,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 			return fake.Response{Stdout: []byte(qstatRunning)}
 		}}
 		var out, errOut bytes.Buffer
-		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker[2,1],ocs-master"))
 		Expect(out.String()).NotTo(ContainSubstring("SpareNodes"), "a job without spares keeps its record")
 		Expect(out.String()).NotTo(ContainSubstring("SwappedNodes"))
@@ -205,7 +205,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 			return fake.Response{Stdout: []byte(qstatRunning)}
 		}}
 		var out, errOut bytes.Buffer
-		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("NodeList=node[001,003]"))
 		Expect(out.String()).To(ContainSubstring("SpareNodes=node004"))
 		Expect(out.String()).To(ContainSubstring("SwappedNodes=node002"))
@@ -223,7 +223,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 			return fake.Response{Stdout: []byte(qstatRunning)}
 		}}
 		var out, errOut bytes.Buffer
-		Expect(run(r, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "14"}, &out, &errOut)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker1"))
 		Expect(errOut.String()).To(ContainSubstring("node list unavailable"))
 		Expect(errOut.String()).To(ContainSubstring("no granted host list for 14"))
@@ -238,7 +238,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 			return fake.Response{Stdout: []byte(qstatRunning)} // job 14
 		}}
 		var out bytes.Buffer
-		Expect(run(r, []string{"show", "job", "14"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "14"}, &out, io.Discard)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("JobId=14")) // GE record, not the layout's 4711
 		Expect(out.String()).To(ContainSubstring("NodeList=ocs-worker1"))
 		Expect(r.Calls).NotTo(BeEmpty()) // GE was queried
@@ -251,7 +251,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
 		r := &fake.Runner{}
 		var out bytes.Buffer
-		Expect(run(r, []string{"show", "job", "4711"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "4711"}, &out, io.Discard)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("JobId=4711"))
 		Expect(r.Calls).To(BeEmpty()) // layout path: qstat never called
 	})
@@ -263,7 +263,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		Expect(layout.Write(filepath.Join(tmp, layout.StateDir), lay)).To(Succeed())
 		r := &fake.Runner{}
 		var out bytes.Buffer
-		Expect(run(r, []string{"show", "job"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job"}, &out, io.Discard)).To(Equal(0))
 		Expect(out.String()).To(ContainSubstring("JobId=77"))
 		Expect(r.Calls).To(BeEmpty())
 	})
@@ -276,7 +276,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		// GE task 5 is RUNNING (first row); GE task 2 -- SLURM index 1 -- is
 		// PENDING. Asking for 4711_1 must report that task, not task 5.
 		var out bytes.Buffer
-		Expect(run(r, []string{"show", "job", "4711_1"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, nil, []string{"show", "job", "4711_1"}, &out, io.Discard)).To(Equal(0))
 		s := out.String()
 		Expect(s).To(ContainSubstring("JobId=4711_1"))
 		Expect(s).To(ContainSubstring("JobState=PENDING"))
@@ -298,7 +298,7 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 		for _, c := range cases {
 			r := &fake.Runner{Responder: func(_ string, _ []string) fake.Response { return c.resp }}
 			var errBuf bytes.Buffer
-			Expect(run(r, []string{"show", "job", "1"}, io.Discard, &errBuf)).To(Equal(1))
+			Expect(run(r, nil, []string{"show", "job", "1"}, io.Discard, &errBuf)).To(Equal(1))
 			Expect(errBuf.String()).To(ContainSubstring(c.want))
 		}
 	})
@@ -309,14 +309,14 @@ var _ = Describe("scontrol show job [REQ-SCT-003]", func() {
 			return fake.Response{Stdout: []byte(qstatRunning)}
 		}}
 		var errBuf bytes.Buffer
-		Expect(run(r, []string{"show", "job", "999"}, io.Discard, &errBuf)).To(Equal(1))
+		Expect(run(r, nil, []string{"show", "job", "999"}, io.Discard, &errBuf)).To(Equal(1))
 		Expect(errBuf.String()).To(ContainSubstring("Invalid job id"))
 	})
 
 	It("errors when no job id is given outside a job", func() {
 		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
 		var errBuf bytes.Buffer
-		Expect(run(&fake.Runner{}, []string{"show", "job"}, io.Discard, &errBuf)).To(Equal(1))
+		Expect(run(&fake.Runner{}, nil, []string{"show", "job"}, io.Discard, &errBuf)).To(Equal(1))
 		Expect(errBuf.String()).To(ContainSubstring("no job id specified"))
 	})
 })
@@ -365,7 +365,7 @@ const qstatArray = `<?xml version='1.0'?>
 var _ = Describe("scontrol errors", func() {
 	It("rejects an unknown subcommand", func() {
 		var errBuf bytes.Buffer
-		code := run(&fake.Runner{}, []string{"reconfigure"}, io.Discard, &errBuf)
+		code := run(&fake.Runner{}, nil, []string{"reconfigure"}, io.Discard, &errBuf)
 		Expect(code).To(Equal(1))
 		Expect(errBuf.String()).To(HavePrefix("scontrol: error:"))
 	})
@@ -376,7 +376,7 @@ var _ = Describe("scontrol dry run [SLURM_SHIM_DRY_RUN]", func() {
 		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
 		inner := &fake.Runner{}
 		var errBuf bytes.Buffer
-		code := run(dryrun.Wrap(inner, &errBuf, "scontrol"),
+		code := run(dryrun.Wrap(inner, &errBuf, "scontrol"), nil,
 			[]string{"requeue", "4711_2"}, io.Discard, &errBuf)
 
 		Expect(code).To(Equal(0))
@@ -392,7 +392,7 @@ var _ = Describe("scontrol dry run [SLURM_SHIM_DRY_RUN]", func() {
 			return fake.Response{Stdout: []byte(qstatShowJob)}
 		}}
 		var out, errBuf bytes.Buffer
-		code := run(dryrun.Wrap(inner, &errBuf, "scontrol"),
+		code := run(dryrun.Wrap(inner, &errBuf, "scontrol"), nil,
 			[]string{"show", "job", "4711"}, &out, &errBuf)
 
 		Expect(code).To(Equal(0))

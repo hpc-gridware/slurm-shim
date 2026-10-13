@@ -49,6 +49,17 @@ type AccountingRecord struct {
 	Elapsed    time.Duration
 	MaxRSS     float64 // bytes
 	TotalCPU   time.Duration
+	// GrantedPE is the parallel environment the job ran in, "" for none.
+	GrantedPE string
+	// SubmitCmdLine is the qsub command line as recorded. qacct prints neither
+	// the job's resource requests (category) nor its working directory, so this
+	// is the only source for Timelimit, ReqMem and WorkDir.
+	SubmitCmdLine string
+	// Hosts are the distinct hosts of this run: the master's, then those of its
+	// PE task records. PETasks counts those task records; with
+	// accounting_summary TRUE there are none and Hosts is the master alone.
+	Hosts   []string
+	PETasks int
 }
 
 // JobAccounting runs qacct through the runner and returns the finished records
@@ -84,6 +95,7 @@ func JobAccounting(ctx context.Context, runner Runner, q AcctQuery) ([]Accountin
 		return nil, perr
 	}
 	recs := make([]AccountingRecord, 0, len(details))
+	peTasks := peTaskRuns{}
 	for _, d := range details {
 		// Skip PE task records. A cluster configured with the spec's recommended
 		// accounting_summary FALSE (REQ-APX-004) writes one extra record per
@@ -97,7 +109,11 @@ func JobAccounting(ctx context.Context, runner Runner, q AcctQuery) ([]Accountin
 		// alone. Reporting nothing for that window is the right answer -- it
 		// reads as "unknown, keep polling" and resolves on the next poll --
 		// whereas a slave task's record would be a wrong answer that sticks.
-		if pt := strings.TrimSpace(d.PETaskID); pt != "" && pt != "NONE" {
+		key := runKey{job: d.JobNumber, task: d.TaskID}
+		if isPETask(d.PETaskID) {
+			// Not reported, but remembered: the hosts the tasks ran on are the
+			// only record of how many nodes a parallel job spanned.
+			peTasks.add(key, d.HostName)
 			continue
 		}
 		rec := AccountingRecord{
@@ -118,7 +134,11 @@ func JobAccounting(ctx context.Context, runner Runner, q AcctQuery) ([]Accountin
 			End:        geTime(d.EndTime),
 			MaxRSS:     d.JobUsage.Usage.MaxRSS,
 			TotalCPU:   time.Duration((d.JobUsage.RUsage.RuUtime + d.JobUsage.RUsage.RuStime) * float64(time.Second)),
+			GrantedPE:  grantedPE(d.GrantedPE),
+			// The command line is kept verbatim; sacct extracts what it needs.
+			SubmitCmdLine: d.SubmitCommandLine,
 		}
+		rec.Hosts, rec.PETasks = peTasks.take(key, d.HostName)
 		rec.Elapsed = elapsed(d.JobUsage.RUsage.RuWallclock, rec.Start, rec.End)
 		recs = append(recs, rec)
 	}

@@ -1,0 +1,216 @@
+<?xml version='1.0'?>
+<job_info  xmlns:xsd="https://github.com/hpc-gridware/clusterscheduler/raw/master/source/dist/util/resources/schemas/qstat/qstat.xsd">
+  <queue_info>
+    <job_list state="running">
+      <JB_job_number>1396</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sqF_arrrun</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:07.255416</JAT_start_time>
+      <queue_name>all.q@ocs-worker1</queue_name>
+      <slots>1</slots>
+      <tasks>1</tasks>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1396</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sqF_arrrun</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:07.258132</JAT_start_time>
+      <queue_name>all.q@ocs-master</queue_name>
+      <slots>1</slots>
+      <tasks>2</tasks>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1396</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sqF_arrrun</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:07.258548</JAT_start_time>
+      <queue_name>all.q@ocs-worker2</queue_name>
+      <slots>1</slots>
+      <tasks>3</tasks>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1397</JB_job_number>
+      <JAT_prio>0.60500</JAT_prio>
+      <JB_name>sqG_pe</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:07.261752</JAT_start_time>
+      <queue_name>all.q@ocs-worker1</queue_name>
+      <slots>2</slots>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1400</JB_job_number>
+      <JAT_prio>0.60500</JAT_prio>
+      <JB_name>sc_sb2</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:31.564927</JAT_start_time>
+      <queue_name>all.q@ocs-master</queue_name>
+      <slots>2</slots>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1399</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sc_renamed</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:31.484553</JAT_start_time>
+      <queue_name>all.q@ocs-worker2</queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1398</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sqI_arrsplit</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:31.484064</JAT_start_time>
+      <queue_name>all.q@ocs-worker2</queue_name>
+      <slots>1</slots>
+      <tasks>2</tasks>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1398</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sqI_arrsplit</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:38:31.484370</JAT_start_time>
+      <queue_name>all.q@ocs-master</queue_name>
+      <slots>1</slots>
+      <tasks>3</tasks>
+    </job_list>
+    <job_list state="running">
+      <JB_job_number>1377</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sc_arr</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>r</state>
+      <JAT_start_time>2026-10-12T13:39:01.581185</JAT_start_time>
+      <queue_name>all.q@ocs-worker2</queue_name>
+      <slots>1</slots>
+      <tasks>1</tasks>
+    </job_list>
+  </queue_info>
+  <job_info>
+    <job_list state="pending">
+      <JB_job_number>1394</JB_job_number>
+      <JAT_prio>0.50500</JAT_prio>
+      <JB_name>sqA_run</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>Eqw</state>
+      <JAT_submission_time>2026-10-12T13:38:07.246915</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1369</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sqB_held</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:23:18.919956</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1371</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sqD_begin</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>qw</state>
+      <JAT_submission_time>2026-10-12T13:23:18.926413</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1372</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sqE_arr</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:23:18.928836</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+      <tasks>1-5:1</tasks>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1376</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>newname</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:23:37.559471</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1377</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sc_arr</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:23:37.561656</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+      <tasks>3</tasks>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1378</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sc_future</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>qw</state>
+      <JAT_submission_time>2026-10-12T13:23:37.564573</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1379</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sc_dep</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:23:39.725268</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1393</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sqH_ophold</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:37:45.612463</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1395</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sqC_dep</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:38:07.250087</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+    <job_list state="pending">
+      <JB_job_number>1398</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>sqI_arrsplit</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-12T13:38:07.264081</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+      <tasks>1,4</tasks>
+    </job_list>
+  </job_info>
+</job_info>

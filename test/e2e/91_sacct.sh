@@ -153,7 +153,9 @@ fi
 p2="$(gridware "sacct -n -j '$ok_id' -o JobID,State --parsable2")"
 assert_eq "$p2" "$ok_id|COMPLETED" "--parsable2 has no trailing delimiter"
 pp="$(gridware "sacct -n -j '$ok_id' -o JobID,State -P")"
-assert_eq "$pp" "$ok_id|COMPLETED|" "-P keeps the trailing delimiter"
+assert_eq "$pp" "$ok_id|COMPLETED" "-P is --parsable2: no trailing delimiter"
+pp="$(gridware "sacct -n -j '$ok_id' -o JobID,State -p")"
+assert_eq "$pp" "$ok_id|COMPLETED|" "-p keeps the trailing delimiter"
 
 # -X is accepted and changes nothing: there are no step rows to filter out.
 xx="$(gridware "sacct -n -X -j '$ok_id' -o JobID,State --parsable2")"

@@ -2,6 +2,7 @@ package gedata
 
 import (
 	"encoding/xml"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,8 @@ type JobRow struct {
 	// only the one that applies, so the other stays zero.
 	Start  time.Time
 	Submit time.Time
+	// Prio is Grid Engine's normalized priority (0.0 to 1.0) from JAT_prio.
+	Prio float64
 }
 
 // Key is the id squeue renders for this row and the key JobHosts maps by.
@@ -93,6 +96,7 @@ type xmlJobList struct {
 	Tasks  string `xml:"tasks"`
 	Start  string `xml:"JAT_start_time"`
 	Submit string `xml:"JAT_submission_time"`
+	Prio   string `xml:"JAT_prio"`
 }
 
 // qstatTimeLayout is how qstat renders a timestamp in XML, e.g.
@@ -117,6 +121,15 @@ func qstatTime(v string) time.Time {
 	return t
 }
 
+// qstatPrio parses JAT_prio, 0 when absent or unreadable.
+func qstatPrio(v string) float64 {
+	p, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0
+	}
+	return p
+}
+
 // ParseQstatXML parses `qstat -xml` output into job rows.
 func ParseQstatXML(data []byte) ([]JobRow, error) {
 	var doc qstatXML
@@ -135,6 +148,7 @@ func ParseQstatXML(data []byte) ([]JobRow, error) {
 			TaskID: strings.TrimSpace(j.Tasks),
 			Start:  qstatTime(j.Start),
 			Submit: qstatTime(j.Submit),
+			Prio:   qstatPrio(j.Prio),
 		})
 	}
 	for _, j := range doc.QueueJobs {

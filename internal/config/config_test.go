@@ -485,3 +485,25 @@ partitions:
 		))
 	})
 })
+
+var _ = Describe("PartitionFor", func() {
+	cfg := &config.Config{
+		DefaultPartition: "batch",
+		Partitions: map[string]config.Partition{
+			"batch": {Queue: "all.q", PE: "make"},
+			"smp":   {Queue: "all.q", PE: "smp"},
+			"gpu":   {Queue: "gpu.q", PE: "gpu.pe"},
+		},
+		PartitionAliases: map[string]string{"long.q": "long"},
+	}
+	DescribeTable("names the partition squeue and scontrol show job print",
+		func(queue, pe, want string) { Expect(cfg.PartitionFor(queue, pe)).To(Equal(want)) },
+		Entry("queue and PE match one partition", "all.q@n1", "smp", "smp"),
+		Entry("queue shared, PE matches none: the default partition", "all.q@n1", "other", "batch"),
+		Entry("queue alone", "gpu.q", "", "gpu"),
+		Entry("an alias wins", "long.q@n2", "make", "long"),
+		Entry("no queue: matched on the PE", "", "gpu.pe", "gpu"),
+		Entry("an unconfigured queue keeps its name", "test.q@n1", "", "test.q"),
+		Entry("neither queue nor PE", "", "", ""),
+	)
+})

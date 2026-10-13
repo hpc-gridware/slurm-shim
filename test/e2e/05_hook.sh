@@ -22,6 +22,7 @@ gridware "test -f $HOOK" || { fail "hook not installed at $HOOK"; finish; }
 hook_case() {
   local setup="$1" policy="$2"
   gridware "
+    umask 077 # private, as the fabricator writes them, whatever the login umask
     d=\$(mktemp -d) && mkdir -p \"\$d/slurm_shim\" && cd \"\$d\" || exit 99
     $setup
     printf '%s\n' 'export TMPDIR=\"'\"\$d\"'\"' \

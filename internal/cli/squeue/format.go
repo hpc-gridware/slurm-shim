@@ -3,6 +3,7 @@ package squeue
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -12,17 +13,20 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
-// token is one piece of a parsed format string: a literal run or a field verb
-// with an optional right-justify width.
+// token is one piece of a parsed format: a literal run, or a field verb with a
+// field size, its justification, and (for -O) a suffix printed after it.
 type token struct {
 	literal string
-	width   int
-	verb    byte
 	isField bool
+	verb    byte
+	width   int
+	right   bool
+	suffix  string
 }
 
-// tokenize parses a squeue format string. A field is "%[.]<width><verb>"; "%%"
-// is a literal percent; other characters pass through (REQ-SQU-002).
+// tokenize parses a squeue -o format string. A field is "%[.]<size><verb>":
+// "." right-justifies, size is the field size; "%%" is a literal percent; other
+// characters pass through (REQ-SQU-002).
 func tokenize(format string) []token {
 	var toks []token
 	for i := 0; i < len(format); {
@@ -41,7 +45,9 @@ func tokenize(format string) []token {
 			i++
 			continue
 		}
+		right := false
 		if format[i] == '.' {
+			right = true
 			i++
 		}
 		width := 0
@@ -50,11 +56,71 @@ func tokenize(format string) []token {
 			i++
 		}
 		if i < len(format) {
-			toks = append(toks, token{isField: true, width: width, verb: format[i]})
+			toks = append(toks, token{isField: true, width: width, right: right, verb: format[i]})
 			i++
 		}
 	}
 	return toks
+}
+
+// longFields maps the squeue -O field names the shim renders (matched without
+// regard to case) to the -o verb that renders the same value.
+var longFields = map[string]byte{
+	"jobid":         'i',
+	"partition":     'P',
+	"name":          'j',
+	"username":      'u',
+	"state":         'T',
+	"statecompact":  't',
+	"timeused":      'M',
+	"timelimit":     'l',
+	"numnodes":      'D',
+	"nodelist":      'N',
+	"reason":        'r',
+	"starttime":     'S',
+	"submittime":    'V',
+	"account":       'a',
+	"priority":      'p',
+	"numcpus":       'C',
+	"minmemory":     'm',
+	"workdir":       'Z',
+	"tres-per-node": 'b',
+}
+
+// longFieldSize is the size SLURM gives a -O field that names none.
+const longFieldSize = 20
+
+// tokenizeLong parses a squeue -O format: comma-separated
+// "type[:[.][size][suffix]]" fields, left-justified in 20 characters unless a
+// size is given. Fields the shim does not render are returned by name so the
+// caller can warn about them; they are left out of the output.
+func tokenizeLong(format string) (toks []token, unknown []string) {
+	for _, field := range strings.Split(format, ",") {
+		name, spec, _ := strings.Cut(strings.TrimSpace(field), ":")
+		if name == "" {
+			continue
+		}
+		verb, ok := longFields[strings.ToLower(name)]
+		if !ok {
+			unknown = append(unknown, name)
+			continue
+		}
+		t := token{isField: true, verb: verb, width: longFieldSize}
+		if strings.HasPrefix(spec, ".") {
+			t.right = true
+			spec = spec[1:]
+		}
+		digits := 0
+		for digits < len(spec) && spec[digits] >= '0' && spec[digits] <= '9' {
+			digits++
+		}
+		if digits > 0 {
+			t.width, _ = strconv.Atoi(spec[:digits])
+		}
+		t.suffix = spec[digits:]
+		toks = append(toks, t)
+	}
+	return toks, unknown
 }
 
 func render(toks []token, value func(byte) string) string {
@@ -64,51 +130,75 @@ func render(toks []token, value func(byte) string) string {
 			b.WriteString(t.literal)
 			continue
 		}
-		v := value(t.verb)
-		if t.width > 0 {
-			fmt.Fprintf(&b, "%*s", t.width, v)
-		} else {
-			b.WriteString(v)
-		}
+		b.WriteString(fit(value(t.verb), t.width, t.right))
+		b.WriteString(t.suffix)
 	}
 	return b.String()
 }
 
-func formatHeader(format string) string {
-	return render(tokenize(format), headerTitle)
+// fit sizes a value to its field the way squeue does: a sized field is cut to
+// its size (this is why SLURM's default format shows only 8 characters of a job
+// name) and padded on the side opposite its justification.
+func fit(v string, width int, right bool) string {
+	if width <= 0 {
+		return v
+	}
+	if len(v) > width {
+		v = v[:width]
+	}
+	if right {
+		return fmt.Sprintf("%*s", width, v)
+	}
+	return fmt.Sprintf("%-*s", width, v)
+}
+
+func formatHeader(toks []token) string {
+	return render(toks, headerTitle)
 }
 
 // view is everything a row needs beyond the row itself: the config, the granted
-// host lists keyed by gedata.JobKey, and one clock reading shared by every row so
-// a long listing cannot show two different elapsed times for the same instant.
-// It is a struct rather than more positional parameters because every column
-// datum added so far has widened both the renderer and its call sites.
+// host lists keyed by gedata.JobKey, each job's `qstat -xml -j` detail keyed by
+// job id, and one clock reading shared by every row so a long listing cannot
+// show two different elapsed times for the same instant.
 type view struct {
-	cfg   *config.Config
-	hosts map[string]gedata.JobAllocation
-	now   time.Time
+	cfg     *config.Config
+	hosts   map[string]gedata.JobAllocation
+	details map[string]gedata.JobInfo
+	// schedInfo says the scheduler records why jobs wait (schedd_job_info).
+	schedInfo bool
+	now       time.Time
 }
 
-func (v view) formatRow(format string, row gedata.JobRow) string {
-	return render(tokenize(format), func(b byte) string { return v.rowValue(b, row) })
+func (v view) formatRow(toks []token, row gedata.JobRow) string {
+	return render(toks, func(b byte) string { return v.rowValue(b, row) })
 }
 
-// hostVerbs are the format verbs whose value comes from the granted host list.
-// needsHosts gates the supplementary query on this set and rowValue reads the
-// hosts for exactly these verbs; format_test.go asserts the two agree, so a new
-// node column cannot be added to one without the other and end up always empty.
+// hostVerbs are the format verbs whose value names the granted hosts. A row
+// whose hosts had to be guessed is reported on stderr when one of them is shown.
 var hostVerbs = []byte{'D', 'N', 'R'}
 
-// needsHosts reports whether a format asks for a column that requires the node
-// list, so squeue can skip the supplementary qstat when it does not.
-func needsHosts(format string) bool {
-	for _, t := range tokenize(format) {
-		if t.isField && bytes.IndexByte(hostVerbs, t.verb) >= 0 {
+// detailVerbs are the format verbs whose value needs the `qstat -xml -j` query:
+// the granted hosts, and every field plain qstat -xml does not carry. needsDetail
+// gates the query on this set and rowValue reads the detail for exactly these
+// verbs; squeue_test.go asserts the two agree, so a new column cannot be added
+// to one without the other and end up always empty.
+var detailVerbs = []byte{'D', 'N', 'R', 'P', 'r', 'l', 'S', 'V', 'a', 'c', 'm', 'b', 'Z'}
+
+func usesVerb(toks []token, verbs []byte) bool {
+	for _, t := range toks {
+		if t.isField && bytes.IndexByte(verbs, t.verb) >= 0 {
 			return true
 		}
 	}
 	return false
 }
+
+// needsDetail reports whether a format asks for a column that requires the
+// detail query, so squeue can skip it when it does not.
+func needsDetail(toks []token) bool { return usesVerb(toks, detailVerbs) }
+
+// needsHosts reports whether a format shows a node column.
+func needsHosts(toks []token) bool { return usesVerb(toks, hostVerbs) }
 
 // started reports whether a job holds an allocation and has a running clock.
 // Grid Engine records a start time, and keeps the granted hosts, for states SLURM
@@ -152,41 +242,41 @@ func (v view) degraded(row gedata.JobRow) bool {
 	return started(row) && len(v.hosts[row.Key()].Hosts) == 0
 }
 
-func headerTitle(verb byte) string {
-	switch verb {
-	case 'i':
-		return "JOBID"
-	case 'P':
-		return "PARTITION"
-	case 'j':
-		return "NAME"
-	case 'u':
-		return "USER"
-	case 't':
-		return "ST"
-	case 'T':
-		return "STATE"
-	case 'M':
-		return "TIME"
-	case 'D':
-		return "NODES"
-	case 'R':
-		return "NODELIST(REASON)"
-	case 'C':
-		return "CPUS"
-	case 'N':
-		return "NODELIST"
-	default:
-		return ""
-	}
+// headers are SLURM 24.05's column titles per verb.
+var headers = map[byte]string{
+	'i': "JOBID",
+	'P': "PARTITION",
+	'j': "NAME",
+	'u': "USER",
+	't': "ST",
+	'T': "STATE",
+	'M': "TIME",
+	'D': "NODES",
+	'R': "NODELIST(REASON)",
+	'C': "CPUS",
+	'N': "NODELIST",
+	'r': "REASON",
+	'l': "TIME_LIMIT",
+	'S': "START_TIME",
+	'V': "SUBMIT_TIME",
+	'a': "ACCOUNT",
+	'p': "PRIORITY",
+	'Q': "PRIORITY",
+	'c': "MIN_CPUS",
+	'm': "MIN_MEMORY",
+	'b': "TRES_PER_NODE",
+	'Z': "WORK_DIR",
 }
 
+func headerTitle(verb byte) string { return headers[verb] }
+
 func (v view) rowValue(verb byte, row gedata.JobRow) string {
+	d, known := v.details[row.JobID]
 	switch verb {
 	case 'i':
 		return slurmID(row)
 	case 'P':
-		return partition(row.Queue, v.cfg)
+		return v.partition(row)
 	case 'j':
 		return row.Name
 	case 'u':
@@ -208,19 +298,128 @@ func (v view) rowValue(verb byte, row gedata.JobRow) string {
 		return "1"
 	case 'R':
 		if !started(row) {
-			// SLURM puts the scheduler's reason here for a job that is not running.
-			// Grid Engine's reason lives in a separate query this command does not
-			// make, so the column says only that there is no allocation to name.
-			return "(None)"
+			return "(" + v.reason(row) + ")"
 		}
 		return nodelist(v.hostsFor(row))
+	case 'r':
+		if started(row) {
+			return "None"
+		}
+		return v.reason(row)
 	case 'C':
 		return strconv.Itoa(row.Slots)
+	case 'c':
+		nodes := len(v.hostsFor(row))
+		if nodes < 1 {
+			nodes = 1
+		}
+		return strconv.Itoa((row.Slots + nodes - 1) / nodes)
 	case 'N':
 		return nodelist(v.hostsFor(row))
+	case 'l':
+		if !known {
+			return "N/A"
+		}
+		if limit, ok := d.Requests["h_rt"]; ok && limit.Amount > 0 {
+			return slurmDuration(time.Duration(limit.Amount) * time.Second)
+		}
+		return "UNLIMITED"
+	case 'S':
+		if started(row) && !row.Start.IsZero() {
+			return slurmTime(row.Start)
+		}
+		// SLURM shows a pending job's expected start; the one Grid Engine knows
+		// is the -a time it may not start before.
+		return slurmTime(d.Begin)
+	case 'V':
+		if !row.Submit.IsZero() {
+			return slurmTime(row.Submit)
+		}
+		return slurmTime(d.Submit)
+	case 'a':
+		return orNull(d.Account)
+	case 'm':
+		req, ok := d.Requests[v.cfg.MemoryComplex]
+		if !ok || req.Amount <= 0 {
+			return "0"
+		}
+		return slurmMemory(req.Amount)
+	case 'b':
+		req, ok := d.Requests[v.cfg.GPU.GresComplex]
+		if !ok || req.Amount <= 0 {
+			return "N/A"
+		}
+		return "gres/gpu:" + strconv.FormatFloat(req.Amount, 'f', -1, 64)
+	case 'Z':
+		return orNull(d.WorkDir)
+	case 'p':
+		return strconv.FormatFloat(row.Prio, 'f', 8, 64)
+	case 'Q':
+		// SLURM's %p is its integer priority divided by 2^32-1; this is the
+		// inverse, so the two columns agree and %Q sorts as Grid Engine ranks.
+		return strconv.FormatUint(uint64(math.Round(row.Prio*math.MaxUint32)), 10)
 	default:
 		return ""
 	}
+}
+
+// Pending reasons, in SLURM's spelling.
+const (
+	reasonNone      = "None"
+	reasonFailed    = "launch failed requeued held"
+	reasonHeldUser  = "JobHeldUser"
+	reasonHeldAdmin = "JobHeldAdmin"
+	reasonDepend    = "Dependency"
+	reasonBegin     = "BeginTime"
+	reasonResources = "Resources"
+	reasonPriority  = "Priority"
+)
+
+// reason is why a pending job is not running. The job's own state answers first
+// and needs no scheduler setting: an error state (Eqw, a job Grid Engine failed
+// to start and holds until it is cleared), a hold, an unfinished predecessor, a
+// start time still in the future. Only then is the scheduler asked, and it can answer
+// only when schedd_job_info is enabled: a job it left a message for is short of
+// resources, one it did not is waiting its turn. Without that setting there is
+// nothing more to say, which SLURM spells None.
+func (v view) reason(row gedata.JobRow) string {
+	if strings.ContainsRune(row.State, 'E') {
+		return reasonFailed
+	}
+	d, ok := v.details[row.JobID]
+	if !ok {
+		return reasonNone
+	}
+	switch d.Hold(row.TaskID) {
+	case gedata.HoldUser:
+		return reasonHeldUser
+	case gedata.HoldAdmin:
+		return reasonHeldAdmin
+	case gedata.HoldDependency:
+		return reasonDepend
+	}
+	switch {
+	case len(d.Predecessors) > 0:
+		return reasonDepend
+	case d.Begin.After(v.now):
+		return reasonBegin
+	case len(d.SchedulerMessages) > 0:
+		return reasonResources
+	case v.schedInfo:
+		return reasonPriority
+	}
+	return reasonNone
+}
+
+// partition names the SLURM partition a job belongs to, from the master queue
+// instance of a started job, else the queue it requested, and its PE.
+func (v view) partition(row gedata.JobRow) string {
+	queue := row.Queue
+	d := v.details[row.JobID]
+	if queue == "" && len(d.Queues) > 0 {
+		queue = d.Queues[0]
+	}
+	return v.cfg.PartitionFor(queue, d.PE)
 }
 
 // nodelist renders the hosts holding a job, compressed the way
@@ -237,13 +436,18 @@ func nodelist(hosts []string) string {
 }
 
 // squeueElapsed is the TIME column: how long a job has been running. SLURM shows
-// 0:00 until a job starts, and squeue's own format is more compact than sacct's
-// (no leading zero on the hour, and no hour at all below one).
+// 0:00 until a job starts.
 func squeueElapsed(row gedata.JobRow, now time.Time) string {
 	if row.Start.IsZero() || !started(row) {
 		return "0:00"
 	}
-	d := now.Sub(row.Start)
+	return slurmDuration(now.Sub(row.Start))
+}
+
+// slurmDuration renders a duration as squeue does for TIME and TIME_LIMIT,
+// which is more compact than sacct's: no leading zero on the hour, and no hour
+// at all below one.
+func slurmDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}
@@ -262,9 +466,33 @@ func squeueElapsed(row gedata.JobRow, now time.Time) string {
 	}
 }
 
-// partition maps a queue instance to a SLURM partition via the aliases map.
-func partition(queue string, cfg *config.Config) string {
-	return cfg.PartitionOf(queue)
+// slurmTime renders a timestamp as squeue does, "N/A" when there is none.
+func slurmTime(t time.Time) string {
+	if t.IsZero() {
+		return "N/A"
+	}
+	return t.Format("2006-01-02T15:04:05")
+}
+
+// slurmMemory renders a byte count as squeue's MIN_MEMORY does: megabytes, with
+// the largest unit that divides it exactly.
+func slurmMemory(bytes float64) string {
+	mb := int64(math.Round(bytes / (1 << 20)))
+	switch {
+	case mb > 0 && mb%(1<<20) == 0:
+		return strconv.FormatInt(mb>>20, 10) + "T"
+	case mb > 0 && mb%(1<<10) == 0:
+		return strconv.FormatInt(mb>>10, 10) + "G"
+	default:
+		return strconv.FormatInt(mb, 10) + "M"
+	}
+}
+
+func orNull(s string) string {
+	if s == "" {
+		return "(null)"
+	}
+	return s
 }
 
 // hostOf returns the host part of a "queue@host" instance.
@@ -276,7 +504,7 @@ func hostOf(queue string) string {
 }
 
 // slurmID is the job id as SLURM shows it: an array element by its 0-based
-// index ("4711_0"), a pending range as "4711_[0-9]" (SI-14).
+// index ("4711_0"), pending tasks as "4711_[0-9]" or "4711_[0,3]" (SI-14).
 func slurmID(row gedata.JobRow) string {
-	return gedata.JobKey(row.JobID, gedata.SlurmTask(row.TaskID))
+	return gedata.JobKey(row.JobID, gedata.SlurmTaskList(row.TaskID))
 }

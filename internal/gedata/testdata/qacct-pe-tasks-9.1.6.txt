@@ -1,0 +1,144 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker1         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-pe2              
+jobnumber                          1391                
+taskid                             undefined
+pe_taskid                          1.ocs-worker1
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:26:21.734471
+submit_cmd_line                    qsub -clear -terse -o /tmp/sx-pe2.out -j y -q all.q -N sx-pe2 -pe slurm-shim 4 -par 2 /tmp/sx-pe2.sh
+start_time                         2026-10-12 13:26:21.740844
+end_time                           2026-10-12 13:26:21.869867
+granted_pe                         slurm-shim          
+slots                              4                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       0            
+ru_utime                           0.044        
+ru_stime                           0.073        
+ru_maxrss                          6940                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          3160                
+ru_majflt                          1                   
+ru_nswap                           0                   
+ru_inblock                         7728                
+ru_oublock                         24                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           30                  
+ru_nivcsw                          10                  
+wallclock                          1.007        
+cpu                                0.117        
+mem                                0.000             
+io                                 0.000             
+ioops                              0            
+iow                                0.000             
+maxvmem                            0                 
+maxrss                             0                 
+==============================================================
+qname                              all.q               
+hostname                           ocs-master          
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-pe2              
+jobnumber                          1391                
+taskid                             undefined
+pe_taskid                          1.ocs-master
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:26:21.734463
+submit_cmd_line                    qsub -clear -terse -o /tmp/sx-pe2.out -j y -q all.q -N sx-pe2 -pe slurm-shim 4 -par 2 /tmp/sx-pe2.sh
+start_time                         2026-10-12 13:26:21.739948
+end_time                           2026-10-12 13:26:21.864665
+granted_pe                         slurm-shim          
+slots                              4                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       0            
+ru_utime                           0.051        
+ru_stime                           0.062        
+ru_maxrss                          6936                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1669                
+ru_majflt                          1                   
+ru_nswap                           0                   
+ru_inblock                         8320                
+ru_oublock                         32                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           13                  
+ru_nivcsw                          18                  
+wallclock                          1.008        
+cpu                                0.113        
+mem                                0.000             
+io                                 0.000             
+ioops                              0            
+iow                                0.000             
+maxvmem                            0                 
+maxrss                             0                 
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker1         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-pe2              
+jobnumber                          1391                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:26:21.475965
+submit_cmd_line                    qsub -clear -terse -o /tmp/sx-pe2.out -j y -q all.q -N sx-pe2 -pe slurm-shim 4 -par 2 /tmp/sx-pe2.sh
+start_time                         2026-10-12 13:26:21.600995
+end_time                           2026-10-12 13:26:21.871387
+granted_pe                         slurm-shim          
+slots                              4                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       0            
+ru_utime                           0.060        
+ru_stime                           0.091        
+ru_maxrss                          10128               
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          11094               
+ru_majflt                          3                   
+ru_nswap                           0                   
+ru_inblock                         9552                
+ru_oublock                         16                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           126                 
+ru_nivcsw                          50                  
+wallclock                          1.265        
+cpu                                0.151        
+mem                                0.000             
+io                                 0.000             
+ioops                              0            
+iow                                0.000             
+maxvmem                            0                 
+maxrss                             0                 

@@ -41,3 +41,10 @@ detailed `-j` view does.
 is identical to gpu: plain `hard_resource_list: h_vmem=2G`; XML
 `qstat_l_requests/{CE_name=h_vmem, CE_stringval=2G, CE_doubleval=2147483648}`
 (bytes in CE_doubleval).
+
+## PE task accounting records (sacct NNodes)
+
+`qacct-pe-tasks-9.1.6.txt`: `qacct -j` for `qsub -pe slurm-shim 4 -par 2` whose
+script ran `qrsh -inherit` once per host, on a PE with `accounting_summary FALSE`.
+The two task records (`pe_taskid 1.ocs-worker1`, `1.ocs-master`) come first,
+the master record (`pe_taskid NONE`) last.

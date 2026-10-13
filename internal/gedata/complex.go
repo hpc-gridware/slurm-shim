@@ -16,29 +16,51 @@ const (
 	ConsumableNone    = "NO"   // not consumable: a host filter, never a grant
 )
 
-// ConsumableScope reports how this cluster interprets a request for the named
-// complex, as one of the Consumable* constants.
-//
-// It matters because the same `-l mem_free=4G` means "4G per slot" under
-// consumable YES and "4G on this host" under NO, so a per-node figure derived
-// from it is only correct if the scope is known. Verified on OCS 9.1.5: every
-// stock memory complex, mem_free included, is `consumable NO`.
+// Numeric reports whether a request can carry a count (INT, DOUBLE, MEMORY).
+func (c Complex) Numeric() bool {
+	switch strings.ToUpper(c.Type) {
+	case "INT", "DOUBLE", "MEMORY":
+		return true
+	}
+	return false
+}
+
+// CanRequest reports whether a job may name the complex in -l.
+func (c Complex) CanRequest() bool {
+	r := strings.ToUpper(c.Requestable)
+	return r == "YES" || r == "FORCED"
+}
+
+// Catalog is the cluster's complex table.
+type Catalog []Complex
+
+// Lookup finds a complex by its name or shortcut, either of which a job may
+// request.
+func (cat Catalog) Lookup(name string) (Complex, bool) {
+	for _, c := range cat {
+		if c.Name == name || (c.Shortcut != "" && c.Shortcut == name) {
+			return c, true
+		}
+	}
+	return Complex{}, false
+}
+
+// Complexes reads the cluster's complex table, upper-casing Type, Relop,
+// Requestable and Consumable as Grid Engine prints them (BOOL, EXCL, JOB, ...).
 //
 // The `qconf -sc` table is the same eight-column layout go-clusterscheduler's
 // ShowAllComplexes parses; that library couples parsing to its own exec, so the
 // few lines are mirrored here to keep the call on the shim's Runner (testable,
 // timeout-controlled). Exposing a pure parser upstream would let this delegate.
-func ConsumableScope(ctx context.Context, r Runner, name string) (string, error) {
-	if r == nil || name == "" {
-		return "", fmt.Errorf("gedata: no runner or complex name")
+func Complexes(ctx context.Context, r Runner) (Catalog, error) {
+	if r == nil {
+		return nil, fmt.Errorf("gedata: no runner")
 	}
-	out, _, exit, err := r.Run(ctx, "qconf", "-sc")
+	out, err := runChecked(ctx, r, "qconf", "-sc")
 	if err != nil {
-		return "", fmt.Errorf("qconf -sc: %w", err)
+		return nil, err
 	}
-	if exit != 0 {
-		return "", fmt.Errorf("qconf -sc: exit %d", exit)
-	}
+	var cat Catalog
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "#") {
 			continue
@@ -47,10 +69,31 @@ func ConsumableScope(ctx context.Context, r Runner, name string) (string, error)
 		if len(f) != 8 {
 			continue
 		}
-		// Column 0 is the name, column 1 its shortcut; either may be requested.
-		if f[0] == name || f[1] == name {
-			return strings.ToUpper(f[5]), nil
-		}
+		cat = append(cat, Complex{
+			Name: f[0], Shortcut: f[1], Type: strings.ToUpper(f[2]), Relop: strings.ToUpper(f[3]),
+			Requestable: strings.ToUpper(f[4]), Consumable: strings.ToUpper(f[5]),
+		})
+	}
+	return cat, nil
+}
+
+// ConsumableScope reports how this cluster interprets a request for the named
+// complex, as one of the Consumable* constants.
+//
+// It matters because the same `-l mem_free=4G` means "4G per slot" under
+// consumable YES and "4G on this host" under NO, so a per-node figure derived
+// from it is only correct if the scope is known. Verified on OCS 9.1.5: every
+// stock memory complex, mem_free included, is `consumable NO`.
+func ConsumableScope(ctx context.Context, r Runner, name string) (string, error) {
+	if r == nil || name == "" {
+		return "", fmt.Errorf("gedata: no runner or complex name")
+	}
+	cat, err := Complexes(ctx, r)
+	if err != nil {
+		return "", err
+	}
+	if c, ok := cat.Lookup(name); ok {
+		return c.Consumable, nil
 	}
 	return "", fmt.Errorf("gedata: complex %q not found in qconf -sc", name)
 }

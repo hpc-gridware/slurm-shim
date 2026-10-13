@@ -29,6 +29,19 @@ var _ = Describe("shared translations", func() {
 		Entry("HH:MM:SS", "2:00:00", 7200),
 		Entry("D-HH", "1-00", 86400),
 		Entry("D-HH:MM:SS", "0-12:30:00", 45000),
+		Entry("explicit zero-day D-HH:MM", "0-12:30", 45000), // not MM:SS (would be 750)
+	)
+
+	DescribeTable("GresGPUCount",
+		func(v string, wantN int, wantOK bool) {
+			n, ok := submit.GresGPUCount(v)
+			Expect(ok).To(Equal(wantOK))
+			Expect(n).To(Equal(wantN))
+		},
+		Entry("gpu:2", "gpu:2", 2, true),
+		Entry("typed gpu", "gpu:a100:4", 4, true),
+		Entry("gpu without a count is one", "gpu", 1, true),
+		Entry("non-gpu gres", "mps:100", 0, false),
 	)
 	It("rejects a non-numeric time with a neutral (prefix-free) error", func() {
 		_, err := submit.ParseSlurmTime("2:0x:00")
@@ -38,9 +51,26 @@ var _ = Describe("shared translations", func() {
 	})
 
 	DescribeTable("ConvertMem",
-		func(v, want string) { Expect(submit.ConvertMem(v)).To(Equal(want)) },
+		func(v, want string) {
+			got, err := submit.ConvertMem(v)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want))
+		},
 		Entry("GB->G", "4GB", "4G"), Entry("G stays", "4G", "4G"),
-		Entry("bare is MB", "512", "512M"), Entry("empty", "", ""),
+		Entry("MB", "512MB", "512M"), Entry("lower case", "8g", "8G"),
+		Entry("bare is MB", "512", "512M"), Entry("a fraction", "1.5G", "1.5G"),
+		Entry("empty", "", ""),
+	)
+
+	DescribeTable("ConvertMem refuses what is not a size",
+		func(v string) {
+			_, err := submit.ConvertMem(v)
+			Expect(err).To(MatchError(ContainSubstring("invalid memory value")))
+		},
+		Entry("an extra -l request", "1G,h_rt=99999"),
+		Entry("a unit GE does not know", "4P"),
+		Entry("a negative size", "-1G"),
+		Entry("words", "lots"),
 	)
 
 	DescribeTable("ExportArgs",

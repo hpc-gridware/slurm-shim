@@ -166,3 +166,29 @@ var _ = Describe("srun dry run [REQ-DRY-002] [REQ-DRY-003] [REQ-DRY-004]", func(
 		}
 	})
 })
+
+var _ = Describe("srun allocation flags inside an allocation [todo 212]", func() {
+	It("keeps an -x host out of the step", func() {
+		tmp := twoByEight()
+		sess := runSrunEnv(tmp, dryEnv, "-x", "node001", "-n", "2", "hostname")
+		Eventually(sess, "30s").Should(gexec.Exit(0))
+		Expect(errOf(sess)).To(ContainSubstring("node002"))
+		Expect(errOf(sess)).NotTo(ContainSubstring("node001"))
+	})
+
+	It("refuses -L, -C and --tmp under strict_flags: a step cannot request them", func() {
+		tmp := twoByEight()
+		Expect(os.WriteFile(filepath.Join(tmp, "config.yaml"), []byte("launcher: local\nstrict_flags: true\n"), 0o600)).To(Succeed())
+		sess := runSrunEnv(tmp, dryEnv, "-L", "lic:1", "-C", "avx", "--tmp=1G", "hostname")
+		Eventually(sess, "30s").Should(gexec.Exit(1))
+		Expect(errOf(sess)).To(ContainSubstring("--constraint, --licenses, --tmp shape a new allocation"))
+		Expect(errOf(sess)).NotTo(ContainSubstring("would launch:"))
+	})
+
+	It("warns about them without strict_flags and runs the step", func() {
+		tmp := twoByEight()
+		sess := runSrunEnv(tmp, dryEnv, "-L", "lic:1", "-n", "1", "hostname")
+		Eventually(sess, "30s").Should(gexec.Exit(0))
+		Expect(errOf(sess)).To(ContainSubstring("ignored for this step"))
+	})
+})

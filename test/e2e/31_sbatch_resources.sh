@@ -170,14 +170,14 @@ if [ -n "$time_id" ]; then
   fi
   # NOTE: real SLURM reports TIMEOUT for a --time expiry. GE's execd kills the job
   # itself and records failed=100 (the same code as a qdel), not the failed=37 the
-  # qmaster path would give, so the shim reports CANCELLED. That is a genuine
-  # fidelity gap, pinned here so a future mapping change is a deliberate one.
+  # qmaster path would give. sacct tells it from a qdel by the run having lasted
+  # the job's h_rt, and reports TIMEOUT, as SLURM does.
   # Assert the GE-side fact directly as well as the shim's mapping of it, so a
   # failure says which half moved: acctState keys only on `failed`.
   gefailed="$(gridware "qacct -j '$time_id' 2>/dev/null | awk '/^failed/{print \$2; exit}'")"
   assert_eq "$gefailed" "100" "GE records an execd-enforced h_rt kill as failed=100"
   st="$(gridware "sacct -n -j '$time_id' -o State,ExitCode --parsable2 | head -1")"
-  assert_eq "${st%%|*}" "CANCELLED" "a --time expiry is terminal in sacct (SLURM would say TIMEOUT)"
+  assert_eq "${st%%|*}" "TIMEOUT" "a --time expiry is TIMEOUT in sacct"
   assert_eq "${st#*|}" "0:9" "the kill is reported as a signal, not an exit code"
 fi
 

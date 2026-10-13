@@ -15,6 +15,7 @@ type StepRequest struct {
 	CPUsPerTask  int      // -c
 	GPUsPerTask  int      // --gpus-per-task
 	Nodelist     []string // -w, expanded host names
+	Exclude      []string // -x, expanded host names the step must not use
 	// AutoDivideGPUs splits the node's grant evenly among local ranks when no
 	// --gpus-per-task was given (the shim's legacy behavior, gpu.bind: per-task).
 	// Off by default: SLURM leaves the whole grant visible to every task.
@@ -84,13 +85,18 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 }
 
 // selectNodes chooses the participating hosts in allocation order: the
-// --nodelist subset (REQ-RUN-002), else the first -N nodes, else all nodes.
-// A -w host outside the allocation is an error; the result is normalized to
-// allocation order so SLURM_NODEID is deterministic (SI-26).
+// --nodelist subset (REQ-RUN-002), else the first -N nodes, else all nodes,
+// never an --exclude host. A -w host outside the allocation is an error; the
+// result is normalized to allocation order so SLURM_NODEID is deterministic
+// (SI-26).
 func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 	toStep := func(idx int) StepNode {
 		n := lay.Nodes[idx]
 		return StepNode{Host: n.Host, LayoutIndex: idx, Slots: n.Slots, GPUs: n.GPUs}
+	}
+	excluded := map[string]bool{}
+	for _, h := range req.Exclude {
+		excluded[h] = true
 	}
 
 	if len(req.Nodelist) > 0 {
@@ -101,7 +107,9 @@ func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 		var out []StepNode
 		for i, n := range lay.Nodes {
 			if want[n.Host] {
-				out = append(out, toStep(i))
+				if !excluded[n.Host] {
+					out = append(out, toStep(i))
+				}
 				delete(want, n.Host)
 			}
 		}
@@ -110,10 +118,22 @@ func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 				return nil, fmt.Errorf("srun: error: node %q is not part of the allocation", h)
 			}
 		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("srun: error: --nodelist and --exclude leave no node of the allocation")
+		}
 		return out, nil
 	}
 
-	limit := len(lay.Nodes)
+	var usable []int
+	for i, n := range lay.Nodes {
+		if !excluded[n.Host] {
+			usable = append(usable, i)
+		}
+	}
+	if len(usable) == 0 {
+		return nil, fmt.Errorf("srun: error: --exclude leaves no node of the allocation")
+	}
+	limit := len(usable)
 	if req.Nodes > 0 {
 		if req.Nodes > limit {
 			return nil, fmt.Errorf("srun: error: requested %d nodes, allocation has %d", req.Nodes, limit)
@@ -122,7 +142,7 @@ func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 	}
 	out := make([]StepNode, limit)
 	for i := 0; i < limit; i++ {
-		out[i] = toStep(i)
+		out[i] = toStep(usable[i])
 	}
 	return out, nil
 }
