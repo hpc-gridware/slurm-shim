@@ -10,6 +10,7 @@ package submit
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -296,26 +297,27 @@ func ParseSlurmTime(val string) (int, error) {
 	return days*86400 + h*3600 + m*60 + s, nil
 }
 
+// memValue is a SLURM memory size: a number with an optional unit.
+var memValue = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)([KMGT])?B?$`)
+
 // ConvertMem turns a SLURM memory value ("4GB", "512", "2G") into Grid Engine's
 // form ("4G", "512M", "2G"). A bare number is megabytes, SLURM's default unit.
-func ConvertMem(val string) string {
-	v := strings.TrimSpace(val)
+// Anything else is refused: the value lands inside a -l list, where a comma
+// would add requests of its own.
+func ConvertMem(val string) (string, error) {
+	v := strings.ToUpper(strings.TrimSpace(val))
 	if v == "" {
-		return ""
+		return "", nil
 	}
-	up := strings.ToUpper(v)
-	for _, suf := range []struct{ slurm, ge string }{
-		{"KB", "K"}, {"MB", "M"}, {"GB", "G"}, {"TB", "T"},
-	} {
-		if strings.HasSuffix(up, suf.slurm) {
-			return strings.TrimSpace(up[:len(up)-2]) + suf.ge
-		}
+	m := memValue.FindStringSubmatch(v)
+	if m == nil {
+		return "", fmt.Errorf("invalid memory value %q (expected a size such as 4G, 512M or 1024)", val)
 	}
-	last := up[len(up)-1]
-	if last == 'K' || last == 'M' || last == 'G' || last == 'T' {
-		return up
+	unit := m[2]
+	if unit == "" {
+		unit = "M"
 	}
-	return up + "M" // bare number: SLURM default unit is MB
+	return m[1] + unit, nil
 }
 
 // ParseGPUCount reads --gpus / --gpus-per-node, which may be "N" or "type:N".

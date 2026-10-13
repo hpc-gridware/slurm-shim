@@ -171,11 +171,11 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `srun` (inside allocation) | ✅ | One process per task over `qrsh -inherit` tight integration; per-rank env + the vendor device mask (`CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`). See [srun notes](#srun-semantics). Honors [dry run](#dry-run). |
 | `srun --pty` (interactive) | ✅ | Outside an allocation, `srun --pty [flags] <cmd>` becomes an interactive `qrsh -now no -pty y` session on a compute node, with the full `SLURM_*` environment; `srun` inside it launches steps. See [Interactive sessions](#interactive-sessions). |
 | `srun` (outside an allocation, no `--pty`) | ✅ | Creates an allocation, runs the command as one step over it, and returns the step's exit status, as SLURM does: `srun -N 2 -n 8 ./a.out` from a login node. Output streams back; the tasks get no stdin. `-I/--immediate` starts at once or fails (`qrsh -now yes`). Ctrl-C, SIGTERM or SIGHUP cancel a waiting job and stop a running one; srun then exits 128+signal. See [Interactive sessions](#interactive-sessions). |
-| `squeue` | ⚠️ | Backed by `qstat -xml`, plus `qstat -xml -j` for the node columns. Default 8-column format + `-o/--format`, `-j`, `-u`, `-h`; other options warn and are not applied. No `--json`. Array elements carry SLURM's 0-based index (`4711_0`), a pending range reads `4711_[0-9]`, as in `sacct` and `scancel`. All eight default columns are real: `TIME` is elapsed run time, and `NODES`/`NODELIST` describe the **granted** allocation, so a 3-node job reads as 3 nodes with a compressed hostlist, in the order the scheduler granted them. Running, suspended and completing jobs all keep their elapsed time and their allocation. The second query runs only when the format asks for a node column, and is narrowed by `-j`. If it fails, or a job started between the two queries, that job falls back to `NODES 1` and its master host, and squeue names the job on stderr so the guess is not mistaken for a real single-node answer. For a **pending** job `NODES` reads `1` and `NODELIST(REASON)` reads `(None)`: qstat does not report a requested node count back, and SLURM's reason strings have no faithful source here. |
+| `squeue` | ✅ | Backed by `qstat -xml`, plus one `qstat -xml -j` for the listed jobs when a column or filter needs it. Filters `--me`, `-u`, `-j` (list, `N_k`), `-n`, `-A`, `-p`, `-w`, `-t` combine as in SLURM; formats: the default, `-l`, `-r` (one line per array element), `-o` (incl. `%l %S %V %Q %a %c %m %b %r`) and `-O`, with SLURM's column sizing. Pending reasons: `JobHeldUser`, `JobHeldAdmin`, `Dependency`, `BeginTime`, `launch failed requeued held`; `Resources`/`Priority` when the scheduler publishes job info (`schedd_job_info`), else `None`. `SQUEUE_FORMAT`, `SQUEUE_FORMAT2`, `SQUEUE_USERS`, `SQUEUE_STATES`, `SQUEUE_PARTITION`, `SQUEUE_ACCOUNT` are honoured. Array elements carry SLURM's 0-based index (`4711_0`), a pending range reads `4711_[0-9]`. `NODES`/`NODELIST` describe the granted allocation, in grant order. No `--json`, no `-S` sorting. |
 | `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based). Filters `-u`, `--me`, `-n/--name`, `-t/--state`, `-p/--partition`, `-w/--nodelist` all have to match, as in SLURM: `scancel -u alice 4711` cancels 4711 only if it is alice's, and `-t PENDING` on a half-running array cancels only its pending elements. `-s/--signal`: `TERM`/`USR1`/`USR2` reschedule (`qmod -rj`: a `-notify` job gets SIGUSR2 and restarts -- submitit's checkpoint-preempt), `STOP`/`CONT` suspend and resume, `KILL` cancels; other signals are refused. Honors [dry run](#dry-run). |
-| `scontrol show hostnames` / `show job` / `requeue` | ✅ | `show hostnames` nodelist expansion; `show job <id>` renders a minimal record (from the in-job layout, else looked up in GE via `qstat`), whose `NodeList` is the full granted allocation and so agrees with `squeue`; `requeue` -> `qmod -rj` (task-scoped: `<id>_<k>` is GE task k+1, the element `scancel <id>_<k>` cancels); honors [dry run](#dry-run). |
+| `scontrol` | ✅ | `show hostnames`; `show job` (JobState, Reason, TimeLimit, RunTime, Submit/StartTime, StdOut/StdErr, Command, WorkDir, NumNodes/NumCPUs, TRES; `-o` one line), `show node` (state, CPUs, memory, features from BOOL complexes, GPUs), `show partition`; `hold`/`uhold`/`release` -> `qhold`/`qrls`; `suspend`/`resume` -> `qmod -sj`/`-usj`; `update job TimeLimit=`/`JobName=` -> one `qalter` that keeps the job's other resource requests (TimeLimit of a pending job; other fields are refused by name); `requeue` -> `qmod -rj`. Array ids `<id>_<k>` are GE task k+1. Honors [dry run](#dry-run). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
-| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-s/--state`, `-S`/`-E`; `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NodeList, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); SLURM's default columns when `-o` is absent; `-P`/`--parsable2`/`-n`/`-X`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
+| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-a`, `--name`, `-s/--state`, `-S`/`-E`, `-D` (every run of a requeued job); `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NNodes, NodeList, ReqMem, Timelimit, WorkDir, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); `-b`, `SACCT_FORMAT`; SLURM's default columns otherwise; `-p`/`-P`/`--delimiter`/`-n`/`-X`. A job killed at its `--time` is `TIMEOUT`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
 | `salloc` | ✅ | Creates an allocation and runs one command on its first node -- the user's shell when none is given, with a terminal when salloc runs on one. `srun` inside it launches steps across the allocation; salloc returns the command's exit status. This is SLURM's `LaunchParameters=use_interactive_step` behaviour: the shell runs on the allocation, not on the submit host. `--no-shell` is refused. |
 
 ### `sbatch` flags
@@ -196,7 +196,7 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `--gpus` / `--gpus-per-node` / `--gres=gpu:` | ✅ | `qsub -l <gpu.gres_complex>=<n>` (needs a GPU-configured partition/PE with an RSMAP complex) |
 | `--gpus-per-task` | ✅ | scaled to a per-node request (`gpus-per-task x ntasks-per-node`) for the same `-l` path, and binds each task to its own devices (as SLURM's implied `--gpu-bind=per_task`) |
 | `--gpu-bind` | ✅ | `none` (SLURM default: the node's whole grant stays visible to every task) or `per_task[:n]`; also honored as an `#SBATCH` directive via `SLURM_GPU_BIND`. An explicit `none` overrides `--gpus-per-task` binding, as on SLURM |
-| `--mem` / `--mem-per-cpu` | ⚠️ | `qsub -l <memory_complex>=<n>` (default `mem_free`; `4GB`->`4G`). **A scheduling filter, not a limit** — the job is placed where the memory is free, but is not killed for exceeding it. Do **not** set `memory_complex: h_vmem`: it caps virtual address space (`RLIMIT_AS`), and a CUDA context reserves tens of GB of it, so every GPU job dies at init. See [Memory requests](#memory-requests) |
+| `--mem` / `--mem-per-cpu` / `--mem-per-gpu` | ⚠️ | `qsub -l <memory_complex>=<n>` (default `mem_free`; `4GB`->`4G`). `--mem` is per node; `--mem-per-cpu` and `--mem-per-gpu` are scaled to what the complex takes -- per slot, per host or per job, read from `qconf -sc`. **A scheduling filter, not a limit** — the job is placed where the memory is free, but is not killed for exceeding it. Do **not** set `memory_complex: h_vmem`: it caps virtual address space (`RLIMIT_AS`), and a CUDA context reserves tens of GB of it, so every GPU job dies at init. See [Memory requests](#memory-requests) |
 | `--time` / `-t` | ✅ | `qsub -l h_rt=<sec>` (with `-l s_rt` grace when `--signal` gives a lead time) |
 | `--array` | ✅ | `qsub -t 1-<n>` + `-tc` (from `%p`); SLURM 0-based indices are preserved end-to-end (env, filenames, `sacct`) |
 | `--dependency` | ⚠️ | GE has one primitive, `-hold_jid`, which releases when every predecessor **finishes**. Only `afterany` means exactly that. `after` is *start*-gated in SLURM, so it becomes a wait-for-exit here (it will never release on a long-lived predecessor); `afterok`/`aftercorr` are approximated (they run anyway on failure, and `aftercorr` loses its per-element pairing); `afternotok` is inverted outright; `singleton` and the `+time` offset form yield no id, so **nothing is held**. Every one of those warns at submit time |
@@ -205,7 +205,17 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `-W/--wait` | ✅ | prints the job id, then blocks until the job ends and exits with its exit status (an array's highest). It polls (`qstat -j`, then `qacct`) rather than `qsub -sync y`, which holds a qmaster event client per waiting job. Ctrl-C stops the waiting, not the job. Exit codes of parallel jobs are recorded from OCS 9.1.5; older versions warn |
 | `--x-spares` | ✅ shim extension | `k` hot-spare nodes: `k` more nodes of the same width (`-pe ... (N+k)*per-node -par per-node`), kept idle until one replaces a lost node. Needs `--nodes` of 2 or more, OCS 9.1.5+. Also as a partition default (`spares: 1`) and on a `#SHIM` line. See [Hot spare nodes](#hot-spare-nodes) |
 | `--x-elastic` | ✅ shim extension | `auto` (default: torchrun steps), `on`, `off`: which steps replace a lost node with a spare |
-| `--exclusive` | ❌ | not translated: it means *all of whatever the node has*, and sbatch does not query per-host capacity. Since 9.1.5 the shim does pin slots-per-node per job, so ask for the width explicitly (`--ntasks-per-node=<cores>`), or use a partition whose PE has `allocation_rule $pe_slots` sized to the node, or add an exclusive complex. Warn-and-ignored, with that advice in the warning |
+| `--exclusive` | ✅ | `-l <exclusive complex>=true`: the site's complex with relop `EXCL` (`exclusive_complex`, or the only one the cluster has). Without one, a warning that says how to get whole nodes. `--exclusive=user\|mcs` warns |
+| `-L/--licenses` | ✅ | `-l <complex>=<n>` on the complex named like the license (or mapped in `licenses:`). A JOB-consumable count is debited once per job, however many hosts it spans; a per-slot one only when the count divides by the slots; a non-consumable (license-server sensor) count is checked, not reserved, and says so. Unknown licenses and `a\|b` lists are refused |
+| `-C/--constraint` | ✅ | `-l <feature>=true` for each feature joined by `&`, on BOOL complexes (named like the feature or mapped in `features:`). `\|`, counts, `[...]` and `!` are refused: Grid Engine cannot express them across complexes |
+| `-w/--nodelist`, `-x/--exclude` | ✅ | `-l h=a\|b` and `-l h=!(a\|b)`; `-w` sets the node count to the list's length when `-N` is absent, as SLURM runs on exactly the listed nodes |
+| `--tmp` | ⚠️ | `-l <tmp_complex>=<n>` when `tmp_complex` is configured, else warned |
+| `-H/--hold` | ✅ | `qsub -h`; release with `scontrol release` |
+| `--begin` | ✅ | `qsub -a`, from SLURM's forms: `now+1hour`, `16:00`, `noon`, `tomorrow`, `MM/DD[/YY]`, `YYYY-MM-DD[THH:MM[:SS]]` |
+| `--requeue` / `--no-requeue` | ✅ | `qsub -r y` / `-r n` |
+| `--mail-type` / `--mail-user` | ✅ | `qsub -m b/e/a` (`FAIL` and `REQUEUE` are `a`), `-M`; `TIME_LIMIT*` warns |
+| `--nice` | ✅ | `qsub -p -<n>` (bare: 100), within Grid Engine's -1023..1024 |
+| `SBATCH_*` input variables | ✅ | `SBATCH_PARTITION`, `_TIMELIMIT`, `_ACCOUNT`, `_JOB_NAME`, `_OUTPUT`, `_ERROR`, `_EXPORT`, `_CONSTRAINT`, `_EXCLUSIVE`, `_GPUS*`, `_GRES`, `_MEM_PER_*`, `_REQUEUE`, `_SIGNAL`, `_WAIT`, ...: SLURM's order, command line over environment over `#SBATCH` |
 
 Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) are **warn-and-ignored**, not errors — deliberately, so clearml-agent's rendered templates submit. Every command steps over an untranslated SLURM option with SLURM's own arity (a table generated from the SLURM 24.05 man pages), so its value is ignored with it on the command line and in directives alike: `sbatch --qos normal job.sh` submits `job.sh`, `srun -u python x.py` runs `python`. A word in the directives that belongs to no option is an error, and so is `#SBATCH hetjob`. An unquoted `#` starts a comment, as in SLURM. 🚧 A strict mode that fails loud on genuinely dropped directives is planned.
 
@@ -214,13 +224,14 @@ Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) a
 | Flag | Status |
 |---|---|
 | `-N/--nodes`, `-n/--ntasks`, `--ntasks-per-node`, `-c/--cpus-per-task` | ✅ |
-| `-w/--nodelist` (subset of the allocation) | ✅ |
+| `-w/--nodelist` (subset of the allocation), `-x/--exclude` (hosts the step avoids) | ✅ |
 | `--gpus-per-task` | ✅ (per-rank contiguous GPU partition; over-subscription errors). Under `gpu.isolation: cgroup` GE masks per job, so per-task binding cannot be applied — `srun` warns instead of dropping it silently |
 | `--export=ALL\|NONE\|<list>` | ✅ |
 | `-o/--output`, `-e/--error` (`%j %J %t %n %N %s %%` patterns) | ✅ |
 | `-l/--label`, `-K/--kill-on-bad-exit`, `-J/--job-name`, `-D/--chdir`, `--quiet`, `-v`, `-V` | ✅ |
 | `--pty` (outside an allocation) | ✅ interactive session via `qrsh`; with `-p/--partition`, `-N/-n/--ntasks-per-node/-c`, `--time`, `--mem`, `--gres`/`--gpus`, `-A/--account`, `-J`. `--qos` warned (no GE analogue). See [Interactive sessions](#interactive-sessions) |
 | no `--pty` (outside an allocation) | ✅ a new allocation (same flags as `--pty`) running the command as a step; `-I/--immediate` -> `qrsh -now yes` |
+| `-L`, `-C`, `--exclusive`, `-w`, `-x`, `--mem-per-cpu`, `--mem-per-gpu`, `--tmp` (new allocation, also `salloc`) | ✅ as for sbatch; `SALLOC_*` and `SRUN_CPUS_PER_TASK`/`SRUN_EXPORT_ENV` are read as defaults |
 | `--overlap` | ✅ accepted: steps already share their allocation |
 | `--x-elastic=auto\|on\|off` | ✅ shim extension: whether this step replaces a lost node with a [hot spare](#hot-spare-nodes) |
 | `--mpi=none` | ✅ (no-op) |
@@ -349,10 +360,11 @@ differences are worth knowing:
 - **`ExitCode` needs OCS 9.1.5.** On earlier releases a job that exited non-zero
   was reported `COMPLETED` / `0:0`
   ([why](docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md)).
-- **A `--time` expiry reports `CANCELLED`, not `TIMEOUT`.** GE's execd kills the
-  job itself and records the same `failed` code as a `qdel`, which the accounting
-  record cannot distinguish. The job *is* killed at the limit, and the state is
-  terminal — only the label differs from SLURM.
+- **`TIMEOUT` is read from the request.** GE's execd records a `--time` expiry
+  with the same `failed` code as a `qdel`; `sacct` reports `TIMEOUT` when the run
+  lasted as long as the job's `h_rt`. A limit set outside the submit command line
+  (an `#$` line, `sge_request`, a queue limit) is not visible to it, so such a job
+  reads `CANCELLED` and its `Timelimit` is empty.
 
 ### Memory requests
 
@@ -502,6 +514,10 @@ gpu:
 memory_complex: mem_free          # scheduling filter + source for SLURM_MEM_PER_NODE
                                   # ("" disables). See the --mem row: mem_free is
                                   # advisory; h_vmem caps ADDRESS SPACE and breaks CUDA
+licenses: {spectre: spectre_lic}  # -L name -> complex (default: a complex of that name)
+features: {intel: cpu_avx512}     # -C name -> BOOL complex (default: same name)
+exclusive_complex: ""             # --exclusive -> this EXCL complex ("" = the only one)
+tmp_complex: ""                   # --tmp -> this complex ("" = warn and ignore)
 export_master_addr: false         # set true to publish MASTER_ADDR/MASTER_PORT
 launcher: qrsh-inherit            # qrsh-inherit | local (dev/test)
 ping_interval: 5s                 # keepalive probe interval on the control channel

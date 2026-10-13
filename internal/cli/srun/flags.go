@@ -4,13 +4,13 @@ package srun
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/pflag"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
-	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
 	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 	"github.com/hpc-gridware/slurm-shim/internal/submit"
@@ -54,6 +54,19 @@ type options struct {
 	// interactiveFlagsSet records that at least one allocation-shaping flag was
 	// given, so the inside-an-allocation path can warn that it ignored them.
 	interactiveFlagsSet bool
+	// Cluster resources for a new allocation (srun or salloc outside one):
+	// licenses, features, a whole node, hosts to avoid, local disk, and the
+	// per-unit memory kinds (memKind "mem-per-cpu"/"mem-per-gpu", else "").
+	licenses   string
+	constraint string
+	exclusive  string // "" unset, "set" bare, else the value
+	exclude    []string
+	tmp        string
+	memKind    string
+	// allocationOnly names the given flags that only shape a new allocation
+	// (-L, -C, --tmp, --mem-per-cpu, --mem-per-gpu): a step inside one cannot
+	// honour them, which strict_flags refuses.
+	allocationOnly []string
 	// untranslated lists the SLURM options given that the shim does not
 	// translate (each also warned), for a caller that must refuse one.
 	untranslated []string
@@ -112,7 +125,6 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 		pty         = fs.Bool("pty", false, "")
 		partition   = fs.StringP("partition", "p", "", "")
 		timeVal     = fs.StringP("time", "t", "", "")
-		memVal      = fs.String("mem", "", "")
 		gres        = fs.String("gres", "", "")
 		gpus        = fs.String("gpus", "", "")
 		gpusPerNode = fs.String("gpus-per-node", "", "")
@@ -131,11 +143,23 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 		overlap   = fs.Bool("overlap", false, "")
 		noKill    = fs.StringP("no-kill", "k", "", "")
 		exclusive = fs.String("exclusive", "", "")
+		// Allocation resources, translated for a new allocation (Phase 1b).
+		licenses   = fs.StringP("licenses", "L", "", "")
+		constraint = fs.StringP("constraint", "C", "", "")
+		exclude    = fs.StringP("exclude", "x", "", "")
+		tmp        = fs.String("tmp", "", "")
 		// Hot spares: --x-elastic picks whether this step replaces a lost node
 		// with a spare. --x-spares belongs to sbatch, which grants the spares.
 		elastic = fs.String("x-elastic", "", "")
 		spares  = fs.String("x-spares", "", "")
 	)
+	// --mem, --mem-per-cpu and --mem-per-gpu share one value: SLURM takes one
+	// of the three, and the last given wins (SALLOC_MEM_PER_CPU, prepended,
+	// loses to a --mem on the command line).
+	var mem memChoice
+	for _, kind := range []string{"mem", "mem-per-cpu", "mem-per-gpu"} {
+		fs.Var(memFlag{&mem, kind}, kind, "")
+	}
 	// -K may be given with no value; default it to "1" when bare.
 	fs.Lookup("kill-on-bad-exit").NoOptDefVal = "1"
 	for _, n := range []string{"x11", "no-kill", "exclusive", "immediate"} {
@@ -188,14 +212,14 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 		partition:   *partition,
 		jobName:     *jobName,
 	}
-	if err := applyInteractiveFlags(opt, *timeVal, *memVal, *gres, *gpus, *gpusPerNode, *account, *qos); err != nil {
+	if err := applyInteractiveFlags(opt, *timeVal, *gres, *gpus, *gpusPerNode, *account, *qos); err != nil {
 		return nil, err
 	}
 	if *x11 != "" {
 		opt.warnings = append(opt.warnings, "--x11 is not translated: DISPLAY is forwarded with the environment but xauth is not, so X clients will not connect")
 	}
-	if *exclusive != "" {
-		opt.warnings = append(opt.warnings, "--exclusive is not translated: ask for the node width explicitly (--ntasks-per-node=<cores>) or use a partition sized to the node")
+	if err := applyAllocationResources(opt, *licenses, *constraint, *exclusive, *exclude, *tmp, mem); err != nil {
+		return nil, err
 	}
 	// --overlap is what every step here already does: steps share the
 	// allocation's resources. Nothing to translate, nothing to warn about.
@@ -204,13 +228,11 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 		opt.warnings = append(opt.warnings, "--no-kill is accepted and ignored (no Grid Engine analogue)")
 	}
 	_ = qos // consumed by applyInteractiveFlags's warning
-	if *nodelist != "" {
-		hosts, err := encoders.ExpandNodelist(*nodelist)
-		if err != nil {
-			return nil, fmt.Errorf("srun: error: invalid --nodelist: %w", err)
-		}
-		opt.req.Nodelist = hosts
+	hosts, err := submit.ExpandHosts("--nodelist", *nodelist)
+	if err != nil {
+		return nil, fmt.Errorf("srun: error: %w", err)
 	}
+	opt.req.Nodelist = hosts
 
 	// SLURM options the shim does not translate: parsed with their arity, then
 	// warned. strict makes them fatal.
@@ -438,7 +460,7 @@ func firstNonEmpty(a, b string) string {
 // applyInteractiveFlags parses the value-taking allocation flags (--time, --mem,
 // --gres/--gpus, --account, --qos) into opt, using the shared submit converters
 // so srun and sbatch agree. --qos has no Grid Engine analogue and is warned.
-func applyInteractiveFlags(opt *options, timeVal, memVal, gres, gpus, gpusPerNode, account, qos string) error {
+func applyInteractiveFlags(opt *options, timeVal, gres, gpus, gpusPerNode, account, qos string) error {
 	if account != "" {
 		opt.account = account
 		opt.interactiveFlagsSet = true
@@ -456,10 +478,6 @@ func applyInteractiveFlags(opt *options, timeVal, memVal, gres, gpus, gpusPerNod
 		opt.haveTime, opt.timeSec = true, sec
 		opt.interactiveFlagsSet = true
 	}
-	if memVal != "" {
-		opt.mem = submit.ConvertMem(memVal)
-		opt.interactiveFlagsSet = true
-	}
 	// --gres=gpu:N takes precedence over --gpus/--gpus-per-node when both name a
 	// count, matching sbatch; any one of them sets the request.
 	if n, ok := submit.GresGPUCount(gres); ok {
@@ -473,8 +491,71 @@ func applyInteractiveFlags(opt *options, timeVal, memVal, gres, gpus, gpusPerNod
 		opt.haveGPUs, opt.gpus = true, n
 		opt.interactiveFlagsSet = true
 	}
-	if opt.partition != "" || opt.pty {
+	if opt.partition != "" || opt.pty || opt.immediate != "" || opt.input != "" {
 		opt.interactiveFlagsSet = true
 	}
 	return nil
 }
+
+// applyAllocationResources records the resources a new allocation asks for.
+// Inside an allocation a step cannot change them, and they are warned with
+// the other allocation flags. mem is the last of --mem, --mem-per-cpu and
+// --mem-per-gpu given.
+func applyAllocationResources(opt *options, licenses, constraint, exclusive, exclude, tmp string, mem memChoice) error {
+	opt.licenses, opt.constraint, opt.exclusive = licenses, constraint, exclusive
+	hosts, err := submit.ExpandHosts("--exclude", exclude)
+	if err != nil {
+		return fmt.Errorf("srun: error: %w", err)
+	}
+	// -x also keeps a step inside an allocation off those hosts.
+	opt.exclude, opt.req.Exclude = hosts, hosts
+	for flag, v := range map[string]string{"--licenses": licenses, "--constraint": constraint, "--tmp": tmp} {
+		if v != "" {
+			opt.allocationOnly = append(opt.allocationOnly, flag)
+		}
+	}
+	if mem.kind == "mem-per-cpu" || mem.kind == "mem-per-gpu" {
+		opt.allocationOnly = append(opt.allocationOnly, "--"+mem.kind)
+	}
+	slices.Sort(opt.allocationOnly)
+	if opt.tmp, err = submit.ConvertMem(tmp); err != nil {
+		return fmt.Errorf("srun: error: --tmp: %w", err)
+	}
+	if mem.value != "" {
+		if opt.mem, err = submit.ConvertMem(mem.value); err != nil {
+			return fmt.Errorf("srun: error: --%s: %w", mem.kind, err)
+		}
+		if mem.kind != "mem" {
+			opt.memKind = mem.kind
+		}
+	}
+	if licenses != "" || constraint != "" || exclusive != "" || tmp != "" || mem.value != "" {
+		opt.interactiveFlagsSet = true
+	}
+	return nil
+}
+
+// memChoice is the last memory flag given: kind is "mem", "mem-per-cpu" or
+// "mem-per-gpu", value as written.
+type memChoice struct{ kind, value string }
+
+// memFlag is one of the three memory flags; each writes the shared choice
+// as pflag parses it, so the choice ends as the last one given.
+type memFlag struct {
+	choice *memChoice
+	kind   string
+}
+
+func (f memFlag) Set(v string) error {
+	f.choice.kind, f.choice.value = f.kind, v
+	return nil
+}
+
+func (f memFlag) String() string {
+	if f.choice != nil && f.choice.kind == f.kind {
+		return f.choice.value
+	}
+	return ""
+}
+
+func (f memFlag) Type() string { return "string" }

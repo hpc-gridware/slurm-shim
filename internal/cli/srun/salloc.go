@@ -10,6 +10,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
 	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 	"github.com/hpc-gridware/slurm-shim/internal/version"
 )
 
@@ -31,6 +32,8 @@ func RunSalloc(args []string, stdout, stderr io.Writer) int {
 	for _, w := range warns {
 		errln(stderr, "salloc: warning: "+w)
 	}
+	// SALLOC_* input variables go first, so a flag on the command line wins.
+	args = append(submit.InputEnv(submit.SallocInputEnv, os.LookupEnv), args...)
 	opt, err := parseFlagsWith(slurmopts.For("salloc"), args, cfg.StrictFlags, stderr)
 	if err != nil {
 		errln(stderr, strings.Replace(err.Error(), "srun: ", "salloc: ", 1))

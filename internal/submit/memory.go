@@ -2,8 +2,13 @@ package submit
 
 import (
 	"fmt"
+	"math"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 )
 
 // addressSpaceComplexes are the Grid Engine memory complexes enforced as a
@@ -87,4 +92,146 @@ func VerifyGeometry(cfg *config.Config, r Request) bool {
 		return true
 	}
 	return !loadSensorComplexes[cfg.MemoryComplex]
+}
+
+// PerUnitMemory is a --mem-per-cpu or --mem-per-gpu request: Value per unit
+// (GE-formatted, "2G"), with the job shape that turns it into the one figure
+// a memory complex takes.
+type PerUnitMemory struct {
+	Value string
+	// UnitsPerNode is the CPUs (slots) or GPUs on one node, UnitsTotal those
+	// of the whole job, SlotsPerNode the slots on one node.
+	UnitsPerNode, UnitsTotal, SlotsPerNode int
+}
+
+// MemoryForScope converts a per-CPU or per-GPU memory request into the value
+// to request on a memory complex with the given consumable scope. The same
+// number means different things per scope (see gedata.ConsumableScope):
+// per slot (YES), per job (JOB), or per host (HOST, and NO, where the value
+// filters hosts on free memory). An unknown scope is treated as per host, the
+// stock case, which over-asks rather than under-asks on a per-slot complex.
+func MemoryForScope(m PerUnitMemory, scope string) (string, error) {
+	mb, err := memMB(m.Value)
+	if err != nil {
+		return "", err
+	}
+	var total float64
+	switch strings.ToUpper(scope) {
+	case gedata.ConsumablePerSlot:
+		if m.SlotsPerNode < 1 {
+			return "", fmt.Errorf("cannot spread %s over an unknown slot count", m.Value)
+		}
+		total = mb * float64(m.UnitsPerNode) / float64(m.SlotsPerNode)
+	case gedata.ConsumablePerJob:
+		total = mb * float64(m.UnitsTotal)
+	default:
+		total = mb * float64(m.UnitsPerNode)
+	}
+	return formatMB(int64(math.Ceil(total))), nil
+}
+
+// memMB reads a GE-formatted memory value ("512M", "1.5G") as MB.
+func memMB(value string) (float64, error) {
+	b, ok := gedata.MemBytes(value)
+	if !ok {
+		return 0, fmt.Errorf("invalid memory value %q", value)
+	}
+	return b / (1 << 20), nil
+}
+
+// formatMB renders MB in the largest whole unit, so 4096 reads as 4G.
+func formatMB(mb int64) string {
+	if mb > 0 && mb%1024 == 0 {
+		return strconv.FormatInt(mb/1024, 10) + "G"
+	}
+	return strconv.FormatInt(mb, 10) + "M"
+}
+
+// ScalePerUnitMemory turns a --mem-per-cpu or --mem-per-gpu request (kind
+// names which) into the one value the memory complex takes, by the complex's
+// consumable scope in cat. slots and nodes are the job's Grid Engine slot
+// count and node count. CPUs are SLURM's (tasks x cpus-per-task), not slots:
+// a partition with a fixed slot count grants more slots than the job has
+// CPUs. nodes < 1 means the spread over hosts is not known. The warning is
+// set when the scope could not be read or the spread had to be guessed.
+func ScalePerUnitMemory(cfg *config.Config, cat gedata.Catalog, r Request, kind string, slots, nodes int) (string, string, error) {
+	spreadUnknown := nodes < 1 && !r.HavePerNode
+	nodes = max(nodes, 1)
+	ntasks, cpt := r.ResolveGeometry()
+	m := PerUnitMemory{
+		Value:        r.Mem,
+		UnitsPerNode: r.TasksOnNode(nodes) * cpt,
+		UnitsTotal:   ntasks * cpt,
+		SlotsPerNode: max(slots/nodes, 1),
+	}
+	if kind == "mem-per-gpu" {
+		gpus, ok := GPURequest(r)
+		if !ok || gpus < 1 {
+			return "", "", fmt.Errorf("--mem-per-gpu needs a GPU request (--gpus-per-node, --gpus-per-task or --gres=gpu)")
+		}
+		m.UnitsPerNode, m.UnitsTotal = gpus, gpus*nodes
+	}
+	scope, warn := "", ""
+	if cx, ok := cat.Lookup(cfg.MemoryComplex); ok {
+		scope = cx.Consumable
+	} else {
+		warn = fmt.Sprintf("could not read how %s is consumed; --%s is requested per node", cfg.MemoryComplex, kind)
+	}
+	// A per-host complex needs the CPUs on one host, which nothing pins when
+	// neither --nodes nor --ntasks-per-node is given: Grid Engine may put one
+	// task or all of them on a host. Asking for every CPU's memory on each host
+	// would leave a wide job waiting forever, so one task's worth is asked.
+	perHost := !strings.EqualFold(scope, gedata.ConsumablePerSlot) && !strings.EqualFold(scope, gedata.ConsumablePerJob)
+	if kind != "mem-per-gpu" && spreadUnknown && perHost && m.UnitsPerNode > cpt {
+		m.UnitsPerNode = cpt
+		warn = appendSentence(warn, fmt.Sprintf("--%s is requested for one task (%d CPU(s)) per host: "+
+			"without --nodes or --ntasks-per-node the tasks per host are not known", kind, cpt))
+	}
+	v, err := MemoryForScope(m, scope)
+	if err != nil {
+		return "", "", fmt.Errorf("--%s: %w", kind, err)
+	}
+	return v, warn, nil
+}
+
+// appendSentence joins two warnings into one line.
+func appendSentence(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "; " + b
+}
+
+// NodesForList sizes a job by a -w host list, less the -x hosts. SLURM runs
+// on exactly the listed nodes, which Grid Engine can only do with the node
+// count pinned to the list's length. A smaller --nodes is SLURM's own error;
+// a larger one would let SLURM add other hosts, which a Grid Engine host list
+// cannot, so the job would wait forever for nodes it may not use.
+func NodesForList(nodes int, list, exclude []string) (int, error) {
+	usable := UsableHosts(list, exclude)
+	switch {
+	case len(list) == 0:
+		return nodes, nil
+	case len(usable) == 0:
+		return 0, fmt.Errorf("--nodelist and --exclude leave no host to run on")
+	case nodes == 0:
+		return len(usable), nil
+	case nodes < len(usable):
+		return 0, fmt.Errorf("--nodes=%d is fewer than the %d host(s) in --nodelist", nodes, len(usable))
+	case nodes > len(usable):
+		return 0, fmt.Errorf("--nodes=%d is more than the %d host(s) in --nodelist: Grid Engine cannot add "+
+			"other hosts to a host list; name all %d hosts or drop --nodelist", nodes, len(usable), nodes)
+	}
+	return nodes, nil
+}
+
+// UsableHosts is a -w host list less the -x hosts.
+func UsableHosts(list, exclude []string) []string {
+	var keep []string
+	for _, h := range list {
+		if !slices.Contains(exclude, h) {
+			keep = append(keep, h)
+		}
+	}
+	return keep
 }

@@ -88,13 +88,13 @@ var _ = Describe("stepping over options the shim does not translate [REQ-RUN-005
 		},
 		Entry("long, space form", []string{"--qos", "normal", "job.sh", "a1"}),
 		Entry("short, space form", []string{"-q", "normal", "job.sh", "a1"}),
-		Entry("constraint", []string{"-C", "avx512", "job.sh", "a1"}),
-		Entry("licenses", []string{"--licenses", "spectre:2", "job.sh", "a1"}),
+		Entry("reservation", []string{"--reservation", "r1", "job.sh", "a1"}),
+		Entry("comment", []string{"--comment", "x", "job.sh", "a1"}),
 		Entry("short, attached value", []string{"-qnormal", "job.sh", "a1"}),
 		Entry("long, = form", []string{"--qos=normal", "job.sh", "a1"}),
-		Entry("no value: --requeue", []string{"--requeue", "job.sh", "a1"}),
-		Entry("no value: -H", []string{"-H", "job.sh", "a1"}),
-		Entry("optional value is only attached: --exclusive", []string{"--exclusive", "job.sh", "a1"}),
+		Entry("no value: --contiguous", []string{"--contiguous", "job.sh", "a1"}),
+		Entry("no value: -O", []string{"-O", "job.sh", "a1"}),
+		Entry("optional value is only attached: --get-user-env", []string{"--get-user-env", "job.sh", "a1"}),
 	)
 
 	It("steps over a directive's value, but never takes it from the command line", func() {
@@ -404,41 +404,6 @@ var _ = Describe("sbatch SLURM defaults: submit-dir cwd + env forwarding", func(
 })
 
 var _ = Describe("sbatch resource/signal/dependency mapping [submitit Phase 4]", func() {
-	DescribeTable("parses --time to seconds",
-		func(v string, want int) {
-			s, err := parseSlurmTime(v)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(s).To(Equal(want))
-		},
-		Entry("minutes", "60", 3600),
-		Entry("MM:SS", "1:30", 90),
-		Entry("HH:MM:SS", "2:00:00", 7200),
-		Entry("D-HH", "1-00", 86400),
-		Entry("D-HH:MM:SS", "1-01:00:00", 90000),
-		Entry("explicit zero-day D-HH:MM", "0-12:30", 45000), // not MM:SS (would be 750)
-	)
-
-	DescribeTable("converts memory to GE suffixes",
-		func(v, want string) { Expect(convertMem(v)).To(Equal(want)) },
-		Entry("GB", "4GB", "4G"),
-		Entry("MB", "512MB", "512M"),
-		Entry("bare number is MB", "1024", "1024M"),
-		Entry("single-letter kept", "8G", "8G"),
-	)
-
-	DescribeTable("extracts the gpu count from --gres",
-		func(v string, wantN int, wantOK bool) {
-			n, ok := gresGPUCount(v)
-			Expect(ok).To(Equal(wantOK))
-			if wantOK {
-				Expect(n).To(Equal(wantN))
-			}
-		},
-		Entry("gpu:2", "gpu:2", 2, true),
-		Entry("typed gpu", "gpu:a100:4", 4, true),
-		Entry("non-gpu gres", "mps:100", 0, false),
-	)
-
 	It("parses the --signal lead time", func() {
 		Expect(parseSignalDelay("USR2@90")).To(Equal(90))
 		Expect(parseSignalDelay("B:USR2@120")).To(Equal(120))
@@ -732,32 +697,22 @@ var _ = Describe("sbatch end-to-end [REQ-SBT-002/003/005]", func() {
 })
 
 var _ = Describe("unmappable and approximated flags warn instead of going quiet [REQ-SBT-001]", func() {
-	It("names the Grid Engine equivalent for --exclusive rather than 'unknown directive'", func() {
-		_, warns, err := parseFlags([]string{"--exclusive", "job.sh"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(warns).To(HaveLen(1))
-		Expect(warns[0]).To(ContainSubstring("allocation_rule $pe_slots"))
-		Expect(warns[0]).NotTo(ContainSubstring("unknown directive"))
-		// Since OCS 9.1.5 the shim pins slots-per-node per job, so the old claim
-		// that whole-node allocation can only be site configuration is false.
-		Expect(warns[0]).NotTo(ContainSubstring("not a submission flag"))
-		Expect(warns[0]).To(ContainSubstring("--ntasks-per-node"))
-	})
-
 	DescribeTable("--exclusive never consumes a token, in any spelling",
-		// The arity trap: listing it in knownLong would mean "takes a value" and
-		// swallow whatever follows.
-		func(tokens []string, wantScript, wantWrap string) {
+		// The arity trap: a value-taking flag would swallow whatever follows.
+		func(tokens []string, wantScript, wantWrap string, exclusive bool, mode string) {
 			opt, warns, err := parseFlags(tokens)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(warns).To(HaveLen(1))
+			Expect(warns).To(BeEmpty())
 			Expect(opt.script).To(Equal(wantScript))
 			Expect(opt.wrap).To(Equal(wantWrap))
+			Expect(opt.exclusive).To(Equal(exclusive))
+			Expect(opt.exclusiveMode).To(Equal(mode))
 		},
-		Entry("before the script", []string{"--exclusive", "job.sh"}, "job.sh", ""),
-		Entry("with a value", []string{"--exclusive=user", "job.sh"}, "job.sh", ""),
-		Entry("before --wrap", []string{"--exclusive", "--wrap=echo hi"}, "", "echo hi"),
-		Entry("among other flags", []string{"--exclusive", "-N", "2", "job.sh"}, "job.sh", ""),
+		Entry("before the script", []string{"--exclusive", "job.sh"}, "job.sh", "", true, ""),
+		Entry("with a value", []string{"--exclusive=user", "job.sh"}, "job.sh", "", false, "user"),
+		Entry("node is the default", []string{"--exclusive=node", "job.sh"}, "job.sh", "", true, ""),
+		Entry("before --wrap", []string{"--exclusive", "--wrap=echo hi"}, "", "echo hi", true, ""),
+		Entry("among other flags", []string{"--exclusive", "-N", "2", "job.sh"}, "job.sh", "", true, ""),
 	)
 
 	DescribeTable("reports what a --dependency loses in translation",

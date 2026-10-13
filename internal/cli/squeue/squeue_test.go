@@ -3,6 +3,8 @@ package squeue
 import (
 	"bytes"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -355,7 +357,7 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 		// cluster-wide detail query.
 		r := twoViewQstat()
 		var out bytes.Buffer
-		Expect(run(r, testCfg(), []string{"-h", "-j", "24_2", "-o", "%i %N"}, &out, io.Discard)).To(Equal(0))
+		Expect(run(r, testCfg(), []string{"-h", "-j", "24_1", "-o", "%i %N"}, &out, io.Discard)).To(Equal(0))
 		var detailed [][]string
 		for _, c := range r.Calls {
 			if isDetailed(c.Args) {
@@ -365,7 +367,7 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 		Expect(detailed).To(Equal([][]string{{"-xml", "-j", "24"}}))
 	})
 
-	It("asks for every job when the listing is not narrowed", func() {
+	It("asks about exactly the jobs it lists, in one query", func() {
 		r := twoViewQstat()
 		var out bytes.Buffer
 		Expect(run(r, testCfg(), []string{"-h", "-o", "%i %N"}, &out, io.Discard)).To(Equal(0))
@@ -375,7 +377,31 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 				detailed = append(detailed, c.Args)
 			}
 		}
-		Expect(detailed).To(Equal([][]string{{"-xml", "-j", "*"}}))
+		Expect(detailed).To(Equal([][]string{{"-xml", "-j", "23,24,26,27,25"}}))
+	})
+
+	It("asks for every job when the listing is long", func() {
+		var many strings.Builder
+		many.WriteString("<?xml version='1.0'?><job_info><queue_info></queue_info><job_info>")
+		for id := 1; id <= maxDetailIDs+1; id++ {
+			many.WriteString("<job_list><JB_job_number>" + strconv.Itoa(id) + "</JB_job_number><state>qw</state></job_list>")
+		}
+		many.WriteString("</job_info></job_info>")
+		r := &fake.Runner{Responder: func(_ string, args []string) fake.Response {
+			if isDetailed(args) {
+				return fake.Response{Stdout: []byte(readEmptyDetail)}
+			}
+			return fake.Response{Stdout: []byte(many.String())}
+		}}
+		Expect(run(r, testCfg(), []string{"-h"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(r.Calls).To(HaveLen(2))
+		Expect(r.Calls[1].Args).To(Equal([]string{"-xml", "-j", "*"}))
+	})
+
+	It("makes no detail query when nothing is listed", func() {
+		r := twoViewQstat()
+		Expect(run(r, testCfg(), []string{"-j", "9999"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(r.Calls).To(HaveLen(1))
 	})
 
 	It("still lists jobs when the supplementary query fails, and says so", func() {
@@ -391,7 +417,7 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 		var out, errOut bytes.Buffer
 		Expect(run(r, testCfg(), []string{"-h", "-j", "23", "-o", "%i %D %N"}, &out, &errOut)).To(Equal(0))
 		Expect(strings.TrimSpace(out.String())).To(Equal("23 1 ocs-master"), "falls back to the master instance")
-		Expect(errOut.String()).To(ContainSubstring("node list unavailable"))
+		Expect(errOut.String()).To(ContainSubstring("job details unavailable"))
 		Expect(errOut.String()).To(ContainSubstring("no granted host list for 23"))
 	})
 
@@ -418,19 +444,30 @@ var _ = Describe("squeue node columns [REQ-SQU-002]", func() {
 	})
 
 	It("gates the supplementary query on exactly the verbs that consume it", func() {
-		// needsHosts lists the verbs that trigger the second query and rowValue
-		// reads the hosts for some set of verbs. If they drift apart, a node column
-		// is either always empty or costs a query nothing reads.
-		row := gedata.JobRow{JobID: "23", State: "r", Queue: "all.q@ocs-master", Slots: 4}
-		withHosts := view{cfg: testCfg(), hosts: map[string]gedata.JobAllocation{"23": {Hosts: []string{"a", "b"}}}, now: time.Now()}
-		without := view{cfg: testCfg(), now: time.Now()}
+		// needsDetail lists the verbs that trigger the detail query and rowValue
+		// reads the detail for some set of verbs. If they drift apart, a column is
+		// either always empty or costs a query nothing reads. Every detail field
+		// is set below, so each detail verb renders differently with and without.
+		running := gedata.JobRow{JobID: "23", State: "r", Queue: "all.q@ocs-master", Slots: 4,
+			Start: time.Date(2026, 9, 15, 7, 0, 0, 0, time.Local)}
+		pending := gedata.JobRow{JobID: "25", State: "hqw", Slots: 1}
+		cfg := config.Default()
+		cfg.Partitions = map[string]config.Partition{"mpi": {Queue: "all.q", PE: "smp"}}
+		detail := gedata.JobInfo{Account: "projX", WorkDir: "/w", PE: "smp", Queues: []string{"all.q"},
+			Submit: time.Date(2026, 9, 15, 6, 0, 0, 0, time.Local), Begin: time.Date(2027, 1, 1, 0, 0, 0, 0, time.Local),
+			Requests: map[string]gedata.ResourceRequest{"h_rt": {Amount: 60}, "mem_free": {Amount: 1 << 30}, "gpu": {Amount: 1}}}
+		with := view{cfg: cfg, now: time.Now(),
+			hosts:   map[string]gedata.JobAllocation{"23": {Hosts: []string{"a", "b"}}},
+			details: map[string]gedata.JobInfo{"23": detail, "25": detail}}
+		without := view{cfg: cfg, now: with.now}
 		for verb := byte('A'); verb <= 'z'; verb++ {
 			if headerTitle(verb) == "" {
 				continue
 			}
-			uses := withHosts.rowValue(verb, row) != without.rowValue(verb, row)
-			Expect(needsHosts("%"+string(verb))).To(Equal(uses),
-				"verb %"+string(verb)+": the gate and the renderer disagree about whether it needs hosts")
+			uses := with.rowValue(verb, running) != without.rowValue(verb, running) ||
+				with.rowValue(verb, pending) != without.rowValue(verb, pending)
+			Expect(needsDetail(tokenize("%"+string(verb)))).To(Equal(uses),
+				"verb %"+string(verb)+": the gate and the renderer disagree about whether it needs the detail")
 		}
 	})
 })
@@ -441,6 +478,13 @@ const readEmptyDetail = `<?xml version='1.0'?>
 <detailed_job_info><djob_info></djob_info></detailed_job_info>`
 
 var _ = Describe("squeue default format [REQ-SQU-002]", func() {
+	BeforeEach(func() {
+		// Two days after the fixture's start time: TIME is a sized column, cut to
+		// ten characters as SLURM cuts it, so the elapsed time must fit.
+		clock = func() time.Time { return time.Date(2020, 1, 4, 3, 4, 5, 0, time.Local) }
+		DeferCleanup(func() { clock = time.Now })
+	})
+
 	It("renders real TIME, NODES and NODELIST in the default output", func() {
 		// The branch's headline claim, asserted where users actually read it: the
 		// default eight-column format, not a hand-picked -o string.
@@ -510,11 +554,12 @@ var _ = Describe("squeue TIME column [REQ-SQU-002]", func() {
 
 var _ = Describe("squeue options it does not translate [REQ-RUN-005]", func() {
 	It("warns, steps over the value, and keeps the options it does translate", func() {
-		opt := parse([]string{"-t", "PD", "--me", "-p", "gpu", "-h", "-j", "4711"})
-		Expect(opt.jobID).To(Equal("4711"))
+		opt, err := parse([]string{"-S", "P", "--start", "-i", "5", "-h", "-j", "4711"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.jobs).To(Equal([]string{"4711"}))
 		Expect(opt.noHeader).To(BeTrue())
 		Expect(opt.warnings).To(ConsistOf(
-			ContainSubstring("-t ignored"), ContainSubstring("--me ignored"), ContainSubstring("-p ignored")))
+			ContainSubstring("-S ignored"), ContainSubstring("--start ignored"), ContainSubstring("-i ignored")))
 	})
 })
 
@@ -523,8 +568,259 @@ var _ = Describe("squeue array ids are SLURM's 0-based indices [SI-14]", func() 
 		row := gedata.JobRow{JobID: "4720", State: "qw", TaskID: "1-10:1"}
 		Expect(slurmID(row)).To(Equal("4720_[0-9]"))
 		Expect(slurmID(gedata.JobRow{JobID: "4720", TaskID: "1-9:2"})).To(Equal("4720_[0-8:2]"))
-		Expect(filterByJob([]gedata.JobRow{row}, "4720_9")).To(HaveLen(1))
-		Expect(filterByJob([]gedata.JobRow{row}, "4720_10")).To(BeEmpty())
-		Expect(filterByJob([]gedata.JobRow{row}, "4720_x")).To(BeEmpty())
+		Expect(selectJobs([]gedata.JobRow{row}, []string{"4720_9"})).To(HaveLen(1))
+		Expect(selectJobs([]gedata.JobRow{row}, []string{"4720_10"})).To(BeEmpty())
+		Expect(selectJobs([]gedata.JobRow{row}, []string{"4720_x"})).To(BeEmpty())
+	})
+})
+
+// liveRunner answers with the unedited OCS 9.1.6 captures in gedata's testdata
+// (see jobdetail_test.go there for what each job is): the plain listing for
+// qstat -xml -u, the detail view for qstat -xml -j. The listing also holds
+// jobs of other users of the test cluster (sc_*), which the detail view does
+// not cover: they show how a job without detail renders.
+func liveRunner() *fake.Runner {
+	plain, err := os.ReadFile("../../gedata/testdata/qstat_xml_squeue_9.1.6.xml")
+	Expect(err).NotTo(HaveOccurred())
+	detail, err := os.ReadFile("../../gedata/testdata/qstat_j_squeue_9.1.6.xml")
+	Expect(err).NotTo(HaveOccurred())
+	return &fake.Runner{Responder: func(_ string, args []string) fake.Response {
+		if isDetailed(args) {
+			return fake.Response{Stdout: detail}
+		}
+		return fake.Response{Stdout: plain}
+	}}
+}
+
+// liveCfg has two partitions on all.q, told apart by their PE.
+func liveCfg() *config.Config {
+	c := config.Default()
+	c.Partitions = map[string]config.Partition{
+		"mpi":    {Queue: "all.q", PE: "smp"},
+		"serial": {Queue: "all.q"},
+	}
+	return c
+}
+
+// squeueLines runs squeue against the live captures and returns its stdout
+// lines and stderr.
+func squeueLines(args ...string) ([]string, string) {
+	var out, errOut bytes.Buffer
+	Expect(run(liveRunner(), liveCfg(), args, &out, &errOut)).To(Equal(0), errOut.String())
+	return strings.Split(strings.TrimRight(out.String(), "\n"), "\n"), errOut.String()
+}
+
+var _ = Describe("squeue against a live OCS 9.1.6 capture [REQ-SQU-002]", func() {
+	BeforeEach(func() {
+		// Shortly after the capture, before job 1371's -a start time.
+		clock = func() time.Time { return time.Date(2026, 10, 12, 13, 45, 0, 0, time.Local) }
+		DeferCleanup(func() { clock = time.Now })
+	})
+
+	DescribeTable("gives a pending job SLURM's reason from its own state",
+		func(id, want string) {
+			lines, _ := squeueLines("-h", "-j", id, "-o", "%i|%r|%R")
+			Expect(lines).To(Equal([]string{want}))
+		},
+		Entry("a user hold", "1369", "1369|JobHeldUser|(JobHeldUser)"),
+		Entry("an operator hold", "1393", "1393|JobHeldAdmin|(JobHeldAdmin)"),
+		Entry("an unfinished predecessor", "1395", "1395|Dependency|(Dependency)"),
+		Entry("a start time to come", "1371", "1371|BeginTime|(BeginTime)"),
+		Entry("a job Grid Engine failed to start (Eqw)", "1394",
+			"1394|launch failed requeued held|(launch failed requeued held)"),
+		Entry("a held pending range", "1372", "1372_[0-4]|JobHeldUser|(JobHeldUser)"),
+		Entry("a running job", "1397", "1397|None|ocs-worker1"),
+	)
+
+	It("says None, not a guess, when the scheduler keeps no job information", func() {
+		lines, _ := squeueLines("-h", "-j", "1378", "-o", "%i %r")
+		Expect(lines).To(Equal([]string{"1378 None"}))
+	})
+
+	It("lists the default format with two qstat calls, whatever the job count", func() {
+		r := liveRunner()
+		Expect(run(r, liveCfg(), nil, io.Discard, io.Discard)).To(Equal(0))
+		Expect(r.Calls).To(HaveLen(2))
+	})
+
+	It("shows a pending array as one range row, and one row per element with -r", func() {
+		lines, _ := squeueLines("-h", "-j", "1372,1398", "-o", "%i %t")
+		Expect(lines).To(Equal([]string{"1398_1 R", "1398_2 R", "1372_[0-4] PD", "1398_[0,3] PD"}))
+		lines, _ = squeueLines("-h", "-r", "-j", "1372,1398", "-o", "%i %t")
+		Expect(lines).To(Equal([]string{"1398_1 R", "1398_2 R",
+			"1372_0 PD", "1372_1 PD", "1372_2 PD", "1372_3 PD", "1372_4 PD", "1398_0 PD", "1398_3 PD"}))
+	})
+
+	It("narrows a pending range to the element -j names", func() {
+		lines, _ := squeueLines("-h", "-j", "1398_3,1369", "-o", "%i")
+		Expect(lines).To(Equal([]string{"1369", "1398_3"}))
+	})
+
+	DescribeTable("filters, and every filter narrows the others",
+		func(args []string, want []string) {
+			lines, _ := squeueLines(append([]string{"-h", "-o", "%i"}, args...)...)
+			Expect(lines).To(ConsistOf(want))
+		},
+		Entry("by state name", []string{"-t", "RUNNING"},
+			[]string{"1396_0", "1396_1", "1396_2", "1397", "1399", "1400", "1398_1", "1398_2"}),
+		Entry("by compact state, against a running-only name", []string{"-t", "pd", "-n", "sqF_arrrun"}, []string{""}),
+		Entry("by name", []string{"-n", "sqC_dep,sqB_held"}, []string{"1369", "1395"}),
+		Entry("by account", []string{"-A", "projX"}, []string{"1394"}),
+		Entry("by partition, the PE telling two on one queue apart", []string{"-p", "mpi"}, []string{"1397"}),
+		Entry("by partition and state", []string{"-p", "serial", "-t", "R", "-n", "sqF_arrrun"},
+			[]string{"1396_0", "1396_1", "1396_2"}),
+		Entry("by node", []string{"-w", "ocs-worker1"}, []string{"1396_0", "1397"}),
+		Entry("by a hostlist", []string{"-w", "ocs-worker[1-2]", "-n", "sqF_arrrun,sqI_arrsplit"},
+			[]string{"1396_0", "1396_2", "1398_1"}),
+		Entry("by every state", []string{"-t", "all", "-n", "sqB_held"}, []string{"1369"}),
+	)
+
+	It("refuses a state SLURM does not know", func() {
+		var errOut bytes.Buffer
+		Expect(run(liveRunner(), liveCfg(), []string{"-t", "WAITING"}, io.Discard, &errOut)).To(Equal(1))
+		Expect(errOut.String()).To(ContainSubstring("invalid job state specified: WAITING"))
+	})
+
+	It("renders SLURM's long format, cutting headers and values to their fields", func() {
+		lines, _ := squeueLines("-l", "-j", "1393,1397")
+		Expect(lines).To(Equal([]string{
+			"             JOBID PARTITION     NAME     USER    STATE       TIME TIME_LIMI  NODES NODELIST(REASON)",
+			"              1397       mpi   sqG_pe gridware  RUNNING       6:52     30:00      1 ocs-worker1",
+			"              1393           sqH_opho gridware  PENDING       0:00 3-18:00:0      1 (JobHeldAdmin)",
+		}))
+	})
+
+	It("renders the detail columns", func() {
+		lines, _ := squeueLines("-h", "-j", "1393,1394,1397,1369", "-o", "%i|%l|%S|%V|%a|%m|%b|%Z|%c|%p|%Q")
+		Expect(lines).To(Equal([]string{
+			"1397|30:00|2026-10-12T13:38:07|2026-10-12T13:38:07|sge|0|N/A|/home/gridware|2|0.60500000|2598455213",
+			"1394|1:00:00|N/A|2026-10-12T13:38:07|projX|0|N/A|/tmp/sqdev-out|1|0.50500000|2168958484",
+			"1369|UNLIMITED|N/A|2026-10-12T13:23:18|sge|0|N/A|/home/gridware|1|0.00000000|0",
+			"1393|3-18:00:00|N/A|2026-10-12T13:37:45|sge|2G|N/A|/tmp/sqdev-out|1|0.00000000|0",
+		}))
+	})
+
+	It("shows a pending job's -a time as its start time", func() {
+		lines, _ := squeueLines("-h", "-j", "1371", "-o", "%S")
+		Expect(lines).To(Equal([]string{"2026-10-12T15:23:00"}))
+	})
+
+	It("renders -O fields left-justified in 20 characters unless sized", func() {
+		lines, _ := squeueLines("-j", "1394", "-O", "JobID,statecompact:4,TimeLimit:.9,Account:8|,Reason:30")
+		Expect(lines).To(Equal([]string{
+			"JOBID               ST  TIME_LIMIACCOUNT |REASON                        ",
+			"1394                PD    1:00:00projX   |launch failed requeued held   ",
+		}))
+	})
+
+	It("warns about an -O field it does not render and leaves it out", func() {
+		lines, errOut := squeueLines("-h", "-j", "1369", "-O", "JobID:6,Licenses,Name:8")
+		Expect(lines).To(Equal([]string{"1369  sqB_held"}))
+		Expect(errOut).To(ContainSubstring("format field Licenses not supported"))
+	})
+
+	It("renders rows without detail, from other users' jobs, as unknown", func() {
+		lines, _ := squeueLines("-h", "-j", "1399", "-o", "%i|%a|%l|%Z|%N")
+		Expect(lines).To(Equal([]string{"1399|(null)|N/A|(null)|ocs-worker2"}))
+	})
+})
+
+var _ = Describe("squeue options and environment [REQ-SQU-002]", func() {
+	var env map[string]string
+	BeforeEach(func() {
+		env = map[string]string{}
+		getenv = func(k string) string { return env[k] }
+		currentUser = func() string { return "alice" }
+		DeferCleanup(func() { getenv, currentUser = os.Getenv, loginName })
+	})
+
+	userArg := func(r *fake.Runner) string {
+		Expect(r.Calls).NotTo(BeEmpty())
+		return r.Calls[0].Args[len(r.Calls[0].Args)-1]
+	}
+
+	It("passes a -u list to qstat as one comma list", func() {
+		r := fakeQstat()
+		Expect(run(r, testCfg(), []string{"-u", "alice,bob", "-o", "%i"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(userArg(r)).To(Equal("alice,bob"))
+	})
+
+	It("lists the caller's jobs with --me", func() {
+		r := fakeQstat()
+		Expect(run(r, testCfg(), []string{"--me", "-o", "%i"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(userArg(r)).To(Equal("alice"))
+	})
+
+	It("reads SQUEUE_USERS, and an option beats it", func() {
+		env["SQUEUE_USERS"] = "carol"
+		r := fakeQstat()
+		Expect(run(r, testCfg(), []string{"-o", "%i"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(userArg(r)).To(Equal("carol"))
+		r = fakeQstat()
+		Expect(run(r, testCfg(), []string{"-u", "dave", "-o", "%i"}, io.Discard, io.Discard)).To(Equal(0))
+		Expect(userArg(r)).To(Equal("dave"))
+	})
+
+	DescribeTable("resolves the output format",
+		func(vars map[string]string, args []string, header string) {
+			for k, v := range vars {
+				env[k] = v
+			}
+			var out bytes.Buffer
+			Expect(run(fakeQstat(), testCfg(), args, &out, io.Discard)).To(Equal(0))
+			Expect(strings.SplitN(out.String(), "\n", 2)[0]).To(Equal(header))
+		},
+		Entry("SQUEUE_FORMAT", map[string]string{"SQUEUE_FORMAT": "%i %t"}, nil, "JOBID ST"),
+		Entry("SQUEUE_FORMAT2 over SQUEUE_FORMAT",
+			map[string]string{"SQUEUE_FORMAT": "%i %t", "SQUEUE_FORMAT2": "JobID:6,StateCompact:3"}, nil, "JOBID ST "),
+		Entry("-o over the variables", map[string]string{"SQUEUE_FORMAT2": "JobID"}, []string{"-o", "%t"}, "ST"),
+		Entry("-l over the variables", map[string]string{"SQUEUE_FORMAT": "%t"}, []string{"-l"},
+			"             JOBID PARTITION     NAME     USER    STATE       TIME TIME_LIMI  NODES NODELIST(REASON)"),
+		Entry("-o over -l", nil, []string{"-o", "%t", "-l"}, "ST"),
+	)
+
+	It("reads SQUEUE_STATES, SQUEUE_PARTITION and SQUEUE_ACCOUNT, and options beat them", func() {
+		env["SQUEUE_STATES"] = "R"
+		env["SQUEUE_PARTITION"] = "gpu"
+		env["SQUEUE_ACCOUNT"] = "projX"
+		env["SQUEUE_SORT"] = "-t" // read by SLURM, ignored here without a word
+		opt, err := parse(nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.states).To(Equal(map[string]bool{"R": true}))
+		Expect(opt.partitions).To(Equal(map[string]bool{"gpu": true}))
+		Expect(opt.accounts).To(Equal(map[string]bool{"projX": true}))
+		Expect(opt.warnings).To(BeEmpty())
+		opt, err = parse([]string{"-t", "PD,CG", "-p", "batch", "-A", "a,b"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.states).To(Equal(map[string]bool{"PD": true, "CG": true}))
+		Expect(opt.partitions).To(Equal(map[string]bool{"batch": true}))
+		Expect(opt.accounts).To(Equal(map[string]bool{"a": true, "b": true}))
+	})
+
+	It("unpacks a bundle of flags", func() {
+		opt, err := parse([]string{"-hlr"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.noHeader && opt.long && opt.array).To(BeTrue())
+	})
+
+	It("takes every form of a valued option", func() {
+		opt, err := parse([]string{"-tPD", "--partition=gpu", "--jobs", "1,2_3", "--name=a"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.states).To(HaveKey("PD"))
+		Expect(opt.partitions).To(HaveKey("gpu"))
+		Expect(opt.jobs).To(Equal([]string{"1", "2_3"}))
+		Expect(opt.names).To(HaveKey("a"))
+	})
+
+	It("lists every job for a bare -j, as SLURM does", func() {
+		opt, err := parse([]string{"-j", "-h"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.jobs).To(BeEmpty())
+		Expect(opt.noHeader).To(BeTrue())
+	})
+
+	It("refuses a malformed node list", func() {
+		_, err := parse([]string{"-w", "node[1-"})
+		Expect(err).To(MatchError(ContainSubstring("invalid node name")))
 	})
 })

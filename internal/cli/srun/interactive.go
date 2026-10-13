@@ -147,9 +147,16 @@ func buildSession(cfg *config.Config, opt *options, prog string, stderr io.Write
 		return launch.SessionSpec{}, part, false, code
 	}
 
+	// -w runs the allocation on exactly those hosts: the node count follows
+	// the list unless --nodes was given.
+	nodes, err := submit.NodesForList(opt.req.Nodes, opt.req.Nodelist, opt.exclude)
+	if err != nil {
+		errln(stderr, prog+": error: "+err.Error())
+		return launch.SessionSpec{}, part, false, 1
+	}
 	req := submit.Request{
 		Partition:     opt.partition,
-		Nodes:         opt.req.Nodes,
+		Nodes:         nodes,
 		NTasks:        opt.req.NTasks,
 		NTasksPerNode: opt.req.TasksPerNode,
 		CPUsPerTask:   opt.req.CPUsPerTask,
@@ -174,14 +181,17 @@ func buildSession(cfg *config.Config, opt *options, prog string, stderr io.Write
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.QstatTimeout.Duration)
 	defer cancel()
 	rule, warns := submit.AllocationRuleFor(ctx, gedata.ExecRunner{}, cfg, req, part, slots)
+	grant, err := allocationResources(ctx, cfg, opt, &req, slots, rule)
+	if err != nil {
+		errln(stderr, prog+": error: "+err.Error())
+		return launch.SessionSpec{}, part, false, 1
+	}
+	warns = append(warns, grant.Warnings...)
 	if w := submit.MemoryComplexWarning(cfg, req); w != "" {
 		warns = append(warns, w)
 	}
 	if w := interactiveDeviceMaskWarning(cfg, req.HaveGPUs); w != "" {
 		warns = append(warns, w)
-	}
-	if len(opt.req.Nodelist) > 0 {
-		warns = append(warns, "--nodelist is not applied to a new allocation; Grid Engine chooses its hosts")
 	}
 	if opt.immediate != "" && opt.immediate != "set" {
 		warns = append(warns, "--immediate="+opt.immediate+": Grid Engine starts the job at once or refuses it; "+
@@ -197,8 +207,8 @@ func buildSession(cfg *config.Config, opt *options, prog string, stderr io.Write
 		PE:             part.PE,
 		Slots:          slots,
 		AllocationRule: rule.Value,
-		VerifyGeometry: submit.VerifyGeometry(cfg, req),
-		Resources:      joinRequests(part.Request, submit.ResourceList(cfg, req)),
+		VerifyGeometry: submit.VerifyGeometry(cfg, req) && grant.Unverifiable == "",
+		Resources:      joinRequests(part.Request, joinRequests(submit.ResourceList(cfg, req), strings.Join(grant.Entries, ","))),
 		Account:        opt.account,
 		JobName:        opt.jobName,
 		Chdir:          opt.chdir,
@@ -283,4 +293,23 @@ func joinRequests(lists ...string) string {
 		}
 	}
 	return strings.Join(out, ",")
+}
+
+// allocationResources resolves the licenses, features, --exclusive, host
+// restrictions and --tmp of a new allocation, and scales a per-CPU or per-GPU
+// memory request in req to the memory complex (submit.Resolve).
+func allocationResources(ctx context.Context, cfg *config.Config, opt *options, req *submit.Request,
+	slots int, rule submit.AllocationRule) (submit.Grant, error) {
+	res := submit.Resources{
+		Licenses: opt.licenses, Constraint: opt.constraint,
+		Nodelist: opt.req.Nodelist, Exclude: opt.exclude, Tmp: opt.tmp,
+	}
+	if opt.exclusive != "" {
+		res.Exclusive, res.ExclusiveMode = submit.ParseExclusive(opt.exclusive)
+	}
+	nodes := rule.Nodes
+	if nodes < 1 {
+		nodes = req.Nodes
+	}
+	return submit.Resolve(ctx, gedata.ExecRunner{}, cfg, res, req, opt.memKind, slots, nodes)
 }

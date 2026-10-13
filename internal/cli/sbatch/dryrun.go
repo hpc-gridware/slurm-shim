@@ -84,10 +84,14 @@ func dryRun(runner gedata.Runner, cfg *config.Config, self string, opt options, 
 		// report promising a submit-time refusal that cannot happen is the same
 		// class of defect as a report contradicting the job environment.
 		verdict := "; -w e rejects the job at submit if the layout is not schedulable"
-		if !submit.VerifyGeometry(cfg, requestFor(opt)) {
+		switch {
+		case !submit.VerifyGeometry(cfg, requestFor(opt)):
 			verdict = fmt.Sprintf("; -w e is omitted because memory_complex %q is a load-sensor "+
 				"value that -w e cannot see, so an unschedulable layout waits in the queue "+
 				"instead of being refused at submit", cfg.MemoryComplex)
+		case opt.unverifiable != "":
+			verdict = "; -w e is omitted because " + opt.unverifiable + ", so an unschedulable " +
+				"layout waits in the queue instead of being refused at submit"
 		}
 		w.kv("allocation rule", fmt.Sprintf("-par %s (overrides PE %s's %s)%s",
 			par.Value, part.PE, peRuleText(pe), verdict))

@@ -52,7 +52,8 @@ type Queue struct {
 type Complex struct {
 	Name        string
 	Shortcut    string
-	Type        string // MEMORY, INT, RSMAP, ...
+	Type        string // MEMORY, INT, BOOL, RSMAP, ...
+	Relop       string // <=, ==, EXCL, ...
 	Consumable  string // YES, NO, JOB, HOST
 	Requestable string // YES, NO, FORCED
 }
@@ -273,7 +274,7 @@ func (a *Admin) Complexes(ctx context.Context) ([]Complex, error) {
 	}
 	out := make([]Complex, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Complex{Name: r.Name, Shortcut: r.Shortcut, Type: r.Type, Consumable: r.Consumable, Requestable: r.Requestable})
+		out = append(out, Complex{Name: r.Name, Shortcut: r.Shortcut, Type: r.Type, Relop: r.Relop, Consumable: r.Consumable, Requestable: r.Requestable})
 	}
 	return out, nil
 }

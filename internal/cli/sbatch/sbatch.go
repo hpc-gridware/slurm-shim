@@ -6,10 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
+	"github.com/hpc-gridware/slurm-shim/internal/submit"
 )
 
 // Run is the sbatch entry point. The runner is wrapped for dry-run mode so a
@@ -55,8 +58,10 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		}
 		tokens = ParseDirectives(scriptBytes)
 	}
-	// Directive flags first, command line second so the command line wins.
+	// Directive flags first, then the SBATCH_* input variables, then the command
+	// line, so later wins in SLURM's order: command line, environment, script.
 	nDirective := len(tokens)
+	tokens = append(tokens, submit.InputEnv(submit.SbatchInputEnv, os.LookupEnv)...)
 	tokens = append(tokens, args...)
 
 	opt, warns, err := parseArgs(tokens, nDirective)
@@ -85,6 +90,11 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 		return 1
 	}
 
+	nodelist, exclude, err := expandHosts(&opt)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
 	if err := validateGeometry(opt); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1
@@ -101,7 +111,7 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 	// A partition default applies only to jobs that can take spares; the user never
 	// asked for them, so a job that cannot is submitted without them, not refused.
 	if !opt.haveSpares && part.Spares > 0 {
-		if why := cannotTakeSpares(rule); why != "" {
+		if why := cannotTakeSpares(opt, rule); why != "" {
 			fmt.Fprintf(stderr, "sbatch: warning: partition %s defaults to %d spare(s), but this job cannot "+
 				"take them (%s); submitting without spares\n", opt.partition, part.Spares, why)
 		} else {
@@ -114,6 +124,22 @@ func run(runner gedata.Runner, cfg *config.Config, self string, args []string, s
 			fmt.Fprintln(stderr, err.Error())
 			return 1
 		}
+	}
+
+	grant, err := resolveResources(runner, cfg, &opt, nodelist, exclude, slots, rule)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	opt.resourceEntries, opt.unverifiable = grant.Entries, grant.Unverifiable
+	ctl, ctlWarns, err := controlArgs(opt, time.Now())
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	opt.controlArgs = ctl
+	for _, w := range slices.Concat(grant.Warnings, ctlWarns) {
+		fmt.Fprintln(stderr, "sbatch: warning: "+w)
 	}
 
 	qargs, qwarns := buildQsubArgs(cfg, opt, part, slots, rule)

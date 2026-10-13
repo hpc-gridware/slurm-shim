@@ -1,0 +1,97 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker1         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-rq               
+jobnumber                          1383                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:25:18.964643
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -b y -r y -N sx-rq sleep 25
+start_time                         -/-
+end_time                           -/-
+granted_pe                         NONE                
+slots                              1                   
+failed                             25  : rescheduling
+exit_status                        0                   
+deleted_by                         gridware@ocs-master 
+ru_wallclock                       0            
+ru_utime                           0.000        
+ru_stime                           0.000        
+ru_maxrss                          0                   
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          0                   
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         0                   
+ru_oublock                         0                   
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           0                   
+ru_nivcsw                          0                   
+wallclock                          8.062        
+cpu                                0.000        
+mem                                0.000             
+io                                 0.000             
+ioops                              0            
+iow                                0.000             
+maxvmem                            0                 
+maxrss                             0                 
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker2         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            sx-rq               
+jobnumber                          1383                
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-10-12 13:24:44.477649
+submit_cmd_line                    qsub -clear -terse -o /dev/null -j y -q all.q -b y -r y -N sx-rq sleep 25
+start_time                         2026-10-12 13:24:45.513296
+end_time                           2026-10-12 13:25:10.624672
+granted_pe                         NONE                
+slots                              1                   
+failed                             0    
+exit_status                        0                   
+ru_wallclock                       25           
+ru_utime                           0.057        
+ru_stime                           0.051        
+ru_maxrss                          6852                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1336                
+ru_majflt                          1                   
+ru_nswap                           0                   
+ru_inblock                         200                 
+ru_oublock                         8                   
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           11                  
+ru_nivcsw                          3                   
+wallclock                          26.076       
+cpu                                0.108        
+mem                                0.000             
+io                                 0.000             
+ioops                              89           
+iow                                0.000             
+maxvmem                            5042176           
+maxrss                             2154496           

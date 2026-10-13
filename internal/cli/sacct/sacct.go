@@ -4,8 +4,13 @@
 // It is a reporting subset, not a full sacct: there is no accounting database
 // behind it, so there are no job steps (.batch/.extern rows), no associations or
 // QOS, and no --json. What it does support is the surface tools and humans
-// actually use -- selecting jobs by id, user or time window, and choosing columns
-// with --format.
+// actually use -- selecting jobs by id, user, name or time window, and choosing
+// columns with --format, -b or SACCT_FORMAT.
+//
+// Request columns note: Timelimit, ReqMem and WorkDir come from the qsub command
+// line qacct records, the only place qacct shows a job's requests; NNodes comes
+// from the -par geometry or the PE task records. See request.go for what that
+// can and cannot see.
 //
 // Exit-code note: through OCS 9.1.4 a job that ran under a PE with
 // control_slaves TRUE - the setting qrsh -inherit tight integration is built on,
@@ -30,10 +35,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/slurmopts"
 )
@@ -47,10 +56,14 @@ type options struct {
 	beginTime time.Time
 	endTime   time.Time
 	states    []string // -s, normalized to long SLURM names
+	names     []string // --name, exact job names
 	format    string
 	parsable  bool
-	trailing  bool // -P keeps the trailing delimiter, --parsable2 does not
+	trailing  bool   // -p keeps the trailing delimiter, -P/--parsable2 does not
+	delimiter string // --delimiter, for -p/-P output
 	noHeader  bool
+	allUsers  bool // -a: do not narrow a listing to the caller's own jobs
+	dups      bool // -D: every run of a requeued job, not just the latest
 	// warnings name the options sacct does not translate (REQ-RUN-005).
 	warnings []string
 }
@@ -59,12 +72,40 @@ type options struct {
 // shim does not translate.
 var sacctOpts = slurmopts.For("sacct")
 
-// Run is the sacct entry point.
-func Run(args []string, stdout, stderr io.Writer) int {
-	return run(gedata.ExecRunner{}, args, stdout, stderr)
+// briefFields is SLURM's -b/--brief column set.
+const briefFields = "JobID,State,ExitCode"
+
+// getenv reads SACCT_FORMAT; a variable so specs can set it without touching
+// the process environment.
+var getenv = os.Getenv
+
+// whoami returns the caller's login name and whether the caller is root. A
+// variable so specs can play an ordinary user or root.
+var whoami = func() (string, bool) {
+	name := os.Getenv("USER")
+	if u, err := user.Current(); err == nil {
+		name = u.Username
+	}
+	return name, os.Getuid() == 0
 }
 
+// Run is the sacct entry point. A config that cannot be loaded falls back to the
+// built-in defaults: sacct only needs the memory complex name for ReqMem, and a
+// polling consumer must not lose its job states over a cosmetic column.
+func Run(args []string, stdout, stderr io.Writer) int {
+	memComplex := config.Default().MemoryComplex
+	if cfg, _, err := config.Load(); err == nil && cfg != nil {
+		memComplex = cfg.MemoryComplex
+	}
+	return runWith(gedata.ExecRunner{}, memComplex, args, stdout, stderr)
+}
+
+// run is the spec seam with the built-in memory complex.
 func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
+	return runWith(runner, config.Default().MemoryComplex, args, stdout, stderr)
+}
+
+func runWith(runner gedata.Runner, memComplex string, args []string, stdout, stderr io.Writer) int {
 	opt, err := parse(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -83,8 +124,8 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 	// With no selector at all, sacct would report the whole accounting file.
 	// Refuse rather than hammer qacct; SLURM defaults to "today for this user",
 	// which needs a clock we would rather not guess at.
-	if len(opt.ids) == 0 && len(opt.users) == 0 && opt.begin == "" && opt.end == "" {
-		for _, line := range render(fields, nil, opt.parsable, opt.trailing, opt.noHeader) {
+	if len(opt.ids) == 0 && len(opt.users) == 0 && len(opt.names) == 0 && opt.begin == "" && opt.end == "" {
+		for _, line := range render(fields, nil, opt) {
 			fmt.Fprintln(stdout, line)
 		}
 		return 0
@@ -103,7 +144,7 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 		// stay one qacct, not 1000 identical forks.
 		acct := map[string][]gedata.AccountingRecord{}
 		for _, id := range opt.ids {
-			got, err := resolve(runner, id, active, acct)
+			got, err := resolve(runner, id, active, acct, opt.dups, memComplex)
 			if err != nil {
 				fmt.Fprintf(stderr, "sacct: error: running qacct: %v\n", err)
 				return 1
@@ -111,26 +152,28 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 			rows = append(rows, got...)
 		}
 	} else {
-		// qacct -o takes a single owner, so a comma list costs one call each.
-		users := opt.users
-		if len(users) == 0 {
-			users = []string{""}
-		}
+		opt.users = listUsers(opt)
+		// qacct -o takes a single owner and -j a single name (qacct reads a
+		// non-numeric -j as a job name), so each combination costs one call.
+		users, names := orAll(opt.users), orAll(opt.names)
 		var recs []gedata.AccountingRecord
 		for _, u := range users {
-			got, err := gedata.JobAccounting(context.Background(), runner,
-				gedata.AcctQuery{User: u, Begin: opt.begin, End: opt.end})
-			if err != nil {
-				fmt.Fprintf(stderr, "sacct: error: running qacct: %v\n", err)
-				return 1
+			for _, n := range names {
+				got, err := gedata.JobAccounting(context.Background(), runner,
+					gedata.AcctQuery{JobID: n, User: u, Begin: opt.begin, End: opt.end})
+				if err != nil {
+					fmt.Fprintf(stderr, "sacct: error: running qacct: %v\n", err)
+					return 1
+				}
+				recs = append(recs, got...)
 			}
-			recs = append(recs, got...)
 		}
-		rows = append(rows, listRows(recs, active, opt)...)
+		rows = append(rows, listRows(recs, active, opt, memComplex)...)
 	}
 	rows = filterStates(rows, opt.states)
+	rows = filterNames(rows, opt.names)
 
-	for _, line := range render(fields, rows, opt.parsable, opt.trailing, opt.noHeader) {
+	for _, line := range render(fields, rows, opt) {
 		fmt.Fprintln(stdout, line)
 	}
 	return 0
@@ -140,7 +183,9 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 // printed are honored; the rest are ignored, since the report is derived from GE
 // rather than an accounting database.
 func parse(args []string) (options, error) {
-	opt := options{format: defaultFormat}
+	opt := options{delimiter: "|"}
+	var formats []string
+	brief := false
 	var err error
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -171,9 +216,13 @@ func parse(args []string) (options, error) {
 		case strings.HasPrefix(a, "-s") && len(a) > 2 && !strings.HasPrefix(a, "--"):
 			opt.states = append(opt.states, normalizeStates(a[2:])...)
 		case a == "-o" || a == "--format" || a == "--fields":
-			opt.format = next()
+			formats = append(formats, next())
 		case strings.HasPrefix(a, "-o") && len(a) > 2 && !strings.HasPrefix(a, "--"):
-			opt.format = a[2:]
+			formats = append(formats, a[2:])
+		case a == "--name":
+			opt.names = append(opt.names, splitList(next())...)
+		case a == "--delimiter":
+			opt.delimiter = next()
 		case a == "-S" || a == "--starttime":
 			if opt.beginTime, err = parseStamp(next()); err != nil {
 				return opt, err
@@ -186,18 +235,23 @@ func parse(args []string) (options, error) {
 			opt.end = geStamp(opt.endTime)
 		case a == "-n" || a == "--noheader":
 			opt.noHeader = true
-		case a == "-P" || a == "--parsable":
+		case a == "-p" || a == "--parsable":
 			opt.parsable, opt.trailing = true, true
-		case a == "--parsable2":
+		case a == "-P" || a == "--parsable2":
 			opt.parsable, opt.trailing = true, false
 		case a == "-a" || a == "--allusers":
-			// No-op: without -u the report already covers every user.
+			opt.allUsers = true
+		case a == "-D" || a == "--duplicates":
+			opt.dups = true
+		case a == "-b" || a == "--brief":
+			brief = true
 		case a == "-X" || a == "--allocations":
 			// No-op: we never emit step rows, so allocations-only is what we do.
 		default:
 			matched := false
 			for _, p := range []string{"--jobs", "--job", "--user", "--uid",
-				"--format", "--fields", "--starttime", "--endtime", "--state"} {
+				"--format", "--fields", "--starttime", "--endtime", "--state",
+				"--name", "--delimiter"} {
 				v, ok := val(p)
 				if !ok {
 					continue
@@ -209,7 +263,11 @@ func parse(args []string) (options, error) {
 				case "--user", "--uid":
 					opt.users = append(opt.users, splitList(v)...)
 				case "--format", "--fields":
-					opt.format = v
+					formats = append(formats, v)
+				case "--name":
+					opt.names = append(opt.names, splitList(v)...)
+				case "--delimiter":
+					opt.delimiter = v
 				case "--state":
 					opt.states = append(opt.states, normalizeStates(v)...)
 				case "--starttime":
@@ -234,10 +292,77 @@ func parse(args []string) (options, error) {
 			}
 		}
 	}
-	if strings.TrimSpace(opt.format) == "" {
-		opt.format = defaultFormat
+	// A name or user reaches qacct as the value of -j or -o; one starting
+	// with "-" would be read as an option of its own.
+	for _, v := range slices.Concat(opt.names, opt.users) {
+		if strings.HasPrefix(v, "-") {
+			return opt, fmt.Errorf("invalid job or user name %q", v)
+		}
 	}
+	opt.format = fieldList(formats, brief)
 	return opt, nil
+}
+
+// fieldList builds the column list the way SLURM's sacct does: every -o is
+// appended in order, -b appends the brief set after them, and only when neither
+// was given does SACCT_FORMAT (then the built-in default) apply.
+func fieldList(formats []string, brief bool) string {
+	if brief {
+		formats = append(formats, briefFields)
+	}
+	if len(formats) > 0 {
+		if f := strings.Join(formats, ","); len(splitFields(f)) > 0 {
+			return f
+		}
+		return defaultFormat
+	}
+	if env := strings.TrimSpace(getenv("SACCT_FORMAT")); env != "" {
+		return env
+	}
+	return defaultFormat
+}
+
+// listUsers returns the owners a listing (no -j) is narrowed to. SLURM shows an
+// ordinary user only their own jobs unless -a or -u says otherwise; root sees
+// everyone. A caller whose name cannot be resolved is not narrowed, since an
+// empty owner would match nothing and read as "no jobs".
+func listUsers(opt options) []string {
+	if len(opt.users) > 0 || opt.allUsers {
+		return opt.users
+	}
+	name, root := whoami()
+	if root || name == "" {
+		return nil
+	}
+	return []string{name}
+}
+
+// orAll turns an empty filter into the single "no filter" value.
+func orAll(list []string) []string {
+	if len(list) == 0 {
+		return []string{""}
+	}
+	return list
+}
+
+// filterNames keeps only rows whose job name is one of names; SLURM matches
+// --name exactly. qacct's own -j <name> also matches patterns, so this check is
+// what makes the answer exact. An empty selection keeps everything.
+func filterNames(rows []row, names []string) []row {
+	if len(names) == 0 {
+		return rows
+	}
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	out := rows[:0]
+	for _, r := range rows {
+		if want[r.jobName] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // parseStamp turns a SLURM time expression into a time. SLURM accepts far more
@@ -487,17 +612,22 @@ func expandTasks(field string) ([]int64, bool) {
 // finished (qacct) state. An id may be a base ("4711") or a single 0-based array
 // element ("4711_2"). Unknown tasks are simply absent from the result. acct
 // caches qacct results per base across the whole invocation.
-func resolve(runner gedata.Runner, id string, active []activeRow, acct map[string][]gedata.AccountingRecord) ([]row, error) {
+func resolve(runner gedata.Runner, id string, active []activeRow, acct map[string][]gedata.AccountingRecord,
+	dups bool, memComplex string) ([]row, error) {
 	base, wantTask, hasTask, ok := splitReq(id)
 	if !ok {
 		return nil, nil
 	}
 
-	cands := map[int64]row{}
-	live := map[int64]bool{}
+	// runs holds every finished run of a task, oldest first; liveRow its qstat
+	// row, if any.
+	runs := map[int64][]row{}
+	liveRow := map[int64]row{}
+	seen := map[int64]bool{}
 	var order []int64
 	remember := func(geTask int64) {
-		if _, seen := cands[geTask]; !seen {
+		if !seen[geTask] {
+			seen[geTask] = true
 			order = append(order, geTask)
 		}
 	}
@@ -508,8 +638,7 @@ func resolve(runner gedata.Runner, id string, active []activeRow, acct map[strin
 			continue
 		}
 		remember(a.geTask)
-		cands[a.geTask] = a.row()
-		live[a.geTask] = true
+		liveRow[a.geTask] = a.row()
 		if a.isArray {
 			arrayHint = true
 		}
@@ -517,7 +646,8 @@ func resolve(runner gedata.Runner, id string, active []activeRow, acct map[strin
 
 	// qacct prints one record per run of a task, oldest first; the LATEST wins so
 	// a task that requeued then completed reports COMPLETED, not the stale
-	// earlier state. A live (qstat) row always beats any finished record.
+	// earlier state. A live (qstat) row always beats any finished record. -D
+	// shows every run instead, oldest first, the way SLURM lists a requeued job.
 	//
 	// A qacct that cannot run must NOT be mistaken for "no record": an empty
 	// result means "unknown, keep polling", so swallowing the error would turn
@@ -540,11 +670,8 @@ func resolve(runner gedata.Runner, id string, active []activeRow, acct map[strin
 		if strconv.FormatInt(rec.JobNumber, 10) != base {
 			continue
 		}
-		if live[rec.TaskID] {
-			continue
-		}
 		remember(rec.TaskID)
-		cands[rec.TaskID] = acctRow(rec)
+		runs[rec.TaskID] = append(runs[rec.TaskID], acctRow(rec, memComplex))
 	}
 
 	isArray := arrayHint
@@ -559,14 +686,36 @@ func resolve(runner gedata.Runner, id string, active []activeRow, acct map[strin
 		if hasTask && (!isArray || t-1 != wantTask) {
 			continue
 		}
-		r := cands[t]
 		// Task 0 is the non-array sentinel even when array siblings are present
 		// (a reused job number can put both in one qacct answer); rendering it
 		// as an array element would emit the nonexistent id "<base>_-1".
-		r.jobID = elementID(base, t, isArray && t >= 1)
-		out = append(out, r)
+		jobID := elementID(base, t, isArray && t >= 1)
+		for _, r := range taskRows(runs[t], liveRow, t, dups) {
+			r.jobID = jobID
+			out = append(out, r)
+		}
 	}
 	return out, nil
+}
+
+// taskRows picks what to print for one task: without -D the live row, else the
+// latest run; with -D every finished run, then the live row.
+func taskRows(runs []row, liveRow map[int64]row, task int64, dups bool) []row {
+	live, isLive := liveRow[task]
+	if !dups {
+		if isLive {
+			return []row{live}
+		}
+		if len(runs) == 0 {
+			return nil
+		}
+		return runs[len(runs)-1:]
+	}
+	out := append([]row(nil), runs...)
+	if isLive {
+		out = append(out, live)
+	}
+	return out
 }
 
 // listRows renders records selected by user/time rather than by id, overlaying
@@ -575,15 +724,22 @@ func resolve(runner gedata.Runner, id string, active []activeRow, acct map[strin
 // The window has to be applied to the live rows here as well as to qacct: qstat
 // answers for the whole cluster right now, so without this a query bounded to
 // last night would still list everything running at this moment.
-func listRows(recs []gedata.AccountingRecord, active []activeRow, opt options) []row {
+func listRows(recs []gedata.AccountingRecord, active []activeRow, opt options, memComplex string) []row {
 	users := map[string]bool{}
 	for _, u := range opt.users {
 		users[u] = true
+	}
+	names := map[string]bool{}
+	for _, n := range opt.names {
+		names[n] = true
 	}
 	live := map[string]bool{}
 	var out []row
 	for _, a := range active {
 		if len(users) > 0 && !users[a.user] {
+			continue
+		}
+		if len(names) > 0 && !names[a.name] {
 			continue
 		}
 		if !inWindow(a, opt) {
@@ -594,16 +750,27 @@ func listRows(recs []gedata.AccountingRecord, active []activeRow, opt options) [
 		r.jobID = elementID(a.base, a.geTask, a.isArray)
 		out = append(out, r)
 	}
-	for _, rec := range recs {
+	// Without -D only the latest run of each task is shown, and none at all for
+	// a task that is running again; qacct lists runs oldest first.
+	latest := map[string]int{}
+	for i, rec := range recs {
+		latest[recKey(rec)] = i
+	}
+	for i, rec := range recs {
 		base := strconv.FormatInt(rec.JobNumber, 10)
-		if live[base+":"+strconv.FormatInt(rec.TaskID, 10)] {
+		if !opt.dups && (live[recKey(rec)] || latest[recKey(rec)] != i) {
 			continue
 		}
-		r := acctRow(rec)
+		r := acctRow(rec, memComplex)
 		r.jobID = elementID(base, rec.TaskID, rec.TaskID >= 1)
 		out = append(out, r)
 	}
 	return out
+}
+
+// recKey identifies a finished record's job and task, matching the live keys.
+func recKey(rec gedata.AccountingRecord) string {
+	return strconv.FormatInt(rec.JobNumber, 10) + ":" + strconv.FormatInt(rec.TaskID, 10)
 }
 
 // inWindow reports whether a live job falls inside the requested -S/-E bounds.
@@ -629,14 +796,49 @@ func inWindow(a activeRow, opt options) bool {
 
 // acctRow adapts a finished record; the job id is filled in by the caller, which
 // knows whether the job is an array.
-func acctRow(rec gedata.AccountingRecord) row {
+func acctRow(rec gedata.AccountingRecord, memComplex string) row {
+	req := parseSubmitLine(rec.SubmitCmdLine, memComplex)
 	return row{
 		jobName: rec.JobName, partition: rec.Queue, account: rec.Account,
-		allocCPUS: rec.Slots, state: rec.State, exitCode: rec.ExitCode,
+		allocCPUS: rec.Slots, state: finishedState(rec, req), exitCode: rec.ExitCode,
 		nodeList: rec.Host, user: rec.User, submit: rec.Submit,
 		start: rec.Start, end: rec.End, elapsed: rec.Elapsed,
 		maxRSS: rec.MaxRSS, totalCPU: rec.TotalCPU,
+		nnodes: nodeCount(rec, req), reqMem: req.reqMem(), timelimit: req.timelimit(),
+		workDir: req.workDir,
 	}
+}
+
+// finishedState refines GE's CANCELLED into SLURM's TIMEOUT for a job killed at
+// its wall-clock limit. Verified on OCS 9.1.6: a job submitted -l h_rt=5 that
+// sleeps 60 is recorded failed=100, exit_status=137 -- exactly what a qdel
+// leaves -- and only its run time (ru_wallclock 6) tells the two apart. A qdel
+// can only land before the limit, so a run that reached the requested h_rt was
+// ended by it.
+func finishedState(rec gedata.AccountingRecord, req jobRequest) string {
+	if rec.State == "CANCELLED" && req.hasTimeLimit && req.timeLimit > 0 &&
+		rec.Elapsed >= req.timeLimit {
+		return "TIMEOUT"
+	}
+	return rec.State
+}
+
+// nodeCount is NNodes for a finished run, or "" when the record cannot say.
+// A job without a PE ran on one host. A PE job is counted from the geometry it
+// requested when that fixes it (-par N on a multiple of N slots, or $pe_slots),
+// and otherwise from the hosts its PE task records ran on. With neither, the
+// granted hosts are not in the accounting record, so the answer is empty.
+func nodeCount(rec gedata.AccountingRecord, req jobRequest) string {
+	if rec.GrantedPE == "" || rec.Slots == 1 || req.perHost == "$pe_slots" {
+		return "1"
+	}
+	if n, err := strconv.ParseInt(req.perHost, 10, 64); err == nil && n > 0 && rec.Slots%n == 0 {
+		return strconv.FormatInt(rec.Slots/n, 10)
+	}
+	if rec.PETasks > 0 {
+		return strconv.Itoa(len(rec.Hosts))
+	}
+	return ""
 }
 
 // elementID renders the SLURM-facing job id, converting GE's 1-based array task

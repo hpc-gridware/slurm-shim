@@ -70,17 +70,19 @@ func unrecognized(v string) string {
 }
 
 // mutating lists the Grid Engine clients that change cluster state and are
-// reachable through gedata.Runner. The shim invokes exactly these three today;
-// the list is the intercept set, not an inventory of GE, so a client is added
-// here when the shim learns to call it.
+// reachable through gedata.Runner. The list is the intercept set, not an
+// inventory of GE, so a client is added here when the shim learns to call it.
 //
 // qrsh is deliberately absent: it mutates job state, but internal/launch execs it
 // directly rather than through Runner, so it cannot be intercepted here. srun's
 // Enabled() branch is what guards it.
 var mutating = map[string]bool{
-	"qsub": true,
-	"qdel": true,
-	"qmod": true,
+	"qsub":   true,
+	"qdel":   true,
+	"qmod":   true,
+	"qhold":  true,
+	"qrls":   true,
+	"qalter": true,
 }
 
 // Runner wraps a gedata.Runner so mutating GE clients are reported instead of

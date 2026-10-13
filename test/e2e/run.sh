@@ -19,6 +19,8 @@ checks=(
   10_env
   20_srun
   22_blocking
+  23_resources
+  24_control
   30_sbatch
   31_sbatch_resources
   32_par_allocation

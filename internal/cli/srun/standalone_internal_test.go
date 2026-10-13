@@ -139,3 +139,75 @@ var _ = Describe("salloc", func() {
 		Entry("after a long option value", "-p", "batch", "--no-shell", "hostname"),
 	)
 })
+
+// A new allocation from srun or salloc carries the same cluster resources as
+// sbatch: the translation is shared (internal/submit), so these specs check
+// the wiring, not every mapping.
+var _ = Describe("allocation resources for srun and salloc [Phase 1b]", func() {
+	BeforeEach(func() {
+		dir := GinkgoT().TempDir()
+		table := "#name shortcut type relop requestable consumable default urgency\n" +
+			"mem_free mf MEMORY <= YES NO 0 0\n" +
+			"spectre_lic spl INT <= YES JOB 0 0\n" +
+			"avx512 avx BOOL == YES NO 0 0\n" +
+			"exclusive excl BOOL EXCL YES YES 0 1000\n"
+		Expect(os.WriteFile(filepath.Join(dir, "table"), []byte(table), 0o644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "qconf"),
+			[]byte("#!/bin/sh\ncat "+filepath.Join(dir, "table")+"\n"), 0o755)).To(Succeed())
+		GinkgoT().Setenv("PATH", dir+":/usr/bin:/bin")
+		cfgFile := filepath.Join(GinkgoT().TempDir(), "config.yaml")
+		Expect(os.WriteFile(cfgFile, []byte("default_partition: batch\npartitions:\n  batch: {queue: all.q, pe: make, slots: per-task}\n"), 0o644)).To(Succeed())
+		GinkgoT().Setenv("SLURM_SHIM_CONFIG", cfgFile)
+		GinkgoT().Setenv("SLURM_SHIM_DRY_RUN", "1")
+	})
+
+	It("requests licenses, features, a whole node and avoided hosts for salloc", func() {
+		var errBuf bytes.Buffer
+		Expect(RunSalloc([]string{"-L", "spectre_lic:2", "-C", "avx512", "--exclusive", "-x", "n[3-4]", "hostname"},
+			io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("-l 'spectre_lic=2,avx512=true,exclusive=true,h=!(n3|n4)'"))
+	})
+
+	It("runs srun's new allocation on the -w hosts, sized by the list", func() {
+		var errBuf bytes.Buffer
+		Expect(Run([]string{"-w", "n1,n2", "hostname"}, io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("-pe make 2"))
+		Expect(errBuf.String()).To(ContainSubstring("h=n1|n2"))
+		Expect(errBuf.String()).NotTo(ContainSubstring("not applied"))
+	})
+
+	It("scales --mem-per-cpu to the node", func() {
+		var errBuf bytes.Buffer
+		Expect(RunSalloc([]string{"-N", "1", "-n", "4", "--mem-per-cpu=1G", "hostname"}, io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("mem_free=4G"))
+	})
+
+	It("asks one task's --mem-per-cpu per host when the tasks per host are unknown", func() {
+		var errBuf bytes.Buffer
+		Expect(RunSalloc([]string{"-n", "64", "-c", "2", "--mem-per-cpu=1G", "hostname"}, io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("mem_free=2G"))
+		Expect(errBuf.String()).To(ContainSubstring("requested for one task (2 CPU(s)) per host"))
+	})
+
+	It("refuses an unknown license before submitting anything", func() {
+		var errBuf bytes.Buffer
+		Expect(RunSalloc([]string{"-L", "calibre:1", "hostname"}, io.Discard, &errBuf)).To(Equal(1))
+		Expect(errBuf.String()).To(ContainSubstring(`salloc: error: unknown license "calibre"`))
+	})
+
+	It("takes defaults from SALLOC_* and SRUN_*, under the command line", func() {
+		GinkgoT().Setenv("SALLOC_CONSTRAINT", "avx512")
+		GinkgoT().Setenv("SALLOC_PARTITION", "nope")
+		var errBuf bytes.Buffer
+		Expect(RunSalloc([]string{"-p", "batch", "hostname"}, io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("avx512=true"))
+
+		GinkgoT().Setenv("SRUN_CPUS_PER_TASK", "3")
+		errBuf.Reset()
+		Expect(Run([]string{"-n", "2", "hostname"}, io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("-pe make 6"), "2 tasks x SRUN_CPUS_PER_TASK=3")
+		errBuf.Reset()
+		Expect(Run([]string{"-n", "2", "-c", "1", "hostname"}, io.Discard, &errBuf)).To(Equal(0), errBuf.String())
+		Expect(errBuf.String()).To(ContainSubstring("-pe make 2"), "the command line wins")
+	})
+})

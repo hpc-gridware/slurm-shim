@@ -1,17 +1,17 @@
 // Package scontrol implements the scontrol shim (spec sec. 7.9): hostlist
-// expansion, a minimal show job, and task-scoped requeue.
+// expansion, show job/node/partition, job hold/release, suspend/resume, a
+// subset of update job, and task-scoped requeue.
 package scontrol
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
+	"github.com/hpc-gridware/slurm-shim/internal/config"
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
@@ -19,46 +19,105 @@ import (
 )
 
 // Run is the scontrol entry point. Under SLURM_SHIM_DRY_RUN the runner reports the
-// mutating clients (requeue's qmod) on stderr instead of running them; the
-// read-only qstat behind `show job` still runs, so show subcommands work as usual
-// and their key=value record keeps stdout to itself.
+// mutating clients (qmod, qhold, qrls, qalter) on stderr instead of running them;
+// the read-only qstat/qhost/qconf behind the show subcommands still run, so show
+// works as usual and its records keep stdout to themselves.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if dryrun.Enabled() {
 		fmt.Fprintln(stderr, dryrun.Banner("scontrol"))
 	}
-	return run(dryrun.Wrap(gedata.ExecRunner{}, stderr, "scontrol"), args, stdout, stderr)
+	// A broken config only matters to the subcommands that read it: show
+	// hostnames, hold or requeue must keep working, so fall back to the defaults
+	// and let show partition, which has nothing to show without it, fail.
+	cfg, warnings, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "scontrol: warning: config: %v; using defaults\n", err)
+		cfg = nil
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "scontrol: warning: %s\n", w)
+	}
+	return run(dryrun.Wrap(gedata.ExecRunner{}, stderr, "scontrol"), cfg, args, stdout, stderr)
 }
 
-func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
+// run dispatches a subcommand. cfg is nil when the config could not be loaded.
+func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr io.Writer) int {
+	args, oneliner := stripOneliner(args)
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "scontrol: error: no subcommand given")
 		return 1
 	}
-	switch args[0] {
+	cmd, rest := args[0], args[1:]
+	switch cmd {
 	case "show":
-		return showCmd(runner, args[1:], stdout, stderr)
+		return showCmd(runner, cfg, rest, oneliner, stdout, stderr)
 	case "requeue":
-		return requeueCmd(runner, args[1:], stderr)
+		return requeueCmd(runner, rest, stderr)
+	case "hold", "uhold":
+		return holdCmd(runner, "qhold", rest, stderr)
+	case "release":
+		return holdCmd(runner, "qrls", rest, stderr)
+	case "suspend":
+		return suspendCmd(runner, "-sj", rest, stderr)
+	case "resume":
+		return suspendCmd(runner, "-usj", rest, stderr)
+	case "update":
+		return updateCmd(runner, rest, stderr)
 	default:
-		fmt.Fprintf(stderr, "scontrol: error: unsupported subcommand %q\n", args[0])
+		fmt.Fprintf(stderr, "scontrol: error: unsupported subcommand %q\n", cmd)
 		return 1
 	}
 }
 
-func showCmd(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
+// stripOneliner removes -o/--oneliner wherever it appears: SLURM accepts it
+// before the subcommand, and scripts also write `scontrol show -o job`. No job
+// id, node or partition name starts with a dash, so nothing else is lost.
+func stripOneliner(args []string) ([]string, bool) {
+	var kept []string
+	oneliner := false
+	for _, a := range args {
+		if a == "-o" || a == "--oneliner" {
+			oneliner = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	return kept, oneliner
+}
+
+func showCmd(runner gedata.Runner, cfg *config.Config, args []string, oneliner bool, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "scontrol: error: show needs an entity")
 		return 1
 	}
-	switch args[0] {
+	name := ""
+	if len(args) > 1 {
+		name = args[1]
+	}
+	switch strings.ToLower(args[0]) {
 	case "hostnames", "hostname":
 		return showHostnames(args[1:], stdout, stderr)
-	case "job":
-		return showJob(runner, args[1:], stdout, stderr)
+	case "job", "jobs", "jobid":
+		return showJob(runner, orDefault(cfg), name, oneliner, stdout, stderr)
+	case "node", "nodes", "nodename":
+		return showNodes(runner, orDefault(cfg), name, oneliner, stdout, stderr)
+	case "partition", "partitions", "partitionname":
+		if cfg == nil {
+			fmt.Fprintln(stderr, "scontrol: error: no partitions: the slurm-shim config could not be loaded")
+			return 1
+		}
+		return showPartitions(runner, cfg, name, oneliner, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "scontrol: error: unsupported show entity %q\n", args[0])
 		return 1
 	}
+}
+
+func orDefault(cfg *config.Config) *config.Config {
+	if cfg == nil {
+		return config.Default()
+	}
+	return cfg
 }
 
 // showHostnames expands a nodelist to one hostname per line (REQ-SCT-001). With
@@ -86,166 +145,41 @@ func showHostnames(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// showJob prints a minimal key=value record for a job. Inside a running job the
-// fabricated layout is used (rich, allocation-ordered nodelist, REQ-SCT-003);
-// otherwise (or for a different job id from a login shell) the job is looked up
-// in GE via qstat.
-func showJob(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
-	id := ""
-	if len(args) > 0 {
-		id = args[0]
-	}
+// field is one Key=Value of a record; a record is its fields grouped into the
+// lines SLURM prints them on.
+type field struct{ key, value string }
 
-	// Prefer the fabricated layout when it is present and describes the requested
-	// job (or no id was given: "show my job").
-	lay, layErr := loadLayout()
-	if layErr == nil && (id == "" || matchesLayout(id, lay)) {
-		return renderLayoutJob(lay, stdout)
-	}
-	if id == "" {
-		// With no id we can only show "my" job from the in-job layout. A layout
-		// that exists but failed to read is a real error, not "not inside a job".
-		if layErr != nil && !errors.Is(layErr, os.ErrNotExist) {
-			fmt.Fprintf(stderr, "scontrol: error: %v\n", layErr)
-			return 1
-		}
-		fmt.Fprintln(stderr, "scontrol: error: no job id specified (and not inside a job)")
-		return 1
-	}
+type record [][]field
 
-	// Look the job up in GE. Array-task ids (4711_2) match the base job number and,
-	// when a task is given, that specific task: SLURM index 2 is GE task 3 (same
-	// rule as squeue, REQ-SQU-002, SI-14).
-	base, task, isTask := strings.Cut(id, "_")
-	if isTask {
-		var ok bool
-		if task, ok = gedata.GETask(task); !ok {
-			fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
-			return 1
+// printRecord writes a record the way scontrol show does: the first line flush,
+// the rest indented by three spaces, a blank line after the record. With
+// -o/--oneliner the whole record is one space-separated line.
+func printRecord(w io.Writer, rec record, oneliner bool) {
+	if oneliner {
+		var parts []string
+		for _, line := range rec {
+			for _, f := range line {
+				parts = append(parts, f.key+"="+f.value)
+			}
 		}
+		fmt.Fprintln(w, strings.Join(parts, " "))
+		return
 	}
-	out, errOut, exit, err := runner.Run(context.Background(), "qstat", "-xml", "-u", "*")
-	if err != nil {
-		fmt.Fprintf(stderr, "scontrol: error: running qstat: %v\n", err)
-		return 1
-	}
-	if exit != 0 {
-		msg := strings.TrimSpace(string(errOut))
-		if msg == "" {
-			msg = "qstat failed"
-		}
-		fmt.Fprintf(stderr, "scontrol: error: %s\n", msg)
-		return 1
-	}
-	rows, err := gedata.ParseQstatXML(out)
-	if err != nil {
-		fmt.Fprintf(stderr, "scontrol: error: parsing qstat output: %v\n", err)
-		return 1
-	}
-	for _, r := range rows {
-		if r.JobID != base || (task != "" && !gedata.TaskInRange(r.TaskID, task)) {
+	for i, line := range rec {
+		if len(line) == 0 {
 			continue
 		}
-		// The plain view carries only the master queue instance, so on its own it
-		// reports a multi-node job as one node. squeue sources the granted hosts
-		// from the detail view; this command must give the same answer for the
-		// same job, because users cross-check the two. A failure here is not worth
-		// failing the record over: fall back to the master host, which is one host
-		// the job really is on, and say on stderr that the rest is missing.
-		allocs, hostErr := gedata.JobAllocations(context.Background(), runner, id)
-		if hostErr != nil {
-			fmt.Fprintf(stderr, "scontrol: warning: node list unavailable: %v\n", hostErr)
+		parts := make([]string, len(line))
+		for j, f := range line {
+			parts[j] = f.key + "=" + f.value
 		}
-		alloc := allocs[r.Key()]
-		if len(alloc.Hosts) == 0 && gedata.MapState(r.State) != "PD" {
-			fmt.Fprintf(stderr, "scontrol: warning: no granted host list for %s; showing the master host only\n", id)
+		indent := "   "
+		if i == 0 {
+			indent = ""
 		}
-		return renderGEJob(id, r, alloc, stdout)
+		fmt.Fprintln(w, indent+strings.Join(parts, " "))
 	}
-	fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
-	return 1
-}
-
-// matchesLayout reports whether id (possibly an array-task id) names the job the
-// fabricated layout describes.
-func matchesLayout(id string, lay *layout.Layout) bool {
-	base, _, _ := strings.Cut(id, "_")
-	return base == strconv.FormatInt(lay.Job.JobID, 10)
-}
-
-func renderLayoutJob(lay *layout.Layout, stdout io.Writer) int {
-	hosts := make([]string, len(lay.Nodes))
-	for i, n := range lay.Nodes {
-		hosts[i] = n.Host
-	}
-	fields := [][2]string{
-		{"JobId", strconv.FormatInt(lay.Job.JobID, 10)},
-		{"JobName", lay.Job.Name},
-		{"JobState", "RUNNING"},
-		{"NodeList", encoders.CompressNodelist(hosts)},
-		{"NumNodes", strconv.Itoa(len(lay.Nodes))},
-		{"NumTasks", strconv.Itoa(lay.Tasks.NTasks)},
-		{"Partition", lay.Job.Partition},
-		{"UserId", fmt.Sprintf("%s(%d)", lay.Job.User, lay.Job.UID)},
-		{"WorkDir", lay.Job.SubmitDir},
-	}
-	spares := make([]string, len(lay.Spares))
-	for i, n := range lay.Spares {
-		spares[i] = n.Host
-	}
-	fields = append(fields, spareFields(spares, lay.Lost)...)
-	printFields(stdout, fields)
-	return 0
-}
-
-// spareFields renders a hot-spare job's spares and the nodes they replaced. It
-// returns nothing for a job with neither, so every other record is unchanged.
-func spareFields(spares, swapped []string) [][2]string {
-	if len(spares) == 0 && len(swapped) == 0 {
-		return nil
-	}
-	list := func(hosts []string) string {
-		if len(hosts) == 0 {
-			return "(null)"
-		}
-		return encoders.CompressNodelist(hosts)
-	}
-	return [][2]string{{"SpareNodes", list(spares)}, {"SwappedNodes", list(swapped)}}
-}
-
-// renderGEJob renders the minimal record available from `qstat -xml`: the master
-// queue instance gives the partition (queue), and granted gives every host the
-// job holds, in the scheduler's grant order (never sorted, REQ-ENC-002 / SI-41).
-// A pending job has neither.
-func renderGEJob(id string, r gedata.JobRow, alloc gedata.JobAllocation, stdout io.Writer) int {
-	queue, host, _ := strings.Cut(r.Queue, "@")
-	nodelist := encoders.CompressNodelist(alloc.Hosts)
-	if nodelist == "" {
-		nodelist = host
-	}
-	if nodelist == "" {
-		nodelist = "(null)" // not yet scheduled onto a node
-	}
-	fields := [][2]string{
-		{"JobId", id},
-		{"JobName", r.Name},
-		{"JobState", gedata.FullState(gedata.MapState(r.State))},
-		{"NodeList", nodelist},
-		{"NumTasks", strconv.Itoa(r.Slots)},
-		{"Partition", queue},
-		{"UserId", r.User},
-	}
-	fields = append(fields, spareFields(alloc.Spares, alloc.Lost)...)
-	printFields(stdout, fields)
-	return 0
-}
-
-func printFields(stdout io.Writer, fields [][2]string) {
-	parts := make([]string, len(fields))
-	for i, f := range fields {
-		parts[i] = f[0] + "=" + f[1]
-	}
-	fmt.Fprintln(stdout, strings.Join(parts, " "))
+	fmt.Fprintln(w)
 }
 
 // requeueCmd maps a SLURM job (or array-task) id to a GE reschedule (REQ-SCT-002).
@@ -256,14 +190,10 @@ func requeueCmd(runner gedata.Runner, args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "scontrol: error: requeue needs a job id")
 		return 1
 	}
-	target := args[0]
-	if i := strings.IndexByte(target, '_'); i >= 0 {
-		task, ok := gedata.GETask(target[i+1:])
-		if !ok {
-			fmt.Fprintf(stderr, "scontrol: error: invalid job id %s\n", target)
-			return 1
-		}
-		target = target[:i] + "." + task // 4711_2 -> 4711.3
+	target, ok := geTarget(args[0])
+	if !ok {
+		fmt.Fprintf(stderr, "scontrol: error: invalid job id %s\n", args[0])
+		return 1
 	}
 	_, errOut, exit, err := runner.Run(context.Background(), "qmod", "-rj", target)
 	if err != nil {

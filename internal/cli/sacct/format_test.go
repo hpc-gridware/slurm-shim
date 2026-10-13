@@ -168,9 +168,16 @@ var _ = Describe("sacct --format", func() {
 })
 
 var _ = Describe("sacct parsable flags", func() {
-	It("keeps a trailing delimiter for -P", func() {
-		_, lines := runSacct(oneJob("4711"), "-o", "JobID,State", "-P", "-j", "4711")
+	// SLURM 24.05: -p/--parsable ends each line with the delimiter,
+	// -P/--parsable2 does not.
+	It("keeps a trailing delimiter for -p", func() {
+		_, lines := runSacct(oneJob("4711"), "-o", "JobID,State", "-p", "-j", "4711")
 		Expect(lines).To(Equal([]string{"JobID|State|", "4711|COMPLETED|"}))
+	})
+
+	It("drops the trailing delimiter for -P, the short form of --parsable2", func() {
+		_, lines := runSacct(oneJob("4711"), "-o", "JobID,State", "-P", "-j", "4711")
+		Expect(lines).To(Equal([]string{"JobID|State", "4711|COMPLETED"}))
 	})
 
 	It("drops the trailing delimiter for --parsable2", func() {
@@ -178,7 +185,7 @@ var _ = Describe("sacct parsable flags", func() {
 		Expect(lines).To(Equal([]string{"JobID|State", "4711|COMPLETED"}))
 	})
 
-	It("accepts --parsable as the long form of -P", func() {
+	It("accepts --parsable as the long form of -p", func() {
 		_, lines := runSacct(oneJob("4711"), "-o", "JobID,State", "--parsable", "-j", "4711")
 		Expect(lines).To(Equal([]string{"JobID|State|", "4711|COMPLETED|"}))
 	})

@@ -229,6 +229,18 @@ type Config struct {
 	MasterPortRange  int      `yaml:"master_port_range"`
 	QstatTimeout     Duration `yaml:"qstat_timeout"`
 	MemoryComplex    string   `yaml:"memory_complex"`
+	// Licenses and Features map a SLURM license (-L) or node feature (-C) name
+	// to the Grid Engine complex that carries it. A name absent from the map is
+	// looked up as a complex of the same name, so a site that named its
+	// complexes after its licenses and features needs no entry at all.
+	Licenses map[string]string `yaml:"licenses"`
+	Features map[string]string `yaml:"features"`
+	// ExclusiveComplex is the complex (relop EXCL) that --exclusive requests;
+	// empty picks the cluster's only EXCL complex when there is exactly one.
+	ExclusiveComplex string `yaml:"exclusive_complex"`
+	// TmpComplex receives --tmp (local disk per node); empty ignores --tmp
+	// with a warning.
+	TmpComplex string `yaml:"tmp_complex"`
 	// AllocationRuleOverride is the site-wide policy for emitting qsub -par:
 	// OverrideAuto (default) probes the cluster and emits when supported,
 	// OverrideNever never emits, OverrideAlways skips the probe. A partition may
@@ -305,17 +317,47 @@ type Config struct {
 	GPU              GPU                  `yaml:"gpu"`
 }
 
-// PartitionOf names the partition a job's queue instance ("gpu.q@node001") is
-// shown under: its cluster queue's partition_aliases entry, else the queue
-// name. squeue's PARTITION column and scancel -p share it.
-func (c *Config) PartitionOf(queueInstance string) string {
-	cluster, _, _ := strings.Cut(queueInstance, "@")
-	if c != nil {
-		if alias, ok := c.PartitionAliases[cluster]; ok {
-			return alias
+// PartitionFor names the SLURM partition of a job from its cluster queue (a
+// queue instance "gpu.q@node001" is cut to "gpu.q"; "" when the job named
+// none) and its PE. A partition_aliases entry names it outright; otherwise it
+// is the configured partition with that queue -- the one whose PE also
+// matches when several share the queue, else the default partition when it is
+// one of them -- and failing both, the queue's own name. A job without a queue
+// is matched on its PE alone. squeue and scontrol show job both name
+// partitions with it, so the two always agree.
+func (c *Config) PartitionFor(queueInstance, pe string) string {
+	queue, _, _ := strings.Cut(queueInstance, "@")
+	if queue == "" && pe == "" {
+		return ""
+	}
+	if c == nil {
+		return queue
+	}
+	if alias, ok := c.PartitionAliases[queue]; ok {
+		return alias
+	}
+	names := make([]string, 0, len(c.Partitions))
+	for name := range c.Partitions {
+		names = append(names, name)
+	}
+	sort.Strings(names) // a stable answer when several partitions tie
+	byQueue := ""
+	for _, name := range names {
+		p := c.Partitions[name]
+		if queue != "" && p.Queue != queue {
+			continue
+		}
+		if p.PE == pe {
+			return name
+		}
+		if queue != "" && (byQueue == "" || name == c.DefaultPartition) {
+			byQueue = name
 		}
 	}
-	return cluster
+	if byQueue != "" {
+		return byQueue
+	}
+	return queue
 }
 
 // QueuesOf names the cluster queues a SLURM partition name stands for: the

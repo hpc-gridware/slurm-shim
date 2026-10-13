@@ -105,6 +105,7 @@ var _ = Describe("sbatch hot spares (--x-spares)", func() {
 		Entry("a 1-node job", "gpu", parUsage, []string{"-N", "1"}, "1", "runs on 1 node"),
 		Entry("OCS without qsub -par", "gpu", oldUsage, []string{"-N", "2"}, "2", "not pinned"),
 		Entry("a literal slots rule", "batch", parUsage, []string{"-N", "2"}, "16", "not pinned"),
+		Entry("a -w host list", "gpu", parUsage, []string{"-w", "n1,n2"}, "2", "exactly its --nodelist hosts"),
 	)
 
 	It("still refuses an explicit --x-spares the job cannot take on a defaulted partition", func() {
@@ -112,6 +113,12 @@ var _ = Describe("sbatch hot spares (--x-spares)", func() {
 		_, errOut, code := submitWith(cfg, parUsage, "-p", "gpu", "-N", "1", "--x-spares=1")
 		Expect(code).To(Equal(1))
 		Expect(errOut).To(ContainSubstring("at least 2 nodes"))
+	})
+
+	It("refuses an explicit --x-spares with a -w host list: no other host may hold the spare", func() {
+		_, errOut, code := submitWith(cfg, parUsage, "-p", "gpu", "-w", "n1,n2", "--x-spares=1")
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("cannot be combined with --nodelist"))
 	})
 
 	It("lets --x-spares=0 switch a partition default off", func() {
