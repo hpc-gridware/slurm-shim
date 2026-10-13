@@ -1,7 +1,7 @@
-# slurm-shim v0.8.0
+# slurm-shim v0.9.0
 
 This directory holds the latest slurm-shim release, the same files as on the
-[GitHub release page](https://github.com/hpc-gridware/slurm-shim/releases/tag/v0.8.0):
+[GitHub release page](https://github.com/hpc-gridware/slurm-shim/releases/tag/v0.9.0):
 
 | File | |
 |---|---|
@@ -45,6 +45,13 @@ $SGE_ROOT/slurm-shim/bin/slurm-shim uninstall --apply
 Uninstall undoes what install did and removes the installed files. It keeps the
 config; `--purge-config` removes it too. It changes nothing while a job still
 uses the shim.
+
+## Config outside `$SGE_ROOT`
+
+`install --apply --config PATH`, or `--config-dir DIR` for a Qontrol config
+dir, keeps the config out of `$SGE_ROOT` so a scheduler reinstall does not
+delete it. Put it on shared storage: every submit and exec host reads it at
+the same path. `slurm-shim config path` shows which file is in use.
 
 More information, including configuration, upgrades and troubleshooting:
 https://github.com/hpc-gridware/slurm-shim
