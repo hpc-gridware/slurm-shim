@@ -97,7 +97,7 @@ func showJob(runner gedata.Runner, cfg *config.Config, id string, oneliner bool,
 		if len(alloc.Hosts) == 0 && gedata.MapState(r.State) != "PD" {
 			fmt.Fprintf(stderr, "scontrol: warning: no granted host list for %s; showing the master host only\n", id)
 		}
-		printRecord(stdout, geJobRecord(id, task, r, d, alloc, cfg), oneliner)
+		printRecord(stdout, geJobRecord(id, task, r, d, alloc, cfg, holdKind(runner, r, d, task, stderr)), oneliner)
 		return 0
 	}
 	fmt.Fprintln(stderr, "scontrol: error: Invalid job id specified")
@@ -151,7 +151,8 @@ func spareFields(spares, swapped []string) []field {
 // read, the job's detail d. task is the requested GE task number ("" for the
 // job). Granted hosts are in the scheduler's grant order (never sorted,
 // REQ-ENC-002 / SI-41).
-func geJobRecord(id, task string, r gedata.JobRow, d *gedata.JobDetail, alloc gedata.JobAllocation, cfg *config.Config) record {
+func geJobRecord(id, task string, r gedata.JobRow, d *gedata.JobDetail, alloc gedata.JobAllocation, cfg *config.Config,
+	hold string) record {
 	queue, host, _ := strings.Cut(r.Queue, "@")
 	nodelist := encoders.CompressNodelist(alloc.Hosts)
 	if nodelist == "" {
@@ -176,7 +177,7 @@ func geJobRecord(id, task string, r gedata.JobRow, d *gedata.JobDetail, alloc ge
 		return record{
 			{{"JobId", id}, {"JobName", r.Name}},
 			{{"UserId", r.User}},
-			{{"JobState", gedata.FullState(compact)}, {"Reason", pendingReason(r.State, nil, "")}},
+			{{"JobState", gedata.FullState(compact)}, {"Reason", pendingReason(r.State, nil, "", hold)}},
 			{{"Partition", partition}},
 			{{"NodeList", nodelist}},
 			{{"NumCPUs", strconv.Itoa(r.Slots)}, {"NumTasks", strconv.Itoa(r.Slots)}},
@@ -215,7 +216,7 @@ func geJobRecord(id, task string, r gedata.JobRow, d *gedata.JobDetail, alloc ge
 	return record{
 		{{"JobId", id}, {"JobName", r.Name}},
 		{{"UserId", fmt.Sprintf("%s(%s)", d.Owner, d.UID)}, {"GroupId", fmt.Sprintf("%s(%s)", d.Group, d.GID)}},
-		{{"JobState", gedata.FullState(compact)}, {"Reason", pendingReason(r.State, d, task)}, {"Dependency", dependency(d)}},
+		{{"JobState", gedata.FullState(compact)}, {"Reason", pendingReason(r.State, d, task, hold)}, {"Dependency", dependency(d)}},
 		{{"ExitCode", "0:0"}},
 		{{"RunTime", runTime(start, started)}, {"TimeLimit", timeLimit(d)}},
 		{{"SubmitTime", slurmTime(d.Submit)}, {"EligibleTime", eligibleTime(d)}},
@@ -251,8 +252,9 @@ func firstTask(taskID string) string {
 // Dependency, any other hold (operator or system) JobHeldAdmin, and a -a start
 // time in the future BeginTime. Everything else -- including a running job --
 // is None: GE does not say whether a queued job waits for resources or
-// priority without scheduler job info, which sites usually turn off.
-func pendingReason(state string, d *gedata.JobDetail, task string) string {
+// priority without scheduler job info, which sites usually turn off. hold is
+// the job's hold kind from holdKind, "" when the detail answers alone.
+func pendingReason(state string, d *gedata.JobDetail, task, hold string) string {
 	if gedata.MapState(state) != "PD" {
 		return "None"
 	}
@@ -262,7 +264,7 @@ func pendingReason(state string, d *gedata.JobDetail, task string) string {
 		return "JobHeldUser"
 	case d == nil:
 		return "None"
-	case d.UserHeld(task):
+	case d.UserHeld(task) || hold == gedata.HoldUser:
 		return "JobHeldUser"
 	case len(d.Predecessors) > 0:
 		return "Dependency"
@@ -272,6 +274,26 @@ func pendingReason(state string, d *gedata.JobDetail, task string) string {
 		return "BeginTime"
 	}
 	return "None"
+}
+
+// holdKind asks qstat which hold keeps a held job pending when its detail
+// cannot say: OCS 9.0 leaves the hold ranges out of `qstat -xml -j`, and a
+// detail without a user hold reads the same as one held by an operator (see
+// gedata.HoldKinds). "" when the question does not arise or cannot be answered.
+func holdKind(runner gedata.Runner, r gedata.JobRow, d *gedata.JobDetail, task string, stderr io.Writer) string {
+	if task == "" {
+		task = firstTask(r.TaskID) // as geJobRecord reads it
+	}
+	if d == nil || !strings.ContainsRune(r.State, 'h') || gedata.MapState(r.State) != "PD" ||
+		d.UserHeld(task) || len(d.Predecessors) > 0 {
+		return ""
+	}
+	kinds, err := gedata.HoldKinds(context.Background(), runner)
+	if err != nil {
+		fmt.Fprintf(stderr, "scontrol: warning: hold kind unavailable: %v\n", err)
+		return ""
+	}
+	return kinds[r.JobID]
 }
 
 // dependency renders -hold_jid predecessors the way SLURM writes the matching

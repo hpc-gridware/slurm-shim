@@ -824,3 +824,44 @@ var _ = Describe("squeue options and environment [REQ-SQU-002]", func() {
 		Expect(err).To(MatchError(ContainSubstring("invalid node name")))
 	})
 })
+
+// ocs9010Runner answers like the live OCS 9.0.10 capture of a job held with
+// sbatch -H, whose `qstat -xml -j` leaves the hold ranges out.
+func ocs9010Runner() *fake.Runner {
+	read := func(f string) []byte {
+		data, err := os.ReadFile("../../gedata/testdata/" + f)
+		Expect(err).NotTo(HaveOccurred())
+		return data
+	}
+	return &fake.Runner{Responder: func(_ string, args []string) fake.Response {
+		switch strings.Join(args, " ") {
+		case "-xml -u *":
+			return fake.Response{Stdout: read("qstat_xml_held_9.0.10.xml")}
+		case "-xml -j 1":
+			return fake.Response{Stdout: read("qstat_j_held_9.0.10.xml")}
+		case "-xml -u * -s hu":
+			return fake.Response{Stdout: read("qstat_s_hu_9.0.10.xml")}
+		case "-xml -u * -s ho", "-xml -u * -s hs":
+			return fake.Response{Stdout: read("qstat_s_ho_empty_9.0.10.xml")}
+		}
+		return fake.Response{Exit: 1, Stderr: []byte("unexpected qstat " + strings.Join(args, " "))}
+	}}
+}
+
+var _ = Describe("squeue pending reasons on OCS 9.0 [gedata.HoldKinds]", func() {
+	It("reads a user hold from qstat -s hu when the job detail leaves it out", func() {
+		r := ocs9010Runner()
+		var out, errOut bytes.Buffer
+		Expect(run(r, testCfg(), []string{"-h", "-u", "*", "-o", "%i %r"}, &out, &errOut)).To(Equal(0), errOut.String())
+		Expect(strings.TrimSpace(out.String())).To(Equal("1 JobHeldUser"))
+		Expect(errOut.String()).To(BeEmpty())
+	})
+
+	It("asks nothing more when no column needs a reason", func() {
+		r := ocs9010Runner()
+		Expect(run(r, testCfg(), []string{"-h", "-u", "*", "-o", "%i"}, io.Discard, io.Discard)).To(Equal(0))
+		for _, c := range r.Calls {
+			Expect(c.Args).NotTo(ContainElement("-s"))
+		}
+	})
+})

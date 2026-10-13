@@ -48,3 +48,15 @@ is identical to gpu: plain `hard_resource_list: h_vmem=2G`; XML
 script ran `qrsh -inherit` once per host, on a PE with `accounting_summary FALSE`.
 The two task records (`pe_taskid 1.ocs-worker1`, `1.ocs-master`) come first,
 the master record (`pe_taskid NONE`) last.
+
+## Holds on OCS 9.0.10 (gedata.HoldKinds)
+
+Captured from a 9.0.10 cluster for job 1, submitted `sbatch -H` (state `hqw`):
+
+- `qstat_j_held_9.0.10.xml` -- `qstat -xml -j 1`. Unlike 9.1, it carries no
+  `JB_ja_u_h_ids`/`JB_ja_o_h_ids`/`JB_ja_s_h_ids` at all, so the detail cannot
+  say why the job is held.
+- `qstat_xml_held_9.0.10.xml` -- `qstat -xml -u '*'`, the listing.
+- `qstat_s_hu_9.0.10.xml` -- `qstat -xml -u '*' -s hu`: the job, as user-held.
+- `qstat_s_ho_empty_9.0.10.xml` -- `qstat -xml -u '*' -s ho`: no job (an empty
+  answer, also used for `-s hs`).

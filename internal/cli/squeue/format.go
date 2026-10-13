@@ -166,7 +166,18 @@ type view struct {
 	details map[string]gedata.JobInfo
 	// schedInfo says the scheduler records why jobs wait (schedd_job_info).
 	schedInfo bool
+	// holdKinds names the hold of held jobs whose detail does not (OCS 9.0,
+	// see gedata.HoldKinds); nil when no listed job needed it.
+	holdKinds map[string]string
 	now       time.Time
+}
+
+// unexplainedHold reports a job whose state shows a hold its detail does not
+// account for: no hold kind, no unfinished predecessor.
+func (v view) unexplainedHold(row gedata.JobRow) bool {
+	d, ok := v.details[row.JobID]
+	return ok && strings.ContainsRune(row.State, 'h') && !strings.ContainsRune(row.State, 'E') &&
+		d.Hold(row.TaskID) == gedata.HoldNone && len(d.Predecessors) == 0
 }
 
 func (v view) formatRow(toks []token, row gedata.JobRow) string {
@@ -397,6 +408,14 @@ func (v view) reason(row gedata.JobRow) string {
 		return reasonHeldAdmin
 	case gedata.HoldDependency:
 		return reasonDepend
+	}
+	if v.unexplainedHold(row) {
+		switch v.holdKinds[row.JobID] {
+		case gedata.HoldUser:
+			return reasonHeldUser
+		case gedata.HoldAdmin:
+			return reasonHeldAdmin
+		}
 	}
 	switch {
 	case len(d.Predecessors) > 0:

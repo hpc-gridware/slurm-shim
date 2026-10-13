@@ -21,7 +21,12 @@ assert_contains "$res" "0: " "task 0 labelled"
 assert_contains "$res" "1: " "task 1 labelled"
 hosts="$(printf '%s\n' "$res" | sed -n 's/^[01]: //p' | sort -u | wc -l | tr -d ' ')"
 assert_eq "$hosts" "2" "the two tasks ran on two hosts"
-case "$res" in *warning*) fail "srun printed a warning: $(printf '%s' "$res" | grep warning | head -1)" ;; *) pass "no warnings" ;; esac
+# Before OCS 9.1.5 qsub has no -par, and srun rightly says the layout is not
+# pinned; that is the only warning allowed there.
+ocs="$(ocs_version)"
+warns="$(printf '%s\n' "$res" | grep warning || true)"
+version_ge "${ocs:-0}" 9.1.5 || warns="$(printf '%s\n' "$warns" | grep -v "qsub has no -par" || true)"
+[ -z "$warns" ] && pass "no warnings" || fail "srun printed a warning: $(printf '%s' "$warns" | head -1)"
 
 res="$(gridware "timeout -s INT 180 srun sh -c 'exit 3' </dev/null 2>/dev/null; echo rc=\$?")"
 assert_contains "$res" "rc=3" "srun returns the step's exit status"
@@ -32,10 +37,20 @@ assert_contains "$res" "rc=0" "srun -I starts at once on an idle cluster"
 # -- sbatch --wait --------------------------------------------------------------
 res="$(gridware "timeout -s INT 300 sbatch --wait --wrap 'exit 3' </dev/null; echo rc=\$?")"
 assert_contains "$res" "Submitted batch job" "sbatch --wait prints the job id first"
-assert_contains "$res" "rc=3" "sbatch --wait exits with the job's exit status"
+# The status comes from accounting, which loses it for a PE job before OCS
+# 9.1.5 (docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md).
+if version_ge "${ocs:-0}" 9.1.5; then
+  assert_contains "$res" "rc=3" "sbatch --wait exits with the job's exit status"
+else
+  skip "sbatch --wait exit status: accounting loses it on OCS ${ocs:-unknown} (fixed in 9.1.5)"
+fi
 
 res="$(gridware "timeout -s INT 300 sbatch --wait --array=0-2 --wrap 'exit \$SLURM_ARRAY_TASK_ID' </dev/null; echo rc=\$?")"
-assert_contains "$res" "rc=2" "sbatch --wait on an array exits with the highest task status"
+if version_ge "${ocs:-0}" 9.1.5; then
+  assert_contains "$res" "rc=2" "sbatch --wait on an array exits with the highest task status"
+else
+  skip "sbatch --wait array status: accounting loses it on OCS ${ocs:-unknown} (fixed in 9.1.5)"
+fi
 
 # -- salloc ---------------------------------------------------------------------
 res="$(gridware "timeout -s INT 180 salloc -N 1 hostname </dev/null 2>&1; echo rc=\$?")"

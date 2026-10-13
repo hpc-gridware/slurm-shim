@@ -1,0 +1,17 @@
+<?xml version='1.0'?>
+<job_info  xmlns:xsd="https://github.com/hpc-gridware/clusterscheduler/raw/master/source/dist/util/resources/schemas/qstat/qstat.xsd">
+  <queue_info>
+  </queue_info>
+  <job_info>
+    <job_list state="pending">
+      <JB_job_number>1</JB_job_number>
+      <JAT_prio>0.00000</JAT_prio>
+      <JB_name>wrap.sh</JB_name>
+      <JB_owner>gridware</JB_owner>
+      <state>hqw</state>
+      <JAT_submission_time>2026-10-13T07:23:39.975282</JAT_submission_time>
+      <queue_name></queue_name>
+      <slots>1</slots>
+    </job_list>
+  </job_info>
+</job_info>

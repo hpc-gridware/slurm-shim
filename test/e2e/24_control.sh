@@ -62,10 +62,14 @@ assert_eq "$(jattr "$f" mail_list)" "e2e@example.com" "--mail-user sets the mail
 assert_eq "$(jattr "$f" priority)" "-10" "--nice=10 lowers the priority by 10"
 
 # -- scontrol update / show --------------------------------------------------
-u="$(sub "-H -t 10 --gres=gpu:0 -J e2e24u --wrap=true")"
+# --mem gives the job a second request, which the update must keep: qalter -l
+# replaces the whole list. (Not --gres: the cluster may have no GPU complex.)
+u="$(sub "-H -t 10 --mem=100M -J e2e24u --wrap=true")"
+[ -n "$u" ] || fail "the job for scontrol update was not submitted"
 CLEANUP_IDS="$CLEANUP_IDS $u"
-gridware "scontrol update JobId=$u TimeLimit=30 JobName=e2e24renamed"
+gridware "scontrol update JobId=$u TimeLimit=30 JobName=e2e24renamed" || true
 assert_contains "$(jattr "$u" hard_resource_list)" "h_rt=1800" "scontrol update TimeLimit=30 sets h_rt"
+assert_contains "$(jattr "$u" hard_resource_list)" "=100M" "and keeps the job's memory request"
 assert_eq "$(jattr "$u" job_name)" "e2e24renamed" "scontrol update JobName renames the job"
 res="$(gridware "scontrol update JobId=$u Partition=gpu 2>&1; echo rc=\$?")"
 assert_contains "$res" "rc=1" "an unsupported field is refused"

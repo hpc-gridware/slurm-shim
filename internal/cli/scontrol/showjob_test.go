@@ -160,3 +160,38 @@ var _ = Describe("show job helpers", func() {
 		Expect(scaleMemory("512M", 1)).To(Equal("512M"))
 	})
 })
+
+var _ = Describe("scontrol show job on OCS 9.0 [gedata.HoldKinds]", func() {
+	// OCS 9.0.10 leaves the hold ranges out of qstat -xml -j: without asking
+	// qstat -s, a user hold would read as an operator's (JobHeldAdmin).
+	ocs9010 := func(_ string, args []string) fake.Response {
+		switch strings.Join(args, " ") {
+		case "-xml -u *":
+			return fake.Response{Stdout: geFixture("qstat_xml_held_9.0.10.xml")}
+		case "-xml -j 1":
+			return fake.Response{Stdout: geFixture("qstat_j_held_9.0.10.xml")}
+		case "-xml -u * -s hu":
+			return fake.Response{Stdout: geFixture("qstat_s_hu_9.0.10.xml")}
+		case "-xml -u * -s ho", "-xml -u * -s hs":
+			return fake.Response{Stdout: geFixture("qstat_s_ho_empty_9.0.10.xml")}
+		}
+		return fake.Response{Exit: 1, Stderr: []byte("unexpected")}
+	}
+
+	It("reports a user hold as JobHeldUser", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		var out, errOut bytes.Buffer
+		Expect(run(&fake.Runner{Responder: ocs9010}, testConfig(), []string{"show", "job", "1"}, &out, &errOut)).To(Equal(0), errOut.String())
+		Expect(out.String()).To(ContainSubstring("JobState=PENDING Reason=JobHeldUser"))
+		Expect(errOut.String()).To(BeEmpty())
+	})
+
+	It("does not ask qstat -s when the detail names the hold (OCS 9.1)", func() {
+		GinkgoT().Setenv("TMPDIR", GinkgoT().TempDir())
+		r := &fake.Runner{Responder: liveCluster}
+		Expect(run(r, testConfig(), []string{"show", "job", "1376"}, io.Discard, io.Discard)).To(Equal(0))
+		for _, c := range r.Calls {
+			Expect(c.Args).NotTo(ContainElement("-s"))
+		}
+	})
+})

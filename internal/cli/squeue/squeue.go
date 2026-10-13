@@ -101,6 +101,7 @@ func run(runner gedata.Runner, cfg *config.Config, args []string, stdout, stderr
 		} else {
 			v.hosts, v.details, v.schedInfo = set.Allocations, set.Jobs, set.SchedulerInfo
 		}
+		v.holdKinds = holdKindsIfNeeded(runner, v, rows, stderr)
 	}
 	rows = opt.keepDetailed(v, rows)
 	if opt.array {
@@ -500,3 +501,20 @@ func loginName() string {
 // squeueOpts is SLURM's squeue option table, for the arity of the options the
 // shim does not translate.
 var squeueOpts = slurmopts.For("squeue")
+
+// holdKindsIfNeeded asks qstat for the hold kinds only when a listed job is
+// held for a reason its detail does not give (OCS 9.0), once per invocation.
+func holdKindsIfNeeded(runner gedata.Runner, v view, rows []gedata.JobRow, stderr io.Writer) map[string]string {
+	for _, r := range rows {
+		if !v.unexplainedHold(r) {
+			continue
+		}
+		kinds, err := gedata.HoldKinds(context.Background(), runner)
+		if err != nil {
+			fmt.Fprintf(stderr, "squeue: warning: hold kinds unavailable: %v\n", err)
+			return nil
+		}
+		return kinds
+	}
+	return nil
+}
