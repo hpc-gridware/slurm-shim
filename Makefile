@@ -66,7 +66,7 @@ clean:
 # Stand up a real 3-node Open Cluster Scheduler cluster with slurm-shim installed
 # and try it out. Needs Docker + Compose v2.
 #   make cluster-up [OCS_VERSION=9.1.6] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.6)
-#   make demo / demo-gpu / demo-flax                   submit a demo job, print output
+#   make demo / demo-gpu / demo-flax                   submit a demo job, print output (demo-gpu adds a fake gpu complex)
 #   make demo-envcheck                                 diagnose the fabricated SLURM_* env
 #   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
 CLUSTER := test/cluster

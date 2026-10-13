@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Submit a demo job to the running cluster and print its output.
 #   demo.sh cpu   -> multi-node srun fan-out via the shim sbatch
-#   demo.sh gpu   -> per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant
+#   demo.sh gpu   -> per-rank CUDA_VISIBLE_DEVICES from a fake RSMAP grant (adds the
+#                    fake gpu complex if the cluster has none)
 #   demo.sh flax  -> multi-node data-parallel Flax training over one global mesh
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -27,6 +28,9 @@ if [ "$mode" = flax ]; then
 fi
 
 if [ "$mode" = gpu ]; then
+  # The demo needs a gpu complex; a cluster brought up without --gpu has none.
+  # Idempotent, and it never replaces a real RSMAP.
+  ensure_gpu_complex
   # gpu is a per-slot consumable (consumable=YES): -l gpu=1 books one device per
   # slot, so -pe make 2 lands 2 slots x 1 GPU = both of worker1's devices, one per
   # rank. Requesting gpu=2 here would demand 2 devices *per slot* and never place.
