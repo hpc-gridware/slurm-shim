@@ -146,14 +146,36 @@ checksums:
 # Both tools run in containers, so the result does not depend on what the host
 # has installed; the release workflow runs this target for every release.
 # --user keeps the output owned by the caller, not root. Errors fail the target.
+#
+# The SBOM is CycloneDX 1.7, and stays 1.7: Trivy writes whatever spec
+# version its release defaults to, so the result is converted to 1.7 with
+# the CycloneDX CLI, validated against the 1.7 schema, and the target fails
+# when the file is anything else. Both tools are pinned by version and
+# digest, so a moved tag cannot change the SBOM; update both on purpose.
+SBOM_SPEC_VERSION := 1.7
+TRIVY_IMAGE := aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+CYCLONEDX_CLI_IMAGE := cyclonedx/cyclonedx-cli:0.33.1@sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7
+
 .PHONY: licenses-sbom
 licenses-sbom:
 	rm -rf 3rdparty-licenses
 	mkdir -p 3rdparty-licenses
 	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
-		aquasec/trivy:latest fs --cache-dir /tmp/trivy --format cyclonedx \
+		$(TRIVY_IMAGE) fs --cache-dir /tmp/trivy --format cyclonedx \
 		--skip-dirs dist,bin,test/cluster/.quickinstall \
-		--output 3rdparty-licenses/sbom.cyclonedx.json .
+		--output 3rdparty-licenses/sbom.trivy.json .
+	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
+		-e HOME=/tmp $(CYCLONEDX_CLI_IMAGE) \
+		convert --input-file 3rdparty-licenses/sbom.trivy.json --input-format json \
+		--output-file 3rdparty-licenses/sbom.cyclonedx.json --output-format json \
+		--output-version v$(subst .,_,$(SBOM_SPEC_VERSION))
+	rm -f 3rdparty-licenses/sbom.trivy.json
+	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
+		-e HOME=/tmp $(CYCLONEDX_CLI_IMAGE) \
+		validate --input-file 3rdparty-licenses/sbom.cyclonedx.json --input-format json \
+		--input-version v$(subst .,_,$(SBOM_SPEC_VERSION)) --fail-on-errors
+	grep -q '"specVersion" *: *"$(SBOM_SPEC_VERSION)"' 3rdparty-licenses/sbom.cyclonedx.json || \
+		{ echo "SBOM is not CycloneDX $(SBOM_SPEC_VERSION)"; exit 1; }
 	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
 		-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/gocache -e GOFLAGS=-buildvcs=false \
 		-e GOPROXY=https://proxy.golang.org,direct -e GOTOOLCHAIN=auto -e GOWORK=off \

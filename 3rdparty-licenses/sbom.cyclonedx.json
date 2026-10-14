@@ -1,11 +1,10 @@
 {
-  "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.7",
-  "serialNumber": "urn:uuid:bd9a300f-6d68-4189-b6ae-a69deafd63a0",
+  "serialNumber": "urn:uuid:5e10c087-dd30-4ebb-817e-fd24ab7d1b56",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-13T08:05:40+00:00",
+    "timestamp": "2026-10-14T06:20:02Z",
     "tools": {
       "components": [
         {
@@ -20,8 +19,8 @@
       ]
     },
     "component": {
-      "bom-ref": "6567093f-38b4-4f2a-8f43-0ed369f478b0",
       "type": "application",
+      "bom-ref": "24cd8060-0d71-42dd-aadb-05ba07002375",
       "name": ".",
       "properties": [
         {
@@ -33,8 +32,8 @@
   },
   "components": [
     {
-      "bom-ref": "7353eed2-1a7c-453c-92a4-ebb47883b417",
       "type": "application",
+      "bom-ref": "ee3881e6-d675-4b5e-b501-7abc3786d94c",
       "name": "go.mod",
       "properties": [
         {
@@ -48,8 +47,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/go-logr/logr@v1.4.3",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/go-logr/logr@v1.4.3",
       "name": "github.com/go-logr/logr",
       "version": "v1.4.3",
       "purl": "pkg:golang/github.com/go-logr/logr@v1.4.3",
@@ -65,8 +64,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/go-task/slim-sprig/v3@v3.0.0",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/go-task/slim-sprig/v3@v3.0.0",
       "name": "github.com/go-task/slim-sprig/v3",
       "version": "v3.0.0",
       "purl": "pkg:golang/github.com/go-task/slim-sprig/v3@v3.0.0",
@@ -82,8 +81,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/goccy/go-json@v0.10.4",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/goccy/go-json@v0.10.4",
       "name": "github.com/goccy/go-json",
       "version": "v0.10.4",
       "purl": "pkg:golang/github.com/goccy/go-json@v0.10.4",
@@ -99,8 +98,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/google/go-cmp@v0.7.0",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/google/go-cmp@v0.7.0",
       "name": "github.com/google/go-cmp",
       "version": "v0.7.0",
       "purl": "pkg:golang/github.com/google/go-cmp@v0.7.0",
@@ -116,8 +115,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/google/pprof@v0.0.0-20260402051712-545e8a4df936",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/google/pprof@v0.0.0-20260402051712-545e8a4df936",
       "name": "github.com/google/pprof",
       "version": "v0.0.0-20260402051712-545e8a4df936",
       "purl": "pkg:golang/github.com/google/pprof@v0.0.0-20260402051712-545e8a4df936",
@@ -133,8 +132,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/hpc-gridware/go-clusterscheduler@v0.0.0-20260914070040-16f761972bbd",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/hpc-gridware/go-clusterscheduler@v0.0.0-20260914070040-16f761972bbd",
       "name": "github.com/hpc-gridware/go-clusterscheduler",
       "version": "v0.0.0-20260914070040-16f761972bbd",
       "purl": "pkg:golang/github.com/hpc-gridware/go-clusterscheduler@v0.0.0-20260914070040-16f761972bbd",
@@ -150,8 +149,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/hpc-gridware/slurm-shim",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/hpc-gridware/slurm-shim",
       "name": "github.com/hpc-gridware/slurm-shim",
       "purl": "pkg:golang/github.com/hpc-gridware/slurm-shim",
       "properties": [
@@ -166,8 +165,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/onsi/ginkgo/v2@v2.23.3",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/onsi/ginkgo/v2@v2.23.3",
       "name": "github.com/onsi/ginkgo/v2",
       "version": "v2.23.3",
       "purl": "pkg:golang/github.com/onsi/ginkgo/v2@v2.23.3",
@@ -183,8 +182,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/onsi/gomega@v1.37.0",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/onsi/gomega@v1.37.0",
       "name": "github.com/onsi/gomega",
       "version": "v1.37.0",
       "purl": "pkg:golang/github.com/onsi/gomega@v1.37.0",
@@ -200,8 +199,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/github.com/spf13/pflag@v1.0.10",
       "type": "library",
+      "bom-ref": "pkg:golang/github.com/spf13/pflag@v1.0.10",
       "name": "github.com/spf13/pflag",
       "version": "v1.0.10",
       "purl": "pkg:golang/github.com/spf13/pflag@v1.0.10",
@@ -217,8 +216,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/golang.org/x/net@v0.56.0",
       "type": "library",
+      "bom-ref": "pkg:golang/golang.org/x/net@v0.56.0",
       "name": "golang.org/x/net",
       "version": "v0.56.0",
       "purl": "pkg:golang/golang.org/x/net@v0.56.0",
@@ -234,8 +233,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/golang.org/x/sys@v0.47.0",
       "type": "library",
+      "bom-ref": "pkg:golang/golang.org/x/sys@v0.47.0",
       "name": "golang.org/x/sys",
       "version": "v0.47.0",
       "purl": "pkg:golang/golang.org/x/sys@v0.47.0",
@@ -251,8 +250,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/golang.org/x/text@v0.38.0",
       "type": "library",
+      "bom-ref": "pkg:golang/golang.org/x/text@v0.38.0",
       "name": "golang.org/x/text",
       "version": "v0.38.0",
       "purl": "pkg:golang/golang.org/x/text@v0.38.0",
@@ -268,8 +267,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/golang.org/x/tools@v0.45.0",
       "type": "library",
+      "bom-ref": "pkg:golang/golang.org/x/tools@v0.45.0",
       "name": "golang.org/x/tools",
       "version": "v0.45.0",
       "purl": "pkg:golang/golang.org/x/tools@v0.45.0",
@@ -285,8 +284,8 @@
       ]
     },
     {
-      "bom-ref": "pkg:golang/gopkg.in/yaml.v3@v3.0.1",
       "type": "library",
+      "bom-ref": "pkg:golang/gopkg.in/yaml.v3@v3.0.1",
       "name": "gopkg.in/yaml.v3",
       "version": "v3.0.1",
       "purl": "pkg:golang/gopkg.in/yaml.v3@v3.0.1",
@@ -304,13 +303,13 @@
   ],
   "dependencies": [
     {
-      "ref": "6567093f-38b4-4f2a-8f43-0ed369f478b0",
+      "ref": "24cd8060-0d71-42dd-aadb-05ba07002375",
       "dependsOn": [
-        "7353eed2-1a7c-453c-92a4-ebb47883b417"
+        "ee3881e6-d675-4b5e-b501-7abc3786d94c"
       ]
     },
     {
-      "ref": "7353eed2-1a7c-453c-92a4-ebb47883b417",
+      "ref": "ee3881e6-d675-4b5e-b501-7abc3786d94c",
       "dependsOn": [
         "pkg:golang/github.com/hpc-gridware/slurm-shim"
       ]
