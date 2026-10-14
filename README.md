@@ -756,4 +756,4 @@ Developed by [HPC-Gridware](https://hpc-gridware.com), the company behind Open C
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Copyright 2026 HPC-Gridware.
-Third-party licenses and the SBOM of the latest release are in [`3rdparty-licenses`](3rdparty-licenses).
+Third-party licenses and the SBOM of the latest release are in [`releases/3rdparty-licenses`](releases/3rdparty-licenses).

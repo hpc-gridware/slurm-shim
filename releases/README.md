@@ -9,9 +9,9 @@ This directory holds the latest slurm-shim release, the same files as on the
 | `slurm-shim_linux_arm64.tar.gz` | ARM64 cluster nodes |
 | `SHA256SUMS` | checksums of both |
 
-Third-party licenses and the SBOM of this release are in the
-`3rdparty-licenses` directory of the repository; the SBOM is also attached to
-the release as `sbom.cyclonedx.json`.
+Third-party licenses and the SBOM of this release are in
+[`3rdparty-licenses`](3rdparty-licenses); the SBOM is also attached to the
+release as `sbom.cyclonedx.json`.
 
 ## Install
 

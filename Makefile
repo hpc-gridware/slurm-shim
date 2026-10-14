@@ -136,10 +136,10 @@ checksums:
 	cd dist && (command -v sha256sum >/dev/null && sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz 2>/dev/null) > SHA256SUMS && cat SHA256SUMS
 
 # ---- third-party licenses and SBOM ---------------------------------------------
-# 3rdparty-licenses/ in the layout qontrol uses: a CycloneDX SBOM from Trivy
-# (sbom.cyclonedx.json), the license text of every third-party Go module linked
-# into the binary (licenses/, by go-licenses), and a module,URL,license index
-# (licenses.csv). Test-only modules (ginkgo, gomega) are not linked into the
+# releases/3rdparty-licenses/ in the layout qontrol uses: a CycloneDX SBOM
+# from Trivy (sbom.cyclonedx.json), the license text of every third-party Go
+# module linked into the binary (licenses/, by go-licenses), and a
+# module,URL,license index (licenses.csv). Test-only modules (ginkgo, gomega) are not linked into the
 # binary and so not listed by go-licenses; the SBOM covers all of go.mod.
 # hpc-gridware modules are our own and are skipped, as in qontrol.
 #
@@ -153,28 +153,29 @@ checksums:
 # when the file is anything else. Both tools are pinned by version and
 # digest, so a moved tag cannot change the SBOM; update both on purpose.
 SBOM_SPEC_VERSION := 1.7
+LICENSES_DIR := releases/3rdparty-licenses
 TRIVY_IMAGE := aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
 CYCLONEDX_CLI_IMAGE := cyclonedx/cyclonedx-cli:0.33.1@sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7
 
 .PHONY: licenses-sbom
 licenses-sbom:
-	rm -rf 3rdparty-licenses
-	mkdir -p 3rdparty-licenses
+	rm -rf $(LICENSES_DIR)
+	mkdir -p $(LICENSES_DIR)
 	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
 		$(TRIVY_IMAGE) fs --cache-dir /tmp/trivy --format cyclonedx \
 		--skip-dirs dist,bin,test/cluster/.quickinstall \
-		--output 3rdparty-licenses/sbom.trivy.json .
+		--output $(LICENSES_DIR)/sbom.trivy.json .
 	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
 		-e HOME=/tmp $(CYCLONEDX_CLI_IMAGE) \
-		convert --input-file 3rdparty-licenses/sbom.trivy.json --input-format json \
-		--output-file 3rdparty-licenses/sbom.cyclonedx.json --output-format json \
+		convert --input-file $(LICENSES_DIR)/sbom.trivy.json --input-format json \
+		--output-file $(LICENSES_DIR)/sbom.cyclonedx.json --output-format json \
 		--output-version v$(subst .,_,$(SBOM_SPEC_VERSION))
-	rm -f 3rdparty-licenses/sbom.trivy.json
+	rm -f $(LICENSES_DIR)/sbom.trivy.json
 	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
 		-e HOME=/tmp $(CYCLONEDX_CLI_IMAGE) \
-		validate --input-file 3rdparty-licenses/sbom.cyclonedx.json --input-format json \
+		validate --input-file $(LICENSES_DIR)/sbom.cyclonedx.json --input-format json \
 		--input-version v$(subst .,_,$(SBOM_SPEC_VERSION)) --fail-on-errors
-	grep -q '"specVersion" *: *"$(SBOM_SPEC_VERSION)"' 3rdparty-licenses/sbom.cyclonedx.json || \
+	grep -q '"specVersion" *: *"$(SBOM_SPEC_VERSION)"' $(LICENSES_DIR)/sbom.cyclonedx.json || \
 		{ echo "SBOM is not CycloneDX $(SBOM_SPEC_VERSION)"; exit 1; }
 	docker run --rm --user $$(id -u):$$(id -g) -v $(CURDIR):/workspace -w /workspace \
 		-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/gocache -e GOFLAGS=-buildvcs=false \
@@ -182,21 +183,32 @@ licenses-sbom:
 		-e GOOS=linux -e CGO_ENABLED=0 \
 		golang:1.25 sh -c '\
 		go install github.com/google/go-licenses@latest && \
-		/tmp/go/bin/go-licenses save ./... --save_path=3rdparty-licenses/licenses --ignore github.com/hpc-gridware --force && \
-		/tmp/go/bin/go-licenses csv  ./... --ignore github.com/hpc-gridware > 3rdparty-licenses/licenses.csv'
-	@echo "3rd party licenses and SBOM generated in 3rdparty-licenses/"
+		/tmp/go/bin/go-licenses save ./... --save_path=$(LICENSES_DIR)/licenses --ignore github.com/hpc-gridware --force && \
+		/tmp/go/bin/go-licenses csv  ./... --ignore github.com/hpc-gridware > $(LICENSES_DIR)/licenses.csv'
+	@echo "3rd party licenses and SBOM generated in $(LICENSES_DIR)/"
 
 # ---- releases/ ---------------------------------------------------------------
 # releases/ holds the latest release: the tarballs and SHA256SUMS exactly as
-# published on GitHub, plus a README for installing from them. The release
-# workflow fills it from the very files it uploads, so they are byte-identical.
-# To fill it by hand from a published release instead:
+# published on GitHub, a README for installing from them, and the SBOM and
+# third-party licenses (3rdparty-licenses/, from make licenses-sbom). The
+# release workflow fills it from the very files it uploads, so they are
+# byte-identical.
+# To fill it by hand from a published release instead, do what the workflow
+# does: build releases/ in a checkout of the tag, so the licenses come from
+# that release's go.mod, then carry it to main:
+#   git worktree add ../slurm-shim-vX.Y.Z vX.Y.Z && cd ../slurm-shim-vX.Y.Z
 #   gh release download vX.Y.Z -D dist --clobber -p '*.tar.gz' -p SHA256SUMS
-#   make releases-dir RELEASE=vX.Y.Z
+#   make licenses-sbom releases-dir RELEASE=vX.Y.Z
+#   cd - && rm -rf releases && cp -R ../slurm-shim-vX.Y.Z/releases .
+# This works for tags made after the licenses moved into releases/; older
+# tags write 3rdparty-licenses/ at the repository root.
+# Running releases-dir alone keeps whatever releases/3rdparty-licenses/ holds.
 RELEASE ?= $(VERSION)
 .PHONY: releases-dir
 releases-dir:
 	test -f dist/SHA256SUMS
+	test -f $(LICENSES_DIR)/sbom.cyclonedx.json || \
+		{ echo "no $(LICENSES_DIR)/sbom.cyclonedx.json: run make licenses-sbom first"; exit 1; }
 	mkdir -p releases
 	rm -f releases/*.tar.gz releases/SHA256SUMS
 	cp dist/slurm-shim_linux_amd64.tar.gz dist/slurm-shim_linux_arm64.tar.gz dist/SHA256SUMS releases/
