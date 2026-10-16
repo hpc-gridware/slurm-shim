@@ -74,9 +74,15 @@ type Replaced struct {
 // none (an install made before install recorded its state). A record that is
 // a symlink, not a regular file, writable by group or others, or owned by
 // someone other than root or the caller is refused: its values are written
-// back into the cluster as a manager.
+// back into the cluster as a manager. Without a record nothing is read, so the
+// directory is not judged here: a tree with no record but the wrong owner
+// (a tarball unpacked as root keeps the archive's owner) is left to
+// CheckTree, which names every path and the fix.
 func ReadState(prefix string) (*State, error) {
 	path := filepath.Join(prefix, StateRel)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	for _, p := range []string{filepath.Dir(path), path} {
 		fi, err := os.Lstat(p)
 		if errors.Is(err, os.ErrNotExist) {

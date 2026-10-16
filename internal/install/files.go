@@ -203,6 +203,21 @@ func CheckTree(prefix, adminUser string) []Problem {
 		check(path, fi)
 	}
 
+	// The directories holding them: whoever owns bin/ or etc/ can rename the
+	// starter or the hook and put their own in its place.
+	for _, rel := range []string{filepath.Dir(StarterRel), filepath.Dir(HookRel)} {
+		path := filepath.Join(root, rel)
+		fi, err := os.Lstat(path)
+		if err != nil {
+			continue // its files are already reported missing
+		}
+		if !fi.IsDir() {
+			out = append(out, Problem{path, "is not a real directory"})
+			continue
+		}
+		check(path, fi)
+	}
+
 	// Every directory from the tree up to the filesystem root. These are real
 	// directories by construction now, so ownership and mode are the whole test.
 	for d := root; ; d = filepath.Dir(d) {

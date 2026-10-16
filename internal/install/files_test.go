@@ -199,6 +199,20 @@ var _ = Describe("CheckTree [starter trust boundary]", func() {
 		Expect(probs).To(ContainElement(HaveField("Why", ContainSubstring("owned by "+me()))))
 	})
 
+	It("flags a group-writable bin/ or etc/, not only the files in them", func() {
+		// Whoever can write the directory can rename the starter or the hook
+		// and put their own in its place, however safe the files themselves are.
+		src := GinkgoT().TempDir()
+		payload(src)
+		prefix := filepath.Join(GinkgoT().TempDir(), "p")
+		Expect(install.InstallTree(src, prefix)).To(Succeed())
+		Expect(os.Chmod(filepath.Join(prefix, "bin"), 0o775)).To(Succeed())
+		Expect(os.Chmod(filepath.Join(prefix, "etc"), 0o775)).To(Succeed())
+		probs := install.CheckTree(prefix, me())
+		Expect(probs).To(ContainElement(And(HaveField("Path", HaveSuffix("/p/bin")), HaveField("Why", ContainSubstring("group-")))))
+		Expect(probs).To(ContainElement(HaveField("Path", HaveSuffix("/p/etc"))))
+	})
+
 	It("flags a missing command link", func() {
 		src := GinkgoT().TempDir()
 		payload(src)

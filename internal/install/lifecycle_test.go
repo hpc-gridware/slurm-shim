@@ -235,6 +235,23 @@ var _ = Describe("the install record", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(missing).To(BeNil())
 	})
+
+	It("judges the record's directory only when there is a record to read", func() {
+		// A fresh tree unpacked with the wrong owner has no record: refusing
+		// "the install record" there sent admins looking for a file that does
+		// not exist, and hid CheckTree's paths and fix.
+		dir := GinkgoT().TempDir()
+		etc := filepath.Join(dir, filepath.Dir(install.StateRel))
+		Expect(os.MkdirAll(etc, 0o755)).To(Succeed())
+		Expect(os.Chmod(etc, 0o775)).To(Succeed())
+		st, err := install.ReadState(dir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(st).To(BeNil())
+
+		Expect(os.WriteFile(filepath.Join(dir, install.StateRel), []byte(`{}`), 0o644)).To(Succeed())
+		_, err = install.ReadState(dir)
+		Expect(err).To(MatchError(ContainSubstring(etc + ": writable by group or others")))
+	})
 })
 
 var _ = Describe("PlanUninstall", func() {
