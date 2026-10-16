@@ -129,8 +129,21 @@ payload:
 	@for l in $(LINKS); do ln -sf slurm-shim $(PAYLOAD)/bin/$$l; done
 	install -m 0755 scripts/install.sh dist/install.sh
 
+# Every entry is stored as root:root. tar run as root restores the stored
+# owner, and the starter runs as every job user: a tree owned by the build
+# user's uid (1001 on GitHub runners, an ordinary login on many clusters)
+# lets that user run code in everyone's jobs. Unpacked by anyone else, the
+# files belong to whoever unpacks them. GNU tar and bsdtar spell this
+# differently.
+TAR_AS_ROOT := $(shell tar --version 2>/dev/null | grep -q 'GNU tar' \
+  && echo '--owner=0 --group=0 --numeric-owner' \
+  || echo '--uid 0 --gid 0 --numeric-owner')
+
 tarball: payload
-	tar -C $(PAYLOAD) -czf dist/slurm-shim_linux_$(ARCH).tar.gz bin etc share
+	tar $(TAR_AS_ROOT) -C $(PAYLOAD) -czf dist/slurm-shim_linux_$(ARCH).tar.gz bin etc share
+	@# GNU tar lists "uid/gid" in field 2, bsdtar uid and gid in fields 3 and 4.
+	tar --numeric-owner -tvzf dist/slurm-shim_linux_$(ARCH).tar.gz | awk \
+	  '!($$2 == "0/0" || ($$2 ~ /^[0-9]+$$/ && $$3 == "0" && $$4 == "0")) { print "not root-owned:", $$0; bad = 1 } END { exit bad }'
 
 checksums:
 	cd dist && (command -v sha256sum >/dev/null && sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz 2>/dev/null) > SHA256SUMS && cat SHA256SUMS

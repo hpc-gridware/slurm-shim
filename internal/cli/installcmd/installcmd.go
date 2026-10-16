@@ -182,6 +182,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "REFUSED changes above are not applied; re-run with --force to override, or wire them by hand.")
 	}
+	// A tree already in place (a tarball unpacked as root keeps the archive's
+	// owner) is checked now, so the plan shows what --apply would stop on.
+	if !*apply && install.IsShimTree(*prefix) == nil {
+		if probs := install.CheckTree(*prefix, adminUser); len(probs) > 0 {
+			fmt.Fprintln(stdout)
+			fmt.Fprintf(stdout, "UNSAFE     %s, as it is now, must not be a starter_method:\n", *prefix)
+			printUnsafeTree(stdout, *prefix, adminUser, probs)
+			fmt.Fprintln(stdout, "--apply checks again after placing the files and stops before changing the cluster if any remain.")
+		}
+	}
 	if !*apply {
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Nothing was changed. Re-run with --apply to perform the plan.")
@@ -191,13 +201,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// Apply: files first (so start_proc_args points at something that exists),
 	// then the cluster, then the config.
 	fmt.Fprintln(stdout)
-	if err := install.InstallTree(*from, *prefix); err != nil {
-		fmt.Fprintf(stderr, "install: error: %v\n", err)
+	if !placeTree(*from, *prefix, adminUser, stdout, stderr) {
 		return 1
-	}
-	fmt.Fprintf(stdout, "installed  %s\n", *prefix)
-	for _, p := range install.CheckTree(*prefix, adminUser) {
-		fmt.Fprintf(stderr, "install: warning: %s: %s\n", p.Path, p.Why)
 	}
 	exposed, err := install.Expose(*prefix, install.ExposeMode(*expose), version.Shim)
 	if err != nil {
@@ -311,6 +316,41 @@ func printPlan(w io.Writer, p install.Plan) {
 			fmt.Fprintf(w, "  change    %-12s %-16s %s -> %s\n", c.Object, c.Attr, orNone(c.Old), orNone(c.New))
 		}
 	}
+}
+
+// placeTree installs the files from src into prefix and then checks the trust
+// chain of the result. The starter runs as every job user, so whoever can
+// replace it, or a directory on the way to it, runs code as all of them: an
+// unsafe tree stops the install here, before anything is exposed or the
+// cluster points at it. It reports false when the install must stop.
+func placeTree(src, prefix, adminUser string, stdout, stderr io.Writer) bool {
+	if err := install.InstallTree(src, prefix); err != nil {
+		fmt.Fprintf(stderr, "install: error: %v\n", err)
+		return false
+	}
+	fmt.Fprintf(stdout, "installed  %s\n", prefix)
+	if probs := install.CheckTree(prefix, adminUser); len(probs) > 0 {
+		fmt.Fprintf(stderr, "install: error: %s must not be a starter_method:\n", prefix)
+		printUnsafeTree(stderr, prefix, adminUser, probs)
+		fmt.Fprintln(stderr, "The cluster was not changed; re-run install --apply once fixed.")
+		return false
+	}
+	return true
+}
+
+// printUnsafeTree lists what CheckTree found wrong with the tree and how to
+// fix it. The example covers the tree itself; a problem on a directory above
+// it needs the same owner and mode, set by hand.
+func printUnsafeTree(w io.Writer, prefix, adminUser string, probs []install.Problem) {
+	for _, p := range probs {
+		fmt.Fprintf(w, "  %s: %s\n", p.Path, p.Why)
+	}
+	owners := "root"
+	if adminUser != "" {
+		owners += " or " + adminUser
+	}
+	fmt.Fprintf(w, "Each path above must be owned by %s and not group- or world-writable, e.g.\n", owners)
+	fmt.Fprintf(w, "  chown -R root:root %s && chmod -R go-w %s\n", prefix, prefix)
 }
 
 func orNone(s string) string {

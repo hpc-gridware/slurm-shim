@@ -37,7 +37,7 @@ curl -fsSL https://github.com/hpc-gridware/slurm-shim/releases/latest/download/i
 #     https://github.com/hpc-gridware/slurm-shim/releases/latest/download/slurm-shim_linux_amd64.tar.gz
 #     (the same files are in releases/ of this repository)
 mkdir -p $SGE_ROOT/slurm-shim
-tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
+tar --no-same-owner -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
 export PATH=$SGE_ROOT/slurm-shim/bin:$PATH   # this shell only; step 3 is the site-wide choice
 
 # 2. Configure the cluster. Source the cell first; run as a manager.

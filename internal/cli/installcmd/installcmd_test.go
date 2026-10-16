@@ -22,6 +22,7 @@ package installcmd
 import (
 	"bytes"
 	"os"
+	"os/user"
 	"path/filepath"
 	"testing"
 
@@ -97,5 +98,59 @@ var _ = Describe("writeConfigAtomic", func() {
 		path := filepath.Join(dir, "config.yaml")
 		Expect(writeConfigAtomic(path, []byte("kill_wait: 45s\n"))).To(Succeed())
 		Expect(os.ReadFile(path)).To(Equal([]byte("kill_wait: 45s\n")))
+	})
+})
+
+var _ = Describe("placeTree [starter trust boundary]", func() {
+	var src, prefix, me string
+	var stdout, stderr bytes.Buffer
+
+	BeforeEach(func() {
+		u, err := user.Current()
+		Expect(err).NotTo(HaveOccurred())
+		me = u.Username
+		src = GinkgoT().TempDir()
+		for rel, body := range map[string]string{
+			install.BinaryRel:  "binary",
+			install.StarterRel: "#!/bin/sh\n",
+			install.HookRel:    "# hook\n",
+		} {
+			Expect(os.MkdirAll(filepath.Join(src, filepath.Dir(rel)), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(src, rel), []byte(body), 0o755)).To(Succeed())
+		}
+		prefix = filepath.Join(GinkgoT().TempDir(), "slurm-shim")
+		stdout.Reset()
+		stderr.Reset()
+	})
+
+	It("goes on when the tree is owned by an allowed principal", func() {
+		Expect(placeTree(src, prefix, me, &stdout, &stderr)).To(BeTrue())
+		Expect(stderr.String()).To(BeEmpty())
+		Expect(stdout.String()).To(ContainSubstring("installed  " + prefix))
+	})
+
+	It("stops when the tree is owned by someone who is not root or the admin user", func() {
+		// The tarball case: unpacked as root, the files keep the build user's
+		// uid. Here the test user plays that stranger, with only root allowed.
+		if os.Geteuid() == 0 {
+			Skip("as root, the tree is root-owned and passes")
+		}
+		Expect(placeTree(src, prefix, "", &stdout, &stderr)).To(BeFalse())
+		out := stderr.String()
+		Expect(out).To(ContainSubstring(prefix + " must not be a starter_method"))
+		Expect(out).To(ContainSubstring(filepath.Join(prefix, install.StarterRel)))
+		Expect(out).To(ContainSubstring("must be owned by root and not group- or world-writable"))
+		Expect(out).To(ContainSubstring("chown -R root:root " + prefix + " && chmod -R go-w " + prefix))
+		Expect(out).To(ContainSubstring("The cluster was not changed"))
+	})
+
+	It("stops on a group-writable directory above the tree", func() {
+		// Anyone in that group can rename the tree and put their own starter in
+		// its place, so this is as unsafe as a writable starter.
+		parent := filepath.Dir(prefix)
+		Expect(os.Chmod(parent, 0o775)).To(Succeed())
+		Expect(placeTree(src, prefix, me, &stdout, &stderr)).To(BeFalse())
+		Expect(stderr.String()).To(ContainSubstring(parent + ": group- or world-writable"))
+		Expect(stderr.String()).To(ContainSubstring("owned by root or " + me))
 	})
 })

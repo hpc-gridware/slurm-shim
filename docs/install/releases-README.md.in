@@ -23,7 +23,7 @@ source $SGE_ROOT/default/common/settings.sh
 sha256sum -c SHA256SUMS --ignore-missing
 
 mkdir -p $SGE_ROOT/slurm-shim
-tar -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
+tar --no-same-owner -xzf slurm-shim_linux_amd64.tar.gz -C $SGE_ROOT/slurm-shim
 
 $SGE_ROOT/slurm-shim/bin/slurm-shim install                    # prints the plan, changes nothing
 $SGE_ROOT/slurm-shim/bin/slurm-shim install --apply --expose=profile.d

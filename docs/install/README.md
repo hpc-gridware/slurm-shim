@@ -12,7 +12,9 @@ against the Docker test cluster.
 | `slurm-shim-starter.sh` | `<prefix>/bin/slurm-shim-starter` (0755, root) | `qconf -mattr queue starter_method /opt/slurm-shim/bin/slurm-shim-starter <queue>` | Open Cluster Scheduler runs every job in the queue through it: sources the hook, then starts the job the way the scheduler would have, honouring `SGE_STARTER_SHELL_START_MODE` / `SHELL_PATH` / `USE_LOGIN_SHELL` (so `posix_compliant`, `script_from_stdin` and login-shell queues keep their semantics; login shells get `argv[0]=-<shell>` via bash's `exec -a`). This is what lets an unmodified SLURM batch script see `SLURM_*`. Passes its own `stepper` launches straight through. Finds the hook at `../etc/slurm-shim-source-hook.sh` relative to itself, so any install prefix works; if it cannot read the hook it says so on stderr rather than running the job silently unconfigured, and `SLURM_SHIM_HOOK_MISSING_ENV=abort` makes that fatal. A non-zero exit fails the job, not the queue instance. |
 
 Everything under the install prefix must be root-owned and not group/world-
-writable: the starter runs as the job user, for every job in the queue. The
+writable: the starter runs as the job user, for every job in the queue.
+`install` shows a tree that fails this in its plan, and `install --apply`
+stops before it changes the cluster, naming each path and the fix. The
 prefix itself is free -- the starter locates the hook relative to its own path --
 but it must be the SAME absolute path on every host, because the qrsh envelope
 carries the shim path as the remote argv[0].
