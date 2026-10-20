@@ -112,9 +112,11 @@ qi_ensure() {
 }
 
 # compose runs `docker compose` in the quickinstall dir with OCS_VERSION passed
-# through (defaults to 9.1.6; see knobs).
+# through (defaults to 9.1.6; see knobs). OCS_SLURM_SHIM=false keeps
+# quickinstall from installing a released slurm-shim into /opt/ocs/slurm-shim:
+# its PE and slurm.q would collide with the tree under test.
 compose() {
-  ( cd "$(qi_dir)" && OCS_VERSION="$OCS_VERSION" docker compose "$@" )
+  ( cd "$(qi_dir)" && OCS_VERSION="$OCS_VERSION" OCS_SLURM_SHIM=false docker compose "$@" )
 }
 
 # --- transport ---------------------------------------------------------------
