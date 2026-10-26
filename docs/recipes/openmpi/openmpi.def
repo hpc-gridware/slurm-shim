@@ -1,0 +1,19 @@
+# OpenMPI 4.1 and the recipe's hello_mpi in an Apptainer image. Build it on a
+# node with the same CPU architecture as the compute nodes:
+#   apptainer build openmpi.sif openmpi.def        (as root, or with --fakeroot)
+# The host's OpenMPI must be the same release series (4.1 here): the host's
+# daemons wire up the ranks in the container.
+Bootstrap: docker
+From: opensuse/leap:15.6
+
+%files
+    hello_mpi.c /opt/hello_mpi.c
+
+%post
+    zypper -q --non-interactive in -y openmpi4 openmpi4-devel gcc
+    /usr/lib64/mpi/gcc/openmpi4/bin/mpicc -O2 -o /opt/hello_mpi /opt/hello_mpi.c
+    zypper -q clean -a
+
+%environment
+    export PATH=/usr/lib64/mpi/gcc/openmpi4/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/lib64/mpi/gcc/openmpi4/lib64

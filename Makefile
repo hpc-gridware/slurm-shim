@@ -68,7 +68,7 @@ clean:
 #   make cluster-up [OCS_VERSION=9.1.6] [ARGS=--gpu]   cluster + shim (default OCS: 9.1.6)
 #   make demo / demo-gpu / demo-flax                   submit a demo job, print output (demo-gpu adds a fake gpu complex)
 #   make demo-envcheck                                 diagnose the fabricated SLURM_* env
-#   make cluster-openmpi [OPENMPI5=1]                  OpenMPI 4.1 on every node (5.0.x built into /opt/ocs too) for e2e 35_mpi_pmix
+#   make cluster-openmpi [OPENMPI5=1] [APPTAINER=1]    OpenMPI 4.1 on every node (5.0.x built into /opt/ocs, Apptainer) for e2e 35_mpi_pmix and docs/recipes/openmpi
 #   make cluster-down [ARGS=-v]                        tear down (-v also wipes OCS install)
 CLUSTER := test/cluster
 .PHONY: cluster-up cluster-down cluster-install cluster-openmpi demo demo-gpu demo-flax demo-envcheck
