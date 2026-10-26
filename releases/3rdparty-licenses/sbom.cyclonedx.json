@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.7",
-  "serialNumber": "urn:uuid:9e344733-6040-4bc9-a894-277936e6c4b7",
+  "serialNumber": "urn:uuid:4561cc58-08a5-4e4a-a0c8-0fead15e4c2c",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-16T08:38:34Z",
+    "timestamp": "2026-10-26T16:31:42Z",
     "tools": {
       "components": [
         {
@@ -20,7 +20,7 @@
     },
     "component": {
       "type": "application",
-      "bom-ref": "4e5a9a84-4ea6-48f4-8f55-b9a7c0c00f6f",
+      "bom-ref": "97f59112-628c-465e-a130-d1768821f39f",
       "name": ".",
       "properties": [
         {
@@ -33,7 +33,7 @@
   "components": [
     {
       "type": "application",
-      "bom-ref": "d77961b6-de4e-4569-9caf-47ed15991a8f",
+      "bom-ref": "7cf756fa-8840-46c0-afd8-cd50245d07f6",
       "name": "go.mod",
       "properties": [
         {
@@ -303,15 +303,15 @@
   ],
   "dependencies": [
     {
-      "ref": "4e5a9a84-4ea6-48f4-8f55-b9a7c0c00f6f",
+      "ref": "7cf756fa-8840-46c0-afd8-cd50245d07f6",
       "dependsOn": [
-        "d77961b6-de4e-4569-9caf-47ed15991a8f"
+        "pkg:golang/github.com/hpc-gridware/slurm-shim"
       ]
     },
     {
-      "ref": "d77961b6-de4e-4569-9caf-47ed15991a8f",
+      "ref": "97f59112-628c-465e-a130-d1768821f39f",
       "dependsOn": [
-        "pkg:golang/github.com/hpc-gridware/slurm-shim"
+        "7cf756fa-8840-46c0-afd8-cd50245d07f6"
       ]
     },
     {
