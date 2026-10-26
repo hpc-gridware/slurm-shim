@@ -58,7 +58,7 @@ then placed global ranks on `ocs-master` / `ocs-worker1` / `ocs-worker2`.
 > which does not go through `srun`/torchrun. So the collective completes on a **GPU**
 > cluster (the pattern above, unchanged), where each rank's `Accelerator()` joins the
 > NCCL group. For CPU-only multi-node, use Accelerate's mpirun launcher with the PE's
-> native `mpirun` (the shim does not provide PMI for `srun`; see the top-level README).
+> native `mpirun` (OpenMPI under the shim: see [`openmpi/`](../openmpi/)).
 
 ## GPU notes
 

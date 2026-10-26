@@ -20,6 +20,7 @@ Engine PE job. They assume the shim's symlinks (`srun`, `sbatch`, `squeue`,
 | [`accelerate/`](accelerate/) | HF Accelerate (`accelerate launch`, multi-node) | `srun` runs one `accelerate launch` per node; `SLURM_PROCID` -> `--machine_rank` | |
 | [`hydra/`](hydra/) | Hydra (`--multirun` sweeps) | `hydra/launcher: submitit_slurm` -> one cluster job per sweep config; no code changes | |
 | [`jax/`](jax/) | JAX (multi-process, multi-node) | `srun python train.py`; `jax.distributed.initialize()` auto-detects from five `SLURM_*` vars -- no PMI, no glue | ✅ [`jax-gpu-check.sh`](jax/jax-gpu-check.sh) |
+| [`openmpi/`](openmpi/) | OpenMPI 4.1+ (also in an Apptainer image) | `mpirun` in the batch script, or `srun --mpi=pmix` | |
 | [`flax/`](flax/) | Flax (data-parallel training, multi-node) | same auto-detect, then one global `jax.sharding` mesh over every process's devices; gradients all-reduce across nodes | |
 
 A ✅ marks a GPU job that ran on real NVIDIA L4 nodes. Every other validation
@@ -60,10 +61,9 @@ as the first command, or enable `wrapper_mode`.
 The shim fabricates the SLURM environment (`SLURM_PROCID`, `SLURM_LOCALID`,
 `SLURM_NODEID`, `SLURM_NNODES`, `SLURM_NTASKS`, `SLURM_JOB_NODELIST`,
 `SLURM_GPUS_ON_NODE`, per-rank `CUDA_VISIBLE_DEVICES`, ...) and provides the
-`srun`/`sbatch`/`scontrol` CLIs over GE tight integration. It does **not** provide
-PMI/PMIx: `srun --mpi=pmix` hard-errors, so MPI-bootstrapped launches must use the
-PE's native `mpirun` instead. Everything here bootstraps from the SLURM
-environment or `srun`, never from MPI.
+`srun`/`sbatch`/`scontrol` CLIs over GE tight integration. Everything here
+bootstraps from the SLURM environment or `srun`, never from MPI; OpenMPI jobs
+are covered by [`openmpi/`](openmpi/).
 
 ## Two things every multi-node recipe needs
 

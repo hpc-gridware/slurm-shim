@@ -74,6 +74,9 @@ var _ = Describe("srun outside an allocation, without --pty", func() {
 			Expect(inner.elastic).To(Equal(outer.elastic))
 			Expect(inner.exportSpec).To(Equal(outer.exportSpec))
 			Expect(inner.label).To(Equal(outer.label))
+			Expect(inner.cpuBind).To(Equal(outer.cpuBind))
+			Expect(inner.mpi).To(Equal(outer.mpi))
+			Expect(inner.distribution).To(Equal(outer.distribution))
 			Expect(inner.command).To(Equal([]string{"hostname"}))
 		},
 		Entry("geometry", "-n", "6", "-N", "3", "--ntasks-per-node=2", "-c", "4"),
@@ -85,6 +88,9 @@ var _ = Describe("srun outside an allocation, without --pty", func() {
 		Entry("hot spares", "--x-elastic=off"),
 		Entry("export list", "--export=ALL,FOO=a b"),
 		Entry("label", "-l"),
+		Entry("cpu binding off", "--cpu-bind=none"),
+		Entry("arbitrary order of a node list", "-m", "arbitrary", "-w", "node002,node001"),
+		Entry("MPI through mpirun", "--mpi=pmix", "-n", "4"),
 	)
 
 	It("passes a command beginning with '-' after the -- of the inner srun", func() {

@@ -334,6 +334,22 @@ type Config struct {
 	PartitionAliases map[string]string    `yaml:"partition_aliases"`
 	PEs              map[string]PE        `yaml:"pes"`
 	GPU              GPU                  `yaml:"gpu"`
+	MPI              MPI                  `yaml:"mpi"`
+}
+
+// MPI types srun accepts (srun --mpi, SLURM_MPI_TYPE, config mpi.default).
+const (
+	MPINone = "none" // srun runs the command itself (SLURM's --mpi=none)
+	MPIPMIx = "pmix" // srun hands the step to OpenMPI's mpirun
+)
+
+// MPI selects how srun runs an MPI program.
+type MPI struct {
+	// Default is SLURM's MpiDefault: MPINone, or MPIPMIx so that a bare srun
+	// in a script written for a MpiDefault=pmix site runs through mpirun.
+	Default string `yaml:"default"`
+	// Launcher is the mpirun srun --mpi=pmix runs; empty finds mpirun on PATH.
+	Launcher string `yaml:"launcher"`
 }
 
 // PartitionFor names the SLURM partition of a job from its cluster queue (a
@@ -441,6 +457,7 @@ func Default() *Config {
 		JobNameSanitize:   true,
 		HookMissingEnv:    "continue",
 		DefaultTaskPolicy: "node",
+		MPI:               MPI{Default: MPINone},
 		GPU: GPU{
 			Discovery:   "qstat-gres",
 			Isolation:   "shim",
@@ -577,6 +594,14 @@ func validate(cfg *Config) []string {
 	}
 	if cfg.DrainTimeout.Duration <= 0 {
 		cfg.DrainTimeout = Default().DrainTimeout
+	}
+	switch cfg.MPI.Default = strings.ToLower(strings.TrimSpace(cfg.MPI.Default)); cfg.MPI.Default {
+	case MPINone, MPIPMIx:
+	case "":
+		cfg.MPI.Default = MPINone
+	default:
+		warnings = append(warnings, fmt.Sprintf("unknown mpi.default %q; using %q", cfg.MPI.Default, MPINone))
+		cfg.MPI.Default = MPINone
 	}
 	if cfg.MaxSpares < 0 {
 		warnings = append(warnings, fmt.Sprintf("max_spares %d is negative; using 0 (no cap)", cfg.MaxSpares))

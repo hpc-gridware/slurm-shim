@@ -32,6 +32,10 @@ jobs:
       # quickinstall on demand and pulls OCS from public hpc-gridware.com URLs.
       - name: Bring up cluster + install shim
         run: make cluster-up
+      # 35_mpi_pmix: OpenMPI 4.1 from the distro everywhere; the OpenMPI 5
+      # build (PRRTE, about 10 minutes) on one OCS version only.
+      - name: Install OpenMPI
+        run: make cluster-openmpi OPENMPI5=${{ matrix.ocs == '9.1.6' && '1' || '0' }}
       - name: Run e2e suite
         run: make e2e
       - name: Capture fixtures

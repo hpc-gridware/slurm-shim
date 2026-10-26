@@ -43,6 +43,15 @@ type StepRequest struct {
 	// or SLURM_GPU_BIND), which suppresses the migration notice: the user already
 	// stated what they want and does not need advice about it.
 	GPUBindExplicit bool
+	// NoBind gives the ranks no affinity mask (--cpu-bind=none).
+	NoBind bool
+	// Ordered keeps the step nodes in Nodelist order instead of allocation
+	// order (--distribution=arbitrary), so SLURM_NODEID follows the list.
+	Ordered bool
+	// AvoidMaster leaves the master (layout node 0) out when no Nodelist or
+	// Nodes is given: an external launcher already serves the host it runs
+	// on, and srun always runs on the master.
+	AvoidMaster bool
 }
 
 // StepNode is one host participating in a step, in step-nodelist order.
@@ -100,6 +109,11 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 	if err != nil {
 		return nil, err
 	}
+	if req.NoBind {
+		for i := range ranks {
+			ranks[i].Cpuset = ""
+		}
+	}
 	return &StepPlan{Nodes: nodes, Ranks: ranks, NTasks: ntasks, CPUsPerTask: cpt, Warnings: warns}, nil
 }
 
@@ -107,7 +121,8 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 // --nodelist subset (REQ-RUN-002), else the first -N nodes, else all nodes,
 // never an --exclude host. A -w host outside the allocation is an error; the
 // result is normalized to allocation order so SLURM_NODEID is deterministic
-// (SI-26).
+// (SI-26), unless Ordered asks for the list's order. AvoidMaster leaves the
+// master out of the no-list choice (never the only node).
 func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 	toStep := func(idx int) StepNode {
 		n := lay.Nodes[idx]
@@ -140,6 +155,9 @@ func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 		if len(out) == 0 {
 			return nil, fmt.Errorf("srun: error: --nodelist and --exclude leave no node of the allocation")
 		}
+		if req.Ordered {
+			out = inListOrder(out, req.Nodelist)
+		}
 		return out, nil
 	}
 
@@ -148,6 +166,9 @@ func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 		if !excluded[n.Host] {
 			usable = append(usable, i)
 		}
+	}
+	if req.AvoidMaster && len(usable) > 1 && usable[0] == 0 {
+		usable = usable[1:]
 	}
 	if len(usable) == 0 {
 		return nil, fmt.Errorf("srun: error: --exclude leaves no node of the allocation")
@@ -164,6 +185,22 @@ func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 		out[i] = toStep(usable[i])
 	}
 	return out, nil
+}
+
+// inListOrder reorders nodes (in allocation order) to follow list.
+func inListOrder(nodes []StepNode, list []string) []StepNode {
+	byHost := make(map[string]StepNode, len(nodes))
+	for _, n := range nodes {
+		byHost[n.Host] = n
+	}
+	out := make([]StepNode, 0, len(nodes))
+	for _, h := range list {
+		if n, ok := byHost[h]; ok {
+			out = append(out, n)
+			delete(byHost, h)
+		}
+	}
+	return out
 }
 
 // capacities is the per-node task capacity in step order. --ntasks-per-node

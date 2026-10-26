@@ -41,14 +41,26 @@ type options struct {
 	// default): whether this step replaces a lost node with a hot spare.
 	elastic string
 
-	req         plan.StepRequest
-	command     []string
-	label       bool
-	output      string
-	errorPat    string
-	chdir       string
-	exportSpec  string
-	killFlag    string // "" unset, else "0"/"1" (-K optional value)
+	req        plan.StepRequest
+	command    []string
+	label      bool
+	output     string
+	errorPat   string
+	chdir      string
+	exportSpec string
+	killFlag   string // "" unset, else "0"/"1" (-K optional value)
+	cpuBind    string // --cpu-bind as given; only "none" changes anything
+	// externalLauncher is --external-launcher: the step starts the daemons of
+	// an MPI launcher (OpenMPI's mpirun runs `srun --external-launcher ...
+	// prted`). See applyExternalLauncher.
+	externalLauncher bool
+	// jobID is --jobid as given; only this job's own id is accepted.
+	jobID string
+	// distribution is --distribution when it has an effect ("arbitrary").
+	distribution string
+	// mpi is the MPI type (config.MPINone, config.MPIPMIx, "" unset): from
+	// --mpi, and after Run resolves it, from SLURM_MPI_TYPE or mpi.default.
+	mpi         string
 	strictFlags bool
 	version     bool
 	gpuBind     string // --gpu-bind: "" unset, "none", "per_task[:n]"
@@ -95,7 +107,7 @@ type options struct {
 
 // parseFlags parses srun's argv. Everything after the first non-flag token is
 // the command, passed through verbatim (REQ-RUN-006). Unknown flags warn and are
-// skipped unless strict (REQ-RUN-005). --mpi accepts only "none" (REQ-RUN-004).
+// skipped unless strict (REQ-RUN-005). --mpi takes none or pmix (REQ-RUN-004, normalizeMPI).
 func parseFlags(args []string, strict bool, stderr io.Writer) (*options, error) {
 	return parseFlagsWith(slurmopts.For("srun"), args, strict, stderr)
 }
@@ -131,10 +143,17 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 		_            = fs.Bool("quiet", false, "")
 		_            = fs.CountP("verbose", "v", "")
 		// submitit's generated srun line always passes --unbuffered; users may add
-		// --cpu-bind via srun_args. Accept both explicitly (no GE behavior to map)
-		// so a space-form --cpu-bind value is never mistaken for the command.
-		_ = fs.Bool("unbuffered", false, "")
-		_ = fs.String("cpu-bind", "", "")
+		// --cpu-bind via srun_args. Defined explicitly so a space-form --cpu-bind
+		// value is never mistaken for the command; only --cpu-bind=none has an
+		// effect (applyCPUBind).
+		_       = fs.Bool("unbuffered", false, "")
+		cpuBind = fs.String("cpu-bind", "", "")
+		// What OpenMPI's mpirun passes when it starts its daemons through srun
+		// (PRRTE plm/slurm): --external-launcher, --distribution=arbitrary,
+		// --jobid. Defined so they are handled, not warned as untranslated.
+		externalLauncher = fs.Bool("external-launcher", false, "")
+		distribution     = fs.StringP("distribution", "m", "", "")
+		jobID            = fs.String("jobid", "", "")
 		// SLURM's --test-only: report the step and launch nothing. OR'd with
 		// SLURM_SHIM_DRY_RUN so a caller that controls only argv can reach the mode.
 		testOnly = fs.Bool("test-only", false, "")
@@ -201,8 +220,9 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 	default:
 		return nil, fmt.Errorf("srun: error: --x-elastic=%q: expected on, off or auto", *elastic)
 	}
-	if *mpi != "" && *mpi != "none" {
-		return nil, fmt.Errorf("srun: error: --mpi=%s is not supported; use native mpirun for MPI", *mpi)
+	mpiType, err := normalizeMPI(*mpi, "--mpi")
+	if err != nil {
+		return nil, err
 	}
 
 	opt := &options{
@@ -213,23 +233,27 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 			CPUsPerTask:  *cpusPerTask,
 			GPUsPerTask:  *gpusPerTask,
 		},
-		command:     fs.Args(),
-		label:       *label,
-		output:      *output,
-		errorPat:    *errorPat,
-		chdir:       firstNonEmpty(*chdir, *chdirD),
-		exportSpec:  *export,
-		killFlag:    *kill,
-		strictFlags: strict,
-		version:     *version,
-		gpuBind:     *gpuBind,
-		testOnly:    *testOnly,
-		pty:         *pty,
-		immediate:   *immediate,
-		input:       *input,
-		elastic:     strings.ToLower(*elastic),
-		partition:   *partition,
-		jobName:     *jobName,
+		command:          fs.Args(),
+		label:            *label,
+		output:           *output,
+		errorPat:         *errorPat,
+		chdir:            firstNonEmpty(*chdir, *chdirD),
+		exportSpec:       *export,
+		killFlag:         *kill,
+		cpuBind:          *cpuBind,
+		jobID:            *jobID,
+		mpi:              mpiType,
+		strictFlags:      strict,
+		externalLauncher: *externalLauncher,
+		version:          *version,
+		gpuBind:          *gpuBind,
+		testOnly:         *testOnly,
+		pty:              *pty,
+		immediate:        *immediate,
+		input:            *input,
+		elastic:          strings.ToLower(*elastic),
+		partition:        *partition,
+		jobName:          *jobName,
 	}
 	if err := applyInteractiveFlags(opt, *timeVal, *gres, *gpus, *gpusPerNode, *account, *qos); err != nil {
 		return nil, err
@@ -243,15 +267,20 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 	// --overlap is what every step here already does: steps share the
 	// allocation's resources. Nothing to translate, nothing to warn about.
 	_ = overlap
-	if *noKill != "" {
+	// An external launcher passes --no-kill on purpose: it decides what a lost
+	// daemon means. Saying "ignored" to it is noise.
+	if *noKill != "" && !*externalLauncher {
 		opt.warnings = append(opt.warnings, "--no-kill is accepted and ignored (no Grid Engine analogue)")
 	}
 	_ = qos // consumed by applyInteractiveFlags's warning
-	hosts, err := submit.ExpandHosts("--nodelist", *nodelist)
+	hosts, err := expandNodelist(*nodelist)
 	if err != nil {
 		return nil, fmt.Errorf("srun: error: %w", err)
 	}
 	opt.req.Nodelist = hosts
+	if err := applyDistribution(opt, *distribution, strict); err != nil {
+		return nil, err
+	}
 
 	// SLURM options the shim does not translate: parsed with their arity, then
 	// warned. strict makes them fatal.

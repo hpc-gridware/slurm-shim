@@ -4,7 +4,7 @@
 
 `sbatch`, `srun`, `squeue`, `scancel` and friends, translated to Open Cluster Scheduler (OCS) submissions — including parallel environment (PE) allocations for multi-node training. The goal: existing launchers and SLURM batch scripts keep working, exporting the `SLURM_*` environment the frameworks expect, without a scheduler migration. That holds once a site has wired two Open Cluster Scheduler attributes (a PE `start_proc_args` and a queue `starter_method`, see [Quickstart](#quickstart)); nothing in the job script changes.
 
-**Not the target: MPI.** OpenMPI, Intel MPI and MVAPICH already run natively on OCS/GCS through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) — that path is better than anything a shim can offer, so use it (`srun --mpi=pmix` hard-errors by design). The same rule applies generally: **if your tool has a native Grid Engine integration, prefer it.** The shim is for tools that only speak SLURM — `submitit`, JAX, and anything else that shells out to `sbatch`.
+The shim is for the many tools that only speak SLURM — `submitit`, JAX, workflow engines, and anything else that shells out to `sbatch` and `squeue`. **If your tool has a native Grid Engine integration, prefer it.**
 
 > **Validated** end-to-end against live Open Cluster Scheduler clusters (9.0.10 to 9.1.6) and Gridware Cluster Scheduler 9.1.6, on multi-node, multi-GPU NVIDIA L4 clusters (every rank opens exactly the devices Grid Engine granted, and NCCL all-reduce runs across hosts) and on 32 nodes, where a step starts in under 3 seconds. The [compatibility matrix](#compatibility-matrix) lists every supported command, flag and variable — for anything missing, [open an issue](../../issues).
 
@@ -146,7 +146,7 @@ These already speak Grid Engine — they need no shim, and the native route is t
 | **Nextflow** | the [`sge` executor](https://docs.seqera.io/nextflow/executor) — `process.executor = 'sge'` |
 | **Snakemake** | the [`cluster-generic` executor plugin](https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/cluster-generic.html) (`--executor cluster-generic --cluster "qsub -terse"`), or the [SGE profile](https://github.com/Snakemake-Profiles/sge) |
 | **JupyterHub** | [`batchspawner`](https://github.com/jupyterhub/batchspawner)'s [`GridengineSpawner`](https://github.com/jupyterhub/batchspawner/blob/main/SPAWNERS.md) |
-| **MPI** (OpenMPI, Intel MPI, MVAPICH) | Open Cluster Scheduler tight integration via the PE's `mpirun` — see the shipped [MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) (PE templates and start/stop scripts) |
+| **MPI** (Intel MPI, MVAPICH; OpenMPI also runs through the shim) | Open Cluster Scheduler tight integration via the PE's `mpirun` — see the shipped [MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi) (PE templates and start/stop scripts) |
 
 > **How the matrix below is verified.** Runnable examples live in
 > [`docs/recipes/`](docs/recipes/) (one per framework, each a complete job script), and
@@ -235,7 +235,9 @@ Unknown/unsupported `#SBATCH` directives (including all Pyxis `--container-*`) a
 | `--overlap` | ✅ accepted: steps already share their allocation |
 | `--x-elastic=auto\|on\|off` | ✅ shim extension: whether this step replaces a lost node with a [hot spare](#hot-spare-nodes) |
 | `--mpi=none` | ✅ (no-op) |
-| `--mpi=<anything else>` (e.g. `pmix`) | ❌ (hard-errors by design — no PMI/PMIx; see below) |
+| `--mpi=pmix` (also `pmix_v3`/`v4`/`v5`; `SLURM_MPI_TYPE`; `mpi.default: pmix` as `MpiDefault`) | ✅ OpenMPI 4.1+: the step runs through OpenMPI's `mpirun` (see [srun semantics](#srun-semantics)) |
+| `--mpi=<other>` (`pmi2`, `cray_shasta`) | ❌ hard error |
+| `--cpu-bind=none`, `--external-launcher`, `--distribution=arbitrary`, `--jobid`, `-w <file>` | ✅ what `mpirun` passes when it starts its daemons through `srun`; other `--cpu-bind` and `--distribution` values are ignored |
 
 ### `SLURM_*` environment variables
 
@@ -260,7 +262,7 @@ This is the strongest area — the fabricated environment is the whole point, an
 ### srun semantics
 
 - `srun` launches one process per task over **`qrsh -inherit` tight integration**, starting up to 64 nodes at once: the master host runs locally, slave hosts via `qrsh`, so `sge_execd` owns accounting and cleanup (`qdel`/wallclock kill). The StepSpec (environment, rank list) and signals travel over a single **authenticated TCP control channel** dialed back from each stepper — not argv, not shared files.
-- **MPI: no PMI/PMIx.** `srun --mpi=none` is a no-op; any other `--mpi=` value hard-errors. MPI jobs must use the PE's native `mpirun` tight integration, not `srun`. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them.
+- **MPI.** OpenMPI's `mpirun` in a batch job starts one daemon per node through `srun`, unpinned, as it does under SLURM. `srun --mpi=pmix` runs the step through `mpirun` (`mpi.launcher`, default `mpirun` on `PATH`, Open MPI 4.1 or newer): each rank gets `SLURM_PROCID`/`SLURM_LOCALID`/`SLURM_NODEID` and the step's `SLURM_STEP_*`/`SLURM_NTASKS`, on any node subset (`-N`, `-w`, `--exclude`), and a failing rank fails the step, not the job. The ranks belong to `mpirun`: `-l` uses OpenMPI's tag format, the exit code is the first failing rank's, `--gpus-per-task` is not applied, and per-rank `-o %t` patterns, `--pty` and spares are refused. A script calling `deepspeed.init_distributed()`/mpi4py **without** rank vars set degrades to a single process — use the `torchrun` recipe, which sets them. For Grid Engine scripts, OpenMPI's native integration stays the simpler way (an OpenMPI built with Grid Engine support starts its daemons with `qrsh -inherit`, no shim in between); Intel MPI and MVAPICH run through [Open Cluster Scheduler's own MPI integrations](https://github.com/hpc-gridware/clusterscheduler/tree/master/source/dist/mpi).
 - **Lost nodes.** The control channel has kernel liveness (TCP keepalive and, on Linux, `TCP_USER_TIMEOUT`). A node whose host stops answering -- crash, power loss, network partition -- is declared lost after `ping_deadline` (60 s) and its tasks count as failed, so `srun` never hangs on a dead host. A suspended or slow step keeps its hosts answering and is never touched. A stepper that loses `srun`'s host stops its tasks after `orphan_grace` (45 s).
 - **Not replicated:** full SLURM job-step semantics (heterogeneous steps, `--exclusive` steps), `sattach`, and stdin to tasks. Steps already share their allocation, so `--overlap` is accepted as is. Signal forwarding (SIGINT/TERM/HUP/USR1/USR2/QUIT) over the channel **is** implemented, as is kill-on-bad-exit.
 
@@ -415,7 +417,7 @@ succeeds). It enforces nothing.
 - **A layout Grid Engine cannot grant evenly is not pinned.** A fixed allocation rule puts the *same* slot count on every node, so SLURM's `-N 3 -n 7` (3,2,2) has no faithful translation: the shim warns and lets the PE place the nodes, as it did before.
 - **Pinning the layout changes the per-node memory ceiling.** `--mem` is per node on SLURM but the memory complex is per slot on most GE sites, so a job whose 6 slots used to land on one host now gets its grant on each of three. `sbatch` prints a `note:` line with the arithmetic when `--mem` and a pinned rule are both present. Non-contiguous `--array=1-5,20` (comma lists) are rejected — GE arrays are a single contiguous range.
 - **Requests that are accepted but cannot be fully honored now warn rather than failing quietly.** `sbatch` warns at submit time for `--exclusive` (a PE property, not a job one) and for every `--dependency` form GE cannot express (see the table above). `srun` warns *on the compute node* — not at submit — when per-task GPU binding was requested under `gpu.isolation: cgroup`, since GE masks devices per job there; use `gpu.isolation: shim` to bind per rank.
-- No PMI/PMIx (MPI via the PE's `mpirun`, which is the supported path anyway).
+- No PMI-2 or Cray PMI (`--mpi=pmi2`); OpenMPI brings PMIx through its own `mpirun` (`--mpi=pmix`).
 - **Under a dry run `sbatch` prints no `Submitted batch job` line.** A tool that
   parses stdout for a job id (clearml-agent does) gets the predicted environment
   block instead. See [dry run](#dry-run).
@@ -476,6 +478,9 @@ Setting `control_port_base: 0` restores an ephemeral port. That only works where
 nothing filters between nodes, because the port then differs on every step and no
 firewall rule can describe it.
 
+OpenMPI's daemons and transports use their own ports between nodes, as they do
+without the shim; open them the way your site already does for MPI.
+
 **Scope the rules to the cluster's own subnet or tags, never `0.0.0.0/0`.** The
 control channel is token-authenticated, but a predictable port should not be
 reachable from outside the cluster.
@@ -525,6 +530,9 @@ ping_deadline: 60s                # a node silent this long is lost; its tasks f
 orphan_grace: 45s                 # a stepper cut off from srun's host stops its tasks
 elastic: auto                     # hot spares: auto (torchrun steps) | on | off
 max_spares: 0                     # cap on --x-spares per job (0 = no cap)
+mpi:
+  default: none                   # SLURM MpiDefault: none | pmix (a bare srun runs through mpirun; --pty steps never do)
+  launcher: ""                    # mpirun for --mpi=pmix ("" = mpirun on PATH)
 drain_command: []                 # run after a swap, e.g. [touch, "/shared/drain/{host}"]
 # Fallback when the site cannot wire a queue starter_method: sbatch submits a
 # shim-generated wrapper that fabricates, then execs the stored original script

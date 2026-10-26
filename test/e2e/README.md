@@ -24,6 +24,7 @@ make e2e-matrix          # for each OCS version: down -v; up; e2e; capture
 | `20_srun` | `srun -n` fans ranks across nodes, per-rank identity, `-l` labels |
 | `30_sbatch` | `#SBATCH` -> `qsub -terse` -> `Submitted batch job <id>`, job runs |
 | `31_sbatch_resources` | the resource flags reach GE and take effect: `--time` -> `h_rt` (and GE enforces it), `--mem` -> the memory complex, `#SBATCH --gres=gpu:N` -> RSMAP grant -> `SLURM_JOB_GPUS` -> step `CUDA_VISIBLE_DEVICES`, `--dependency` -> `-hold_jid`, `--array %p` -> `-tc`, `--signal` -> `-notify -r y`; malformed values rejected at submit time |
+| `35_mpi_pmix` | OpenMPI through the shim, for every OpenMPI the cluster has (`make cluster-openmpi [OPENMPI5=1]`; skipped when none): a plain `mpirun` in a batch job starts its daemons through srun and wires all ranks on all nodes; with `--bind-to none` no rank is confined to CPU 0 (the daemons are not pinned); `srun --mpi=pmix` runs the ranks with `SLURM_PROCID` equal to the MPI rank, a `-N` step stays on its nodes, and a failing rank makes srun exit 3 with `qacct failed 0` |
 | `40_squeue_scancel` | `squeue` lists a live job; `scancel` removes it |
 | `50_scontrol` | `scontrol show hostnames` expands a compressed nodelist, one per line |
 | `60_gpu` | a fake RSMAP grant -> `SLURM_JOB_GPUS` + per-rank `CUDA_VISIBLE_DEVICES`, and that the other vendor's variable is not written |

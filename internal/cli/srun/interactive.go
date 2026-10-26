@@ -150,6 +150,15 @@ func stepArgs(opt *options) []string {
 	str("--gpu-bind", opt.gpuBind)
 	str("--x-elastic", opt.elastic)
 	str("--export", opt.exportSpec)
+	str("--cpu-bind", opt.cpuBind)
+	// The node list shaped the allocation; arbitrary also needs its order.
+	if opt.distribution != "" {
+		str("--distribution", opt.distribution)
+		str("--nodelist", strings.Join(opt.req.Nodelist, ","))
+	}
+	if opt.mpi == config.MPIPMIx {
+		a = append(a, "--mpi="+opt.mpi)
+	}
 	if opt.label {
 		a = append(a, "--label")
 	}

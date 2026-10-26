@@ -110,12 +110,15 @@ var _ = Describe("srun flag parsing", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("rejects an unsupported --mpi and accepts none [REQ-RUN-004]", func() {
-		_, err := parse("--mpi", "pmix", "hostname")
+	It("rejects an unsupported --mpi and accepts none and pmix [REQ-RUN-004]", func() {
+		_, err := parse("--mpi", "pmi2", "hostname")
 		Expect(err).To(HaveOccurred())
 		opt, err := parse("--mpi", "none", "hostname")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(opt.command).To(Equal([]string{"hostname"}))
+		opt, err = parse("--mpi", "pmix", "hostname")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opt.mpi).To(Equal("pmix"))
 	})
 
 	It("treats -K as kill-on with an optional value", func() {
