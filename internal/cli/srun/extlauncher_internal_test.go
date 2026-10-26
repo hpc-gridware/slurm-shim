@@ -59,9 +59,7 @@ var _ = Describe("srun as an MPI launcher's daemon starter", func() {
 
 	DescribeTable("parses each launcher's line without a warning, also under strict_flags",
 		func(line, daemon string) {
-			if strings.Contains(line, "NODEFILE") {
-				line = strings.Replace(line, "NODEFILE", nodeFile("ocs-worker2\nocs-worker1\n"), 1)
-			}
+			line = strings.Replace(line, "NODEFILE", nodeFile("ocs-worker2\nocs-worker1\n"), 1)
 			for _, strict := range []bool{false, true} {
 				opt, err := parseLine(line, strict)
 				Expect(err).NotTo(HaveOccurred(), "strict=%v", strict)
