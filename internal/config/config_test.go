@@ -395,6 +395,31 @@ var _ = Describe("qstat_timeout must be positive", func() {
 	})
 })
 
+var _ = Describe("mpi section", func() {
+	It("defaults to none with no launcher", func() {
+		cfg, warns, err := config.Parse([]byte(""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.MPI.Default).To(Equal(config.MPINone))
+		Expect(cfg.MPI.Launcher).To(BeEmpty())
+	})
+
+	It("reads pmix and a launcher path, folding case", func() {
+		cfg, warns, err := config.Parse([]byte("mpi:\n  default: PMIx\n  launcher: /opt/openmpi/bin/mpirun\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(BeEmpty())
+		Expect(cfg.MPI.Default).To(Equal(config.MPIPMIx))
+		Expect(cfg.MPI.Launcher).To(Equal("/opt/openmpi/bin/mpirun"))
+	})
+
+	It("warns about an unknown default and keeps none", func() {
+		cfg, warns, err := config.Parse([]byte("mpi:\n  default: pmi2\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warns).To(ContainElement(ContainSubstring(`mpi.default "pmi2"`)))
+		Expect(cfg.MPI.Default).To(Equal(config.MPINone))
+	})
+})
+
 var _ = Describe("removed keys [todo 079]", func() {
 	It("reports launch_ramp as unknown rather than silently accepting it", func() {
 		// launch_ramp was parsed, defaulted to 64, and read NOWHERE -- no ramp or

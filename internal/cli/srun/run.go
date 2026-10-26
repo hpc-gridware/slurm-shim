@@ -74,6 +74,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	// --gpu-bind / SLURM_GPU_BIND / gpu.bind decide whether tasks are bound to a
 	// device subset; resolve before placement, and before warnings are drained.
 	applyGPUBind(opt, cfg, os.Getenv("SLURM_GPU_BIND"))
+	applyCPUBind(opt, os.Getenv("SLURM_CPU_BIND"))
+	// A daemon step ignores SLURM_MPI_TYPE: the launcher's environment may
+	// carry any value, and the step is never handed to mpirun again.
+	if opt.externalLauncher {
+		applyExternalLauncher(opt)
+	} else if opt.mpi, err = resolveMPI(opt.mpi, os.Getenv("SLURM_MPI_TYPE")); err != nil {
+		errln(stderr, err.Error())
+		return 1
+	}
 	warnCgroupCannotBind(opt, cfg)
 	for _, w := range opt.warnings {
 		fmt.Fprintf(stderr, "srun: warning: %s\n", w)
@@ -90,6 +99,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// returns its exit status.
 		if refusal := allocationRefusal(err); refusal != nil {
 			errln(stderr, refusal.Error())
+			return 1
+		}
+		if err := checkJobID(opt, -1); err != nil {
+			errln(stderr, err.Error())
+			return 1
+		}
+		if opt.externalLauncher {
+			errln(stderr, "srun: error: --external-launcher starts an MPI launcher's daemons inside its job; there is no job here")
 			return 1
 		}
 		if opt.pty {
@@ -114,6 +131,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			"from srun or salloc outside one; ignored for this step")
 	}
 
+	if err := checkJobID(opt, lay.Job.JobID); err != nil {
+		errln(stderr, err.Error())
+		return 1
+	}
+	applyMPIDefault(opt, cfg)
+	applyMPINodes(opt, lay, os.Getenv(mpiNodesEnv))
 	p, err := plan.Place(lay, opt.req)
 	if err != nil {
 		errln(stderr, err.Error())
@@ -144,6 +167,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		errln(stderr, "srun: error: reserving step id: "+err.Error())
 		return 1
+	}
+	if opt.mpi == config.MPIPMIx {
+		return runPMIx(cfg, opt, lay, p, stepID, dry, stderr)
 	}
 
 	arrayJob := lay.Job.JobID

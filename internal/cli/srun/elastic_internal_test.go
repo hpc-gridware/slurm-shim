@@ -64,6 +64,10 @@ var _ = Describe("hot spares: which steps are elastic", func() {
 		Expect(s.elasticStep()).To(BeFalse(), "no spares, nothing to swap in")
 	})
 
+	It("never swaps an external launcher's daemons, even when asked to", func() {
+		Expect(withSpares(&options{command: []string{"prted"}, elastic: "on", externalLauncher: true}).elasticStep()).To(BeFalse())
+	})
+
 	It("lets --x-elastic win over the job's SLURM_X_ELASTIC, and that over the site config", func() {
 		GinkgoT().Setenv("SLURM_X_ELASTIC", "on")
 		Expect(withSpares(&options{command: []string{"hostname"}}).elasticStep()).To(BeTrue())

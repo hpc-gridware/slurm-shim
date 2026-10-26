@@ -77,6 +77,8 @@ var commands = map[string]string{
 
 	// Internal per-rank trampoline; not user-invoked, dispatched by the stepper.
 	"rank-exec": "rank-exec",
+	// Internal per-rank trampoline under srun --mpi=pmix; started by mpirun.
+	"rank-env": "rank-env",
 
 	// Site tooling, subcommand only -- no SLURM command of these names to shadow.
 	"ports":     "ports",
@@ -156,6 +158,8 @@ func run(arg0 string, args []string, stdout, stderr io.Writer) int {
 		return stepper.Run(args, stderr)
 	case "rank-exec":
 		return stepper.RankExec(args)
+	case "rank-env":
+		return srun.RankEnv(args, stderr)
 	case "install":
 		return installcmd.Run(args, stdout, stderr)
 	case "uninstall":

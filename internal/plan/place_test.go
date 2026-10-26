@@ -79,6 +79,64 @@ var _ = Describe("Step placement", func() {
 		Expect(p.Nodes[0].Host).To(Equal("node002"))
 	})
 
+	Describe("an MPI launcher's daemon step", func() {
+		threeNodes := func() *layout.Layout {
+			return &layout.Layout{
+				Nodes: []layout.Node{
+					{Index: 0, Host: "node001", Slots: 4},
+					{Index: 1, Host: "node002", Slots: 4},
+					{Index: 2, Host: "node003", Slots: 4},
+				},
+				Tasks: layout.Tasks{CPUsPerTask: 1, PerNode: []int{4, 4, 4}},
+			}
+		}
+
+		It("keeps the --nodelist order when Ordered, so SLURM_NODEID follows the list", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{
+				Nodelist: []string{"node003", "node002"}, TasksPerNode: 1, NTasks: 2, Ordered: true})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes[0].Host).To(Equal("node003"))
+			Expect(p.Nodes[1].Host).To(Equal("node002"))
+			Expect(p.Ranks[0].StepNodeIndex).To(Equal(0))
+			Expect(p.Ranks[1].StepNodeIndex).To(Equal(1))
+
+			p, err = plan.Place(threeNodes(), plan.StepRequest{
+				Nodelist: []string{"node003", "node002"}, TasksPerNode: 1, NTasks: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes[0].Host).To(Equal("node002"), "without Ordered, allocation order")
+		})
+
+		It("leaves the master out with AvoidMaster, unless it is the only node", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{TasksPerNode: 1, NTasks: 2, AvoidMaster: true})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes).To(HaveLen(2))
+			Expect(p.Nodes[0].Host).To(Equal("node002"))
+			Expect(p.Nodes[1].Host).To(Equal("node003"))
+
+			single := threeNodes()
+			single.Nodes = single.Nodes[:1]
+			single.Tasks.PerNode = []int{4}
+			p, err = plan.Place(single, plan.StepRequest{NTasks: 1, AvoidMaster: true})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes[0].Host).To(Equal("node001"))
+
+			p, err = plan.Place(threeNodes(), plan.StepRequest{NTasks: 1, AvoidMaster: true, Exclude: []string{"node002", "node003"}})
+			Expect(err).NotTo(HaveOccurred(), "the master is the only node --exclude leaves")
+			Expect(p.Nodes[0].Host).To(Equal("node001"))
+		})
+
+		It("gives no cpuset with NoBind", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{TasksPerNode: 1, NoBind: true})
+			Expect(err).NotTo(HaveOccurred())
+			for _, r := range p.Ranks {
+				Expect(r.Cpuset).To(BeEmpty())
+			}
+			p, err = plan.Place(threeNodes(), plan.StepRequest{TasksPerNode: 1})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Ranks[0].Cpuset).To(Equal("0-0"), "an ordinary step keeps its cpuset")
+		})
+	})
+
 	It("leaves --exclude hosts out of the step", func() {
 		p, err := plan.Place(alloc(), plan.StepRequest{Exclude: []string{"node001"}, NTasks: 2})
 		Expect(err).NotTo(HaveOccurred())

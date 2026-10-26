@@ -58,7 +58,9 @@ var errStopping = errors.New("srun is stopping the step")
 // where relaunching one node's tasks would leave the rest of the program waiting
 // on a peer that restarted from scratch.
 func (s *supervisor) elasticStep() bool {
-	if len(s.lay.Spares) == 0 {
+	// An MPI launcher's daemons are not interchangeable: a replacement on a
+	// spare node is not one the launcher started or expects.
+	if len(s.lay.Spares) == 0 || s.opt.externalLauncher {
 		return false
 	}
 	mode := s.opt.elastic
