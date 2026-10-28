@@ -28,6 +28,7 @@ import (
 	"syscall"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
 	"github.com/hpc-gridware/slurm-shim/internal/submit"
@@ -136,17 +137,19 @@ func applyDistribution(opt *options, dist string, strict bool) error {
 }
 
 // applyCPUBind folds --cpu-bind, else SLURM_CPU_BIND (how OpenMPI 4.1 asks
-// for it), into the step request. Only "none" changes anything: the ranks get
-// no affinity mask. SLURM allows qualifiers before the type ("verbose,none").
+// for it), into the step's binding mode (cpubind.ModeFor): "none" never pins,
+// any type pins within the job's CPUs even on a shared node, nothing given
+// lets each node decide (cpubind.ShouldPin). A map_cpu/mask_cpu list names
+// absolute CPUs another job may hold, so it is not applied.
 func applyCPUBind(opt *options, envBind string) {
 	spec := opt.cpuBind
 	if spec == "" {
 		spec = envBind
 	}
-	for _, part := range strings.Split(spec, ",") {
-		if strings.TrimSpace(part) == "none" {
-			opt.req.NoBind = true
-		}
+	opt.bindMode = cpubind.ModeFor(spec)
+	if strings.Contains(spec, "map_cpu") || strings.Contains(spec, "mask_cpu") {
+		opt.warnings = append(opt.warnings,
+			"--cpu-bind="+spec+": the CPU list is not applied; tasks are pinned within the job's CPUs (slurm-shim)")
 	}
 }
 
@@ -160,7 +163,7 @@ func applyExternalLauncher(opt *options) {
 	if !opt.externalLauncher {
 		return
 	}
-	opt.req.NoBind = true
+	opt.bindMode = cpubind.ModeNone
 	opt.mpi = config.MPINone
 	if len(opt.req.Nodelist) == 0 && opt.req.Nodes == 0 {
 		opt.req.AvoidMaster = true

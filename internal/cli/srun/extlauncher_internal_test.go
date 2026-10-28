@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
 	"github.com/hpc-gridware/slurm-shim/internal/plan"
 )
@@ -86,27 +87,37 @@ var _ = Describe("srun as an MPI launcher's daemon starter", func() {
 	})
 
 	Describe("--cpu-bind and SLURM_CPU_BIND", func() {
-		DescribeTable("only none leaves the ranks unpinned",
-			func(flag, env string, unpinned bool) {
+		DescribeTable("set the step's binding mode",
+			func(flag, env, mode string) {
 				opt := &options{cpuBind: flag}
 				applyCPUBind(opt, env)
-				Expect(opt.req.NoBind).To(Equal(unpinned))
+				Expect(opt.bindMode).To(Equal(mode))
+				Expect(opt.warnings).To(BeEmpty())
 			},
-			Entry("--cpu-bind=none", "none", "", true),
-			Entry("SLURM_CPU_BIND=none (OpenMPI 4.1)", "", "none", true),
-			Entry("a qualifier before the type", "verbose,none", "", true),
-			Entry("the flag wins over the variable", "cores", "none", false),
-			Entry("another type", "cores", "", false),
-			Entry("nothing given", "", "", false),
+			Entry("--cpu-bind=none", "none", "", cpubind.ModeNone),
+			Entry("SLURM_CPU_BIND=none (OpenMPI 4.1)", "", "none", cpubind.ModeNone),
+			Entry("a qualifier before the type", "verbose,none", "", cpubind.ModeNone),
+			Entry("the flag wins over the variable", "cores", "none", cpubind.ModeExplicit),
+			Entry("another type asks for pinning", "threads", "", cpubind.ModeExplicit),
+			Entry("SLURM_CPU_BIND=cores", "", "cores", cpubind.ModeExplicit),
+			Entry("nothing given: each node decides", "", "", cpubind.ModeAuto),
 		)
 
+		It("warns that a map_cpu or mask_cpu list is not applied", func() {
+			for _, spec := range []string{"map_cpu:5,7", "mask_cpu:0x3"} {
+				opt := &options{cpuBind: spec}
+				applyCPUBind(opt, "")
+				Expect(opt.bindMode).To(Equal(cpubind.ModeExplicit))
+				Expect(opt.warnings).To(ConsistOf(ContainSubstring("--cpu-bind=" + spec + ": the CPU list is not applied")))
+			}
+		})
 	})
 
 	Describe("an --external-launcher step", func() {
 		It("is never pinned or handed to mpirun, and goes past the master when no node list is given", func() {
 			opt := &options{externalLauncher: true, mpi: config.MPIPMIx}
 			applyExternalLauncher(opt)
-			Expect(opt.req.NoBind).To(BeTrue())
+			Expect(opt.bindMode).To(Equal(cpubind.ModeNone), "OpenMPI's daemons are never pinned")
 			Expect(opt.req.AvoidMaster).To(BeTrue())
 			Expect(opt.mpi).To(Equal(config.MPINone))
 
@@ -117,7 +128,7 @@ var _ = Describe("srun as an MPI launcher's daemon starter", func() {
 
 			plain := &options{}
 			applyExternalLauncher(plain)
-			Expect(plain.req.NoBind).To(BeFalse())
+			Expect(plain.bindMode).To(Equal(cpubind.ModeAuto))
 			Expect(plain.req.AvoidMaster).To(BeFalse(), "an ordinary step keeps the master")
 		})
 	})

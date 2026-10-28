@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
@@ -61,6 +62,7 @@ func (s *supervisor) dryRun() int {
 	kv(out, "step id", fmt.Sprint(s.stepID))
 	kv(out, "tasks", fmt.Sprintf("%d across %d node(s)", len(s.plan.Ranks), len(s.plan.Nodes)))
 	kv(out, "command", dryrun.Command(s.opt.command[0], s.opt.command[1:]))
+	kv(out, "cpu binding", bindingSummary(s.opt.bindMode))
 
 	if launchErr != nil {
 		kv(out, "launcher", fmt.Sprintf("ERROR: %v", launchErr))
@@ -167,12 +169,26 @@ func printEnv(out io.Writer, kvs []string) {
 
 func kv(out io.Writer, key, value string) { fmt.Fprintf(out, "  %-19s %s\n", key, value) }
 
+// bindingSummary names the step's CPU binding mode. A rank's "cpu #n" is the
+// n-th CPU the job may use on its node; each node decides when it starts
+// whether to pin (cpubind.Resolve), which the master cannot see ahead.
+func bindingSummary(mode string) string {
+	switch mode {
+	case cpubind.ModeNone:
+		return "none (--cpu-bind=none)"
+	case cpubind.ModeExplicit:
+		return "explicit (--cpu-bind): pinned within the job's CPUs on each node"
+	default:
+		return "auto: pinned within the job's CPUs on each node, unpinned where the node is shared without binding"
+	}
+}
+
 // rankSummary is the one-line placement of a rank: its cpuset, devices and where
 // its output goes.
 func rankSummary(r proto.RankSpec) string {
 	parts := []string{fmt.Sprintf("local %d", r.Local)}
 	if r.Cpuset != "" {
-		parts = append(parts, "cpuset "+r.Cpuset)
+		parts = append(parts, "cpu #"+r.Cpuset)
 	}
 	if len(r.GPUs) > 0 {
 		parts = append(parts, "gpus "+strings.Join(r.GPUs, ","))

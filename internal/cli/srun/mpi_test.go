@@ -23,11 +23,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
 )
 
@@ -40,6 +43,7 @@ const fakeMpirun = `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "mpirun (Open MPI) 5.0.9"; exit 0; fi
 echo "ARGV $*"
 echo "ENV $SLURM_NODELIST $SLURM_TASKS_PER_NODE $SLURM_STEP_ID $PRTE_MCA_ras $SLURM_SHIM_MPI_NODELIST"
+echo "BIND ompi=$OMPI_MCA_hwloc_base_binding_policy prte=$PRTE_MCA_hwloc_default_binding_policy"
 while [ $# -gt 1 ] && [ "$2" != "rank-env" ]; do shift; done
 SLURMD_NODENAME=node002 PMIX_RANK=3 OMPI_COMM_WORLD_LOCAL_RANK=1 \
   SLURM_STEP_ID=1 SLURM_NTASKS=1 SLURM_STEP_NODELIST=node002 SLURM_NODEID=0 SLURM_GTIDS=0 exec "$@"
@@ -207,6 +211,47 @@ var _ = Describe("srun --mpi=pmix through a launcher", func() {
 		Expect(report).To(ContainSubstring("-- ./app"))
 		Expect(report).To(ContainSubstring("PRTE_MCA_ras=slurm"))
 		Expect(string(sess.Out.Contents())).NotTo(ContainSubstring("ARGV"))
+	})
+
+	Describe("OpenMPI's binding (CS-2945)", func() {
+		// bind runs a pmix step on a one-node job holding slots and returns the
+		// BIND line the fake mpirun saw.
+		bind := func(slots int, wrapper []string, extraEnv ...string) string {
+			job := writeAlloc([]layout.Node{{Index: 0, Host: "node001", Slots: slots, IsMaster: true}}, []int{slots})
+			sess := runSrunWrapped(job, wrapper, withPath(extraEnv...), "--mpi=pmix", "-n", "1", "true")
+			Eventually(sess, "30s").Should(gexec.Exit(0))
+			for _, l := range lines(sess) {
+				if strings.HasPrefix(l, "BIND ") {
+					return l
+				}
+			}
+			Fail("the fake mpirun printed no BIND line")
+			return ""
+		}
+		const none = "BIND ompi=none prte=none"
+		const unset = "BIND ompi= prte="
+
+		It("leaves OpenMPI's per-core binding on a node the job owns, and stops it on a shared one", func() {
+			if runtime.GOOS != "linux" {
+				Expect(bind(1, nil)).To(Equal(unset), "no CPU facts off Linux: mpirun binds as before")
+				return
+			}
+			node := thisNode()
+			needs(!node.Restricted() && node.Cores >= 2, "needs an unrestricted mask with 2 cores")
+			Expect(bind(node.Cores, nil)).To(Equal(unset))
+			Expect(bind(1, nil)).To(Equal(none))
+		})
+
+		It("stops OpenMPI binding outside Grid Engine's grant, unless the user chose a policy", func() {
+			needs(runtime.GOOS == "linux", "affinity is applied on Linux only")
+			node := thisNode()
+			needs(len(node.Allowed) >= 2, "needs 2 CPUs")
+			path, err := exec.LookPath("taskset")
+			needs(err == nil, "taskset (util-linux) gives srun a Grid Engine-like mask")
+			grant := []string{path, "-c", cpubind.FormatList(node.Allowed[len(node.Allowed)-1:])}
+			Expect(bind(64, grant)).To(Equal(none), "a restricted mask, even with every slot")
+			Expect(bind(64, grant, "PRTE_MCA_hwloc_default_binding_policy=core")).To(Equal("BIND ompi= prte=core"))
+		})
 	})
 
 	It("refuses another MPI's mpirun, quoting it", func() {

@@ -51,24 +51,6 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 	gexec.CleanupBuildArtifacts()
 })
 
-var _ = Describe("cpu list parsing", func() {
-	DescribeTable("parses ranges and singletons [REQ-STP-002]",
-		func(in string, want []int) {
-			got, err := parseCPUList(in)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(got).To(Equal(want))
-		},
-		Entry("range", "0-3", []int{0, 1, 2, 3}),
-		Entry("range plus single", "0-1,4", []int{0, 1, 4}),
-		Entry("single", "5", []int{5}),
-	)
-
-	It("rejects a malformed cpu list", func() {
-		_, err := parseCPUList("3-1")
-		Expect(err).To(HaveOccurred())
-	})
-})
-
 var _ = Describe("rank-exec argument parsing", func() {
 	It("parses cpuset, chdir, and the command after --", func() {
 		cpuset, chdir, cmd, err := parseRankExecArgs([]string{"--cpuset", "0-3", "--chdir", "/w", "--", "echo", "hi"})

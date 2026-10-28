@@ -346,6 +346,10 @@ func (s *supervisor) stepSpec(base []string, ni int) proto.StepSpec {
 		// (REQ-CHN-004); zero disables it.
 		OrphanGraceMS:  s.cfg.OrphanGrace.Milliseconds(),
 		PingIntervalMS: s.cfg.PingInterval.Milliseconds(),
+		// With the host's mask these decide on the host whether the ranks are
+		// pinned (CS-2945); a hot-spare relaunch gets the spare's own slots.
+		CPUBind:   s.opt.bindMode,
+		NodeSlots: node.Slots,
 	}
 	for _, r := range s.plan.Ranks {
 		if r.StepNodeIndex != ni {

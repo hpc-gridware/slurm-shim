@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
@@ -83,6 +84,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		errln(stderr, err.Error())
 		return 1
 	}
+	// The one place the plan learns the mode: --cpu-bind=none and an external
+	// launcher's daemons get no cpuset at all.
+	opt.req.NoBind = opt.bindMode == cpubind.ModeNone
 	warnCgroupCannotBind(opt, cfg)
 	for _, w := range opt.warnings {
 		fmt.Fprintf(stderr, "srun: warning: %s\n", w)

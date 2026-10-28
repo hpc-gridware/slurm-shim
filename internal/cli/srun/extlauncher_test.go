@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
 )
 
@@ -99,9 +100,13 @@ var _ = Describe("srun starting an MPI launcher's daemons", func() {
 			Expect(report).To(ContainSubstring("rank 0 on"), "the report lists the ranks")
 			return report
 		}
-		Expect(dry("--external-launcher", "--ntasks-per-node=1", "--ntasks=2", "prted")).NotTo(ContainSubstring("cpuset"))
-		Expect(dry("--cpu-bind=none", "-N", "3", "hostname")).NotTo(ContainSubstring("cpuset"))
-		Expect(dry("-N", "3", "hostname")).To(ContainSubstring("cpuset 0-0"))
+		launcher := dry("--external-launcher", "--ntasks-per-node=1", "--ntasks=2", "prted")
+		Expect(launcher).NotTo(ContainSubstring("cpu #"))
+		Expect(launcher).To(MatchRegexp(`cpu binding\s+none\b`))
+		Expect(dry("--cpu-bind=none", "-N", "3", "hostname")).NotTo(ContainSubstring("cpu #"))
+		auto := dry("-N", "3", "hostname")
+		Expect(auto).To(ContainSubstring("cpu #0-0"), "the n-th CPU the job may use, not CPU 0")
+		Expect(auto).To(MatchRegexp(`cpu binding\s+auto\b`))
 	})
 
 	It("leaves a daemon's affinity alone, so the ranks it forks are not all on one CPU", func() {
@@ -109,9 +114,11 @@ var _ = Describe("srun starting an MPI launcher's daemons", func() {
 			Skip("affinity is applied on Linux only, and needs more than one CPU to show")
 		}
 		allowed := `grep Cpus_allowed_list /proc/self/status | cut -f2`
-		pinned := runSrun(threeNodes(), "-N", "1", "sh", "-c", allowed)
+		// --cpu-bind=cores pins even on a node the job shares; this 4-slot fake
+		// node is shared on any host with more CPUs.
+		pinned := runSrun(threeNodes(), "--cpu-bind=cores", "-N", "1", "sh", "-c", allowed)
 		Eventually(pinned, "30s").Should(gexec.Exit(0))
-		Expect(strings.TrimSpace(string(pinned.Out.Contents()))).To(Equal("0"))
+		Expect(strings.TrimSpace(string(pinned.Out.Contents()))).To(Equal(cpubind.FormatList(thisNode().Allowed[0:1])))
 
 		free := runSrun(threeNodes(), "--external-launcher", "--ntasks-per-node=1", "--ntasks=1", "sh", "-c", allowed)
 		Eventually(free, "30s").Should(gexec.Exit(0))

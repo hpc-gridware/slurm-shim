@@ -25,7 +25,10 @@ jobs:
           go-version: stable
       - run: make build
       - run: make vet
+      # On Linux the CPU binding specs must run, not skip (internal/cli/srun).
       - run: make test
+        env:
+          SLURM_SHIM_REQUIRE_CPU_SPECS: ${{ runner.os == 'Linux' && '1' || '' }}
 
   lint:
     runs-on: ubuntu-latest

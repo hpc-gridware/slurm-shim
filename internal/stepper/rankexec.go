@@ -30,6 +30,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 )
 
 // rankFailExit is the exit code the trampoline uses for a pre-exec failure. The
@@ -69,7 +71,7 @@ func RankExec(args []string) int {
 	}
 
 	if cpuset != "" {
-		if err := setAffinity(cpuset); err != nil {
+		if err := cpubind.Set(cpuset); err != nil {
 			// Best-effort binding: a granted cpuset that cannot be applied (e.g. it
 			// references CPUs absent in this environment, or affinity is restricted)
 			// must not kill the rank. Warn and run unpinned, like SLURM does.

@@ -38,6 +38,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
 )
 
@@ -124,7 +125,7 @@ func Run(args []string, stderr io.Writer) int {
 		return 1
 	}
 
-	s := &stepper{conn: conn, spec: spec, host: env.Host, self: self, stderr: stderr}
+	s := &stepper{conn: conn, spec: spec, host: env.Host, self: self, stderr: stderr, hostCPUs: cpubind.ThisNode}
 	active.Store(s)
 	return s.run()
 }
@@ -135,6 +136,9 @@ type stepper struct {
 	host   string
 	self   string
 	stderr io.Writer
+	// hostCPUs reports what this node offers the ranks (cpubind.ThisNode); a
+	// field so specs can stand in for any node.
+	hostCPUs func() (cpubind.Node, error)
 
 	mu      sync.Mutex
 	procs   []*rankProc
@@ -178,8 +182,10 @@ func (s *stepper) run() int {
 
 	exits := make(chan rankResult, len(s.spec.Ranks))
 
+	cpus := s.rankCPUs()
 	for i := range s.spec.Ranks {
 		r := s.spec.Ranks[i]
+		r.Cpuset = cpus[i]
 		if err := s.spawn(r, files[i], exits); err != nil {
 			s.report(r.Rank, rankResult{fail: "spawn: " + err.Error()})
 			exits <- rankResult{} // account for it so the loop terminates
@@ -197,6 +203,27 @@ func (s *stepper) run() int {
 		return exitTerminated
 	}
 	return maxCode
+}
+
+// rankCPUs resolves the ranks' planned cpusets -- positions in the CPUs the
+// job may use on this host -- into the CPU lists rank-exec applies, or none
+// where pinning could take another job's CPUs (cpubind.Resolve, CS-2945).
+func (s *stepper) rankCPUs() []string {
+	positions := make([]string, len(s.spec.Ranks))
+	for i, r := range s.spec.Ranks {
+		positions[i] = r.Cpuset
+	}
+	node, err := s.hostCPUs()
+	if err != nil {
+		errln(s.stderr, "stepper: warning: cannot read the CPUs this job may use on "+s.host+
+			"; tasks run unpinned: "+err.Error())
+		return make([]string, len(positions))
+	}
+	cpus, warning := cpubind.Resolve(s.spec.CPUBind, positions, node, s.spec.NodeSlots)
+	if warning != "" {
+		errln(s.stderr, "stepper: warning: "+s.host+": "+warning)
+	}
+	return cpus
 }
 
 // stopSelf stops the ranks because the stepper itself was signalled. run then

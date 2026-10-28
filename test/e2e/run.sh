@@ -21,6 +21,7 @@ checks=(
   22_blocking
   23_resources
   24_control
+  25_cpu_binding
   30_sbatch
   31_sbatch_resources
   32_par_allocation
