@@ -19,11 +19,11 @@
 ************************************************************************/
 /*___INFO__MARK_END__*/
 
-package stepper
+package cpubind
 
-// setAffinity is a best-effort no-op off Linux (SI-34); macOS has no
-// sched_setaffinity, and standalone/dev runs there do not need binding.
-func setAffinity(cpuset string) error {
-	_ = cpuset
-	return nil
-}
+// ThisNode reports no CPU facts off Linux (SI-34): macOS has no affinity
+// masks, and standalone/dev runs there are never pinned.
+func ThisNode() (Node, error) { return Node{}, nil }
+
+// Set is a no-op off Linux (SI-34).
+func Set(string) error { return nil }

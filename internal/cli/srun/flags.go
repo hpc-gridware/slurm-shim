@@ -49,7 +49,10 @@ type options struct {
 	chdir      string
 	exportSpec string
 	killFlag   string // "" unset, else "0"/"1" (-K optional value)
-	cpuBind    string // --cpu-bind as given; only "none" changes anything
+	cpuBind    string // --cpu-bind as given
+	// bindMode is the step's CPU binding mode (cpubind.Mode*), from --cpu-bind
+	// or SLURM_CPU_BIND; see applyCPUBind.
+	bindMode string
 	// externalLauncher is --external-launcher: the step starts the daemons of
 	// an MPI launcher (OpenMPI's mpirun runs `srun --external-launcher ...
 	// prted`). See applyExternalLauncher.
@@ -144,8 +147,7 @@ func parseFlagsWith(table slurmopts.Table, args []string, strict bool, stderr io
 		_            = fs.CountP("verbose", "v", "")
 		// submitit's generated srun line always passes --unbuffered; users may add
 		// --cpu-bind via srun_args. Defined explicitly so a space-form --cpu-bind
-		// value is never mistaken for the command; only --cpu-bind=none has an
-		// effect (applyCPUBind).
+		// value is never mistaken for the command (applyCPUBind).
 		_       = fs.Bool("unbuffered", false, "")
 		cpuBind = fs.String("cpu-bind", "", "")
 		// What OpenMPI's mpirun passes when it starts its daemons through srun

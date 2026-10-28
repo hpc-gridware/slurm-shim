@@ -26,8 +26,10 @@ package fabricator
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
@@ -50,6 +52,11 @@ type Options struct {
 	// SGE_HGR_<complex> from the environment), so the Table A/B golden suites
 	// still run without a cluster.
 	Runner gedata.Runner
+	// Node is the master's CPU facts as the job gets them (cpubind.ThisNode;
+	// start_proc_args runs with the job's Grid Engine binding mask). They
+	// decide the OpenMPI binding override for a plain mpirun in the job; the
+	// zero Node (golden suites, non-Linux) adds none.
+	Node cpubind.Node
 }
 
 // KV is one ordered export.
@@ -120,7 +127,24 @@ func Fabricate(opts Options) (*Result, error) {
 		_ = gedata.ClearSwaps(qctx, opts.Runner, e.get("JOB_ID"))
 	}
 	addSpares(res, spares)
+	addOpenMPIBinding(res, e, opts.Node)
 	return res, nil
+}
+
+// addOpenMPIBinding exports the OpenMPI binding override for the job's active
+// nodes (cpubind.OpenMPIOverride), so a plain mpirun in the job script stays
+// within the job's CPUs as srun --mpi=pmix does (CS-2945). The job script can
+// still set either variable itself; one already in the job's environment
+// suppresses the override.
+func addOpenMPIBinding(res *Result, e envReader, node cpubind.Node) {
+	slots := make([]int, len(res.Layout.Nodes))
+	for i, n := range res.Layout.Nodes {
+		slots[i] = n.Slots
+	}
+	for _, kv := range cpubind.OpenMPIOverride(cpubind.ModeFor(e.get("SLURM_CPU_BIND")), node, slots, e.get) {
+		name, value, _ := strings.Cut(kv, "=")
+		res.Exports = append(res.Exports, KV{Key: name, Value: value})
+	}
 }
 
 // addSpares puts the hot spares into the layout and SLURM_X_SPARE_NODELIST; a job

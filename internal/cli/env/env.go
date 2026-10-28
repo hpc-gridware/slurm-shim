@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/fabricator"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/layout"
@@ -73,6 +74,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "slurm-shim-env: warning: %s\n", w)
 	}
 
+	// This runs with the job's Grid Engine binding mask (start_proc_args, or
+	// the job script in wrapper mode). Without it the job gets no OpenMPI
+	// binding override, as before.
+	node, err := cpubind.ThisNode()
+	if err != nil {
+		fmt.Fprintf(stderr, "slurm-shim-env: warning: cannot read this job's CPUs: %v\n", err)
+	}
 	res, err := fabricator.Fabricate(fabricator.Options{
 		Env:      os.Getenv,
 		Config:   cfg,
@@ -83,6 +91,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// multi-host-safe SGE_HGR path (SI-19).
 		Runner:  gedata.ExecRunner{},
 		NowUnix: time.Now().Unix(),
+		Node:    node,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "slurm-shim-env: error: %v\n", err)

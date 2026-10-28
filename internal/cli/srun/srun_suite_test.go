@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -93,13 +94,21 @@ func runSrun(tmp string, args ...string) *gexec.Session {
 // runSrunEnv is runSrun with extra environment entries ("KEY=VALUE"), for specs
 // that drive srun through an environment switch such as SLURM_SHIM_DRY_RUN.
 func runSrunEnv(tmp string, extraEnv []string, args ...string) *gexec.Session {
+	return runSrunWrapped(tmp, nil, extraEnv, args...)
+}
+
+// runSrunWrapped is runSrunEnv started through a wrapper command (e.g.
+// taskset -c 2,3, which gives srun and its steppers the mask Grid Engine
+// core binding would).
+func runSrunWrapped(tmp string, wrapper, extraEnv []string, args ...string) *gexec.Session {
 	// A spec that needs different settings (e.g. the qrsh launcher) writes its own
 	// config into tmp first; the default here is only a fallback.
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		Expect(os.WriteFile(cfgPath, []byte("launcher: local\n"), 0o600)).To(Succeed())
 	}
-	cmd := exec.Command(shimBin, append([]string{"srun"}, args...)...)
+	argv := append(append(slices.Clone(wrapper), shimBin, "srun"), args...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append([]string{
 		"TMPDIR=" + tmp,
 		"SLURM_SHIM_CONFIG=" + cfgPath,

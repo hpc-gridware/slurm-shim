@@ -93,6 +93,12 @@ type StepSpec struct {
 	// them: a hot-spare relaunch continues the output the lost node's ranks
 	// already wrote rather than erasing it.
 	AppendOutput bool `json:"append_output,omitempty"`
+	// CPUBind is the step's binding mode (cpubind.ModeAuto, ModeNone,
+	// ModeCores) and NodeSlots the job's slots on this host: with the host's
+	// mask they decide whether the ranks are pinned (cpubind.ShouldPin). An
+	// older stepper ignores both and pins Cpuset as CPU numbers, as before.
+	CPUBind   string `json:"cpu_bind,omitempty"`
+	NodeSlots int    `json:"node_slots,omitempty"`
 }
 
 // DeviceIDs are one rank's granted device ids. They marshal as JSON numbers when
@@ -151,12 +157,16 @@ func (d *DeviceIDs) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// RankSpec is one rank's placement and per-rank Table B environment.
+// RankSpec is one rank's placement and per-rank Table B environment. Cpuset
+// names the rank's CPUs as positions in the CPUs the job may use on the host
+// ("0-1" = the first two of them), not CPU numbers: the stepper maps it onto
+// the host's mask, or leaves the rank unpinned on a shared node
+// (StepSpec.CPUBind, CS-2945).
 type RankSpec struct {
 	Rank     int       `json:"rank"`      // SLURM_PROCID
 	Local    int       `json:"local"`     // SLURM_LOCALID
 	NodeID   int       `json:"node_id"`   // SLURM_NODEID
-	Cpuset   string    `json:"cpuset"`    // affinity mask ("" = unset)
+	Cpuset   string    `json:"cpuset"`    // CPU positions ("" = unpinned)
 	GPUs     DeviceIDs `json:"gpus"`      // devices for StepSpec.GPUEnvVar (none when empty)
 	EnvDelta []string  `json:"env_delta"` // per-rank Table B KEY=VALUE overrides
 	// StdoutFile / StderrFile are host-resolved %-pattern paths; "" streams the

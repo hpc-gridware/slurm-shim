@@ -120,4 +120,21 @@ var _ = Describe("Envelope and StepSpec codecs [REQ-RUN-009]", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(Equal(s))
 	})
+
+	It("carries the step's CPU binding inputs, and leaves them off the wire when unset", func() {
+		// An older stepper ignores unknown keys; an unset mode and slot count
+		// must not appear at all, so a spec without them stays byte-identical.
+		s := proto.StepSpec{Command: []string{"true"}, CPUBind: "cores", NodeSlots: 4}
+		b, err := proto.EncodeSpec(s)
+		Expect(err).NotTo(HaveOccurred())
+		got, err := proto.DecodeSpec(b)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.CPUBind).To(Equal("cores"))
+		Expect(got.NodeSlots).To(Equal(4))
+
+		b, err = proto.EncodeSpec(proto.StepSpec{Command: []string{"true"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(b)).NotTo(ContainSubstring("cpu_bind"))
+		Expect(string(b)).NotTo(ContainSubstring("node_slots"))
+	})
 })

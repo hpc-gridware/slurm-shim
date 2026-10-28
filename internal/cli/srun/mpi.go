@@ -31,6 +31,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/hpc-gridware/slurm-shim/internal/config"
+	"github.com/hpc-gridware/slurm-shim/internal/cpubind"
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/encoders"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
@@ -232,8 +233,19 @@ func runPMIx(cfg *config.Config, opt *options, lay *layout.Layout, p *plan.StepP
 	}
 	vars := stepVars(lay, p, stepID)
 	argv := launcherArgv(l, p, opt.label, self, vars, opt.command)
+	// Without CPU facts (non-Linux, unreadable mask) mpirun binds as before.
+	master, err := cpubind.ThisNode()
+	if err != nil {
+		errln(stderr, "srun: warning: cannot read the CPUs this job may use here; OpenMPI binds as it chooses: "+err.Error())
+	}
+	stepSlots := make([]int, len(p.Nodes))
+	for i, n := range p.Nodes {
+		stepSlots[i] = n.Slots
+	}
+	launcherVars := append(append([]string{}, vars...),
+		cpubind.OpenMPIOverride(opt.bindMode, master, stepSlots, os.Getenv)...)
 	if dry {
-		reportPMIx(stderr, l, p, stepID, argv, launcherEnv(nil, vars, p))
+		reportPMIx(stderr, l, p, stepID, argv, launcherEnv(nil, launcherVars, p))
 		return 0
 	}
 	if opt.chdir != "" {
@@ -246,7 +258,7 @@ func runPMIx(cfg *config.Config, opt *options, lay *layout.Layout, p *plan.StepP
 		errln(stderr, "srun: error: "+err.Error())
 		return 1
 	}
-	err = launch.Exec(l.path, argv, launcherEnv(os.Environ(), vars, p))
+	err = launch.Exec(l.path, argv, launcherEnv(os.Environ(), launcherVars, p))
 	errln(stderr, fmt.Sprintf("srun: error: running %s: %v", l.path, err))
 	return 1
 }
