@@ -82,7 +82,9 @@ type StepPlan struct {
 
 // Place resolves an srun request against the allocation into a concrete
 // placement (spec sec. 7.2). It selects the step node set, determines the rank
-// count, and block-distributes ranks (sec. 8.4), assigning cpusets and GPUs.
+// count, spreads the ranks over the nodes as SLURM does and numbers them in
+// block order (sec. 8.4), assigning cpusets and GPUs. Every node of the
+// resulting step runs at least one rank.
 func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 	nodes, err := selectNodes(lay, req)
 	if err != nil {
@@ -105,7 +107,19 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 		cpt = 1
 	}
 
-	ranks, warns, err := distribute(nodes, perNodeCap, ntasks, cpt, req.GPUsPerTask, req.AutoDivideGPUs, req.GPUBindExplicit)
+	counts, err := spread(perNodeCap, ntasks)
+	if err != nil {
+		return nil, err
+	}
+	var warns []string
+	if usable := countPositive(perNodeCap); ntasks < usable {
+		warns = append(warns, fmt.Sprintf(
+			"srun: Warning: can't run %d processes on %d nodes, setting nnodes to %d",
+			ntasks, usable, ntasks))
+	}
+	nodes, counts = dropEmpty(nodes, counts)
+
+	ranks, gpuWarns, err := distribute(nodes, counts, cpt, req.GPUsPerTask, req.AutoDivideGPUs, req.GPUBindExplicit)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +128,7 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 			ranks[i].Cpuset = ""
 		}
 	}
-	return &StepPlan{Nodes: nodes, Ranks: ranks, NTasks: ntasks, CPUsPerTask: cpt, Warnings: warns}, nil
+	return &StepPlan{Nodes: nodes, Ranks: ranks, NTasks: ntasks, CPUsPerTask: cpt, Warnings: append(warns, gpuWarns...)}, nil
 }
 
 // selectNodes chooses the participating hosts in allocation order: the
@@ -225,33 +239,66 @@ func capacities(lay *layout.Layout, nodes []StepNode, req StepRequest) []int {
 	return caps
 }
 
-// distribute block-fills ranks node-by-node to capacity (sec. 8.4). Exceeding
-// total capacity fails before any launch (REQ-RUN-008); a GPU request beyond a
-// node's grant fails too (SI-31).
-func distribute(nodes []StepNode, caps []int, ntasks, cpt, gpusPerTask int, autoDivideGPUs, bindExplicit bool) ([]PlacedRank, []string, error) {
+// spread decides how many ranks each step node runs, the way SLURM's block
+// layout does (_task_layout_block): one rank per node in turn, skipping a node
+// once it is at capacity, so -N 2 -n 2 runs one rank on each node instead of
+// two on the first. Exceeding total capacity fails before any launch
+// (REQ-RUN-008).
+func spread(caps []int, ntasks int) ([]int, error) {
 	total := 0
 	for _, c := range caps {
 		total += c
 	}
 	if ntasks > total {
-		return nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"srun: error: Unable to allocate resources: More processors requested than permitted (%d > %d)",
 			ntasks, total)
 	}
+	counts := make([]int, len(caps))
+	for placed := 0; placed < ntasks; {
+		for i := range caps {
+			if placed < ntasks && counts[i] < caps[i] {
+				counts[i]++
+				placed++
+			}
+		}
+	}
+	return counts, nil
+}
 
+func countPositive(values []int) int {
+	n := 0
+	for _, v := range values {
+		if v > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// dropEmpty removes the nodes that run no rank: SLURM never keeps one in a
+// step, and the step's node count, node list and launches follow these nodes.
+func dropEmpty(nodes []StepNode, counts []int) ([]StepNode, []int) {
+	var keptNodes []StepNode
+	var keptCounts []int
+	for i, c := range counts {
+		if c > 0 {
+			keptNodes = append(keptNodes, nodes[i])
+			keptCounts = append(keptCounts, c)
+		}
+	}
+	return keptNodes, keptCounts
+}
+
+// distribute numbers the ranks node by node in step order (block, sec. 8.4),
+// counts[i] of them on node i, and assigns cpusets and GPUs; a GPU request
+// beyond a node's grant fails (SI-31).
+func distribute(nodes []StepNode, counts []int, cpt, gpusPerTask int, autoDivideGPUs, bindExplicit bool) ([]PlacedRank, []string, error) {
 	var ranks []PlacedRank
 	var warns []string
 	rank := 0
 	for ni := range nodes {
-		// nlocal is the number of ranks actually placed on this node (the last
-		// node may be truncated by ntasks).
-		nlocal := caps[ni]
-		if rank+nlocal > ntasks {
-			nlocal = ntasks - rank
-		}
-		if nlocal <= 0 {
-			break
-		}
+		nlocal := counts[ni]
 
 		// Device visibility per local rank (REQ-GPU-002). An explicit
 		// --gpus-per-task that exceeds the grant is an error; without one, SLURM

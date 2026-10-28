@@ -161,6 +161,141 @@ var _ = Describe("Step placement", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
+	Describe("spreading -n over the step nodes as SLURM does", func() {
+		// hosts and counts of a plan, in step order, for compact expectations.
+		perNode := func(p *plan.StepPlan) map[string]int {
+			m := map[string]int{}
+			for _, r := range p.Ranks {
+				m[p.Nodes[r.StepNodeIndex].Host]++
+			}
+			return m
+		}
+		threeNodes := func() *layout.Layout {
+			return &layout.Layout{
+				Nodes: []layout.Node{
+					{Index: 0, Host: "node001", Slots: 2},
+					{Index: 1, Host: "node002", Slots: 2},
+					{Index: 2, Host: "node003", Slots: 2},
+				},
+				Tasks: layout.Tasks{NTasks: 6, CPUsPerTask: 1, PerNode: []int{2, 2, 2}},
+			}
+		}
+
+		It("runs -N 2 -n 2 one rank per node, not both on the first", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{Nodes: 2, NTasks: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes).To(HaveLen(2))
+			Expect(p.Ranks).To(Equal([]plan.PlacedRank{
+				{Rank: 0, StepNodeIndex: 0, Local: 0, Cpuset: "0-0"},
+				{Rank: 1, StepNodeIndex: 1, Local: 0, Cpuset: "0-0"},
+			}))
+			Expect(p.Warnings).To(BeEmpty())
+		})
+
+		It("numbers the ranks in block order when the nodes run unequal counts", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{Nodes: 2, NTasks: 3})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 2, "node002": 1}))
+			Expect(p.Ranks[0].StepNodeIndex).To(Equal(0))
+			Expect(p.Ranks[1].StepNodeIndex).To(Equal(0))
+			Expect(p.Ranks[1].Local).To(Equal(1))
+			Expect(p.Ranks[2].StepNodeIndex).To(Equal(1))
+			Expect(p.Ranks[2].Local).To(Equal(0))
+		})
+
+		It("balances the counts rather than filling the first node", func() {
+			// SLURM: -N 2 -n 4 on 8-CPU nodes is 2 and 2, not 3 and 1 or 4 and 0.
+			p, err := plan.Place(alloc(), plan.StepRequest{Nodes: 2, NTasks: 4})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 2, "node002": 2}))
+		})
+
+		It("spreads over every allocation node when -N is not given", func() {
+			// srun inherits the allocation's node count (SLURM_NNODES).
+			p, err := plan.Place(alloc(), plan.StepRequest{NTasks: 4})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 2, "node002": 2}))
+
+			p, err = plan.Place(threeNodes(), plan.StepRequest{NTasks: 3})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 1, "node002": 1, "node003": 1}))
+		})
+
+		It("moves on to the nodes with room once a node is full", func() {
+			lay := threeNodes()
+			lay.Tasks.PerNode = []int{4, 1, 2}
+			p, err := plan.Place(lay, plan.StepRequest{NTasks: 6})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 3, "node002": 1, "node003": 2}))
+		})
+
+		It("gives every node of a -w list a rank, in list order under --distribution=arbitrary", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{Nodelist: []string{"node003", "node001"}, NTasks: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 1, "node003": 1}))
+			Expect(p.Nodes[0].Host).To(Equal("node001"))
+
+			p, err = plan.Place(threeNodes(), plan.StepRequest{Nodelist: []string{"node003", "node001"}, NTasks: 2, Ordered: true})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes[0].Host).To(Equal("node003"))
+			Expect(p.Ranks[0].StepNodeIndex).To(Equal(0))
+			Expect(p.Ranks[1].StepNodeIndex).To(Equal(1))
+		})
+
+		It("shrinks the step to -n nodes with SLURM's warning when -n is below the node count", func() {
+			p, err := plan.Place(threeNodes(), plan.StepRequest{Nodes: 2, NTasks: 1})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes).To(HaveLen(1))
+			Expect(p.Nodes[0].Host).To(Equal("node001"))
+			Expect(p.Warnings).To(Equal([]string{
+				"srun: Warning: can't run 1 processes on 2 nodes, setting nnodes to 1"}))
+
+			p, err = plan.Place(threeNodes(), plan.StepRequest{NTasks: 2})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node001": 1, "node002": 1}))
+			Expect(p.Warnings).To(Equal([]string{
+				"srun: Warning: can't run 2 processes on 3 nodes, setting nnodes to 2"}))
+		})
+
+		It("keeps no node that runs no rank", func() {
+			// A GPU task policy gives a node without GPUs no tasks; it must not
+			// count in the step or get a stepper.
+			lay := threeNodes()
+			lay.Tasks.PerNode = []int{2, 0, 2}
+			p, err := plan.Place(lay, plan.StepRequest{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Nodes).To(HaveLen(2))
+			Expect(p.Nodes[1].Host).To(Equal("node003"))
+			Expect(p.Nodes[1].LayoutIndex).To(Equal(2))
+			Expect(p.Ranks[3].StepNodeIndex).To(Equal(1), "step node indexes stay contiguous")
+			Expect(p.Warnings).To(BeEmpty())
+		})
+
+		It("starts each node's cpusets and GPUs at local rank 0", func() {
+			p, err := plan.Place(alloc(), plan.StepRequest{Nodes: 2, NTasks: 4, CPUsPerTask: 2, GPUsPerTask: 1})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.Ranks[2].StepNodeIndex).To(Equal(1))
+			Expect(p.Ranks[2].Local).To(Equal(0))
+			Expect(p.Ranks[2].Cpuset).To(Equal("0-1"))
+			Expect(p.Ranks[3].Cpuset).To(Equal("2-3"))
+			Expect(p.Ranks[2].GPUs).To(Equal([]string{"0"}))
+			Expect(p.Ranks[3].GPUs).To(Equal([]string{"1"}))
+		})
+
+		It("leaves one-daemon-per-node launcher steps unchanged", func() {
+			// OpenMPI's mpirun starts its daemons with --ntasks-per-node=1.
+			p, err := plan.Place(threeNodes(), plan.StepRequest{TasksPerNode: 1, NTasks: 2, AvoidMaster: true, NoBind: true})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perNode(p)).To(Equal(map[string]int{"node002": 1, "node003": 1}))
+			Expect(p.Warnings).To(BeEmpty())
+		})
+
+		It("still refuses more ranks than the step nodes hold [REQ-RUN-008]", func() {
+			_, err := plan.Place(threeNodes(), plan.StepRequest{Nodes: 2, NTasks: 5})
+			Expect(err).To(MatchError(ContainSubstring("(5 > 4)")))
+		})
+	})
+
 	It("fails when more tasks are requested than permitted [REQ-RUN-008]", func() {
 		_, err := plan.Place(alloc(), plan.StepRequest{NTasks: 100})
 		Expect(err).To(MatchError(ContainSubstring("More processors requested than permitted")))
