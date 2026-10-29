@@ -22,6 +22,7 @@ package gedata
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	// go-clusterscheduler is the shared source of truth for OCS/GE command
@@ -31,6 +32,8 @@ import (
 	// and the qstat -f columns it reads (queue@host, used/total, states) are the
 	// stable classic ones, identical on OCS 9.0.10 through 9.1.5.
 	qstat "github.com/hpc-gridware/go-clusterscheduler/pkg/qstat/v9.1"
+
+	core "github.com/hpc-gridware/go-clusterscheduler/pkg/qconf/core"
 )
 
 // QueueInstance is one GE cluster-queue instance (queue@host) from qstat -f.
@@ -46,10 +49,19 @@ type QueueInstance struct {
 }
 
 // QueueInstances runs `qstat -f` through the runner and returns the parsed
-// cluster-queue instances. Parsing is delegated to go-clusterscheduler; this
-// function only adapts the result into the shim's QueueInstance type.
-func QueueInstances(ctx context.Context, runner Runner) ([]QueueInstance, error) {
-	out, errOut, exit, err := runner.Run(ctx, "qstat", "-f")
+// cluster-queue instances, of every host or only of hosts (`-q *@host,...`).
+// Parsing is delegated to go-clusterscheduler; this function only adapts the
+// result into the shim's QueueInstance type.
+func QueueInstances(ctx context.Context, runner Runner, hosts ...string) ([]QueueInstance, error) {
+	args := []string{"-f"}
+	if len(hosts) > 0 {
+		list := make([]string, len(hosts))
+		for i, h := range hosts {
+			list[i] = "*@" + h
+		}
+		args = append(args, "-q", strings.Join(list, ","))
+	}
+	out, errOut, exit, err := runner.Run(ctx, "qstat", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -76,4 +88,53 @@ func QueueInstances(ctx context.Context, runner Runner) ([]QueueInstance, error)
 		})
 	}
 	return instances, nil
+}
+
+// HostSlotCapacity returns, per host (short name), the slots it offers any
+// job: the sum of its queue instances' slots, capped by its own
+// complex_values slots limit. A job holding all of them has the host to
+// itself. A host whose limit cannot be read counts its queue slots only --
+// larger, so never mistaken for a host a job owns; one without queue
+// instances is left out (unknown).
+func HostSlotCapacity(ctx context.Context, r Runner, hosts []string) (map[string]int, error) {
+	instances, err := QueueInstances(ctx, r, hosts...)
+	if err != nil {
+		return nil, err
+	}
+	capacity := map[string]int{}
+	for _, qi := range instances {
+		capacity[shortHost(qi.Host)] += qi.Total
+	}
+	for _, h := range hosts {
+		short := shortHost(h)
+		if _, ok := capacity[short]; !ok {
+			continue
+		}
+		if limit, ok := hostSlotsLimit(ctx, r, h); ok && limit < capacity[short] {
+			capacity[short] = limit
+		}
+	}
+	return capacity, nil
+}
+
+// hostSlotsLimit reads a host's complex_values slots limit (qconf -se).
+func hostSlotsLimit(ctx context.Context, r Runner, host string) (int, bool) {
+	out, err := runChecked(ctx, r, "qconf", "-se", host)
+	if err != nil {
+		return 0, false
+	}
+	cfg, err := core.ParseExecHostConfigFromLines(strings.Split(string(out), "\n"))
+	if err != nil {
+		return 0, false
+	}
+	limit, err := strconv.Atoi(cfg.ComplexValues["slots"])
+	if err != nil {
+		return 0, false
+	}
+	return limit, true
+}
+
+func shortHost(h string) string {
+	short, _, _ := strings.Cut(h, ".")
+	return short
 }

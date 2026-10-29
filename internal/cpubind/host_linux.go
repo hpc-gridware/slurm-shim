@@ -55,7 +55,7 @@ func ThisNode() (Node, error) {
 		}
 	}
 	n := Node{}
-	n.Allowed, n.Cores = CoreFirst(allowed, coreOf)
+	n.Allowed = CoreFirst(allowed, coreOf)
 	if online, err := readList(sysCPU + "/online"); err == nil {
 		n.Online = len(online)
 	}

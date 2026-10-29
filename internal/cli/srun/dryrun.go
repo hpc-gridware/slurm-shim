@@ -30,6 +30,7 @@ import (
 	"github.com/hpc-gridware/slurm-shim/internal/dryrun"
 	"github.com/hpc-gridware/slurm-shim/internal/gedata"
 	"github.com/hpc-gridware/slurm-shim/internal/launch"
+	"github.com/hpc-gridware/slurm-shim/internal/plan"
 	"github.com/hpc-gridware/slurm-shim/internal/proto"
 	"github.com/hpc-gridware/slurm-shim/internal/stepper"
 )
@@ -63,6 +64,9 @@ func (s *supervisor) dryRun() int {
 	kv(out, "tasks", fmt.Sprintf("%d across %d node(s)", len(s.plan.Ranks), len(s.plan.Nodes)))
 	kv(out, "command", dryrun.Command(s.opt.command[0], s.opt.command[1:]))
 	kv(out, "cpu binding", bindingSummary(s.opt.bindMode))
+	for _, n := range s.plan.Nodes {
+		kv(out, "slots "+n.Host, holdingSummary(n))
+	}
 
 	if launchErr != nil {
 		kv(out, "launcher", fmt.Sprintf("ERROR: %v", launchErr))
@@ -180,6 +184,19 @@ func bindingSummary(mode string) string {
 		return "explicit (--cpu-bind): pinned within the job's CPUs on each node"
 	default:
 		return "auto: pinned within the job's CPUs on each node, unpinned where the node is shared without binding"
+	}
+}
+
+// holdingSummary says whether the job holds a step node whole, the fact that
+// lets a node pin its tasks without binding (cpubind.Holding).
+func holdingSummary(n plan.StepNode) string {
+	switch {
+	case n.HostSlots == 0:
+		return fmt.Sprintf("%d held, host total unknown (the node's CPU count decides)", n.Slots)
+	case n.Slots >= n.HostSlots:
+		return fmt.Sprintf("%d of %d: the job holds the host", n.Slots, n.HostSlots)
+	default:
+		return fmt.Sprintf("%d of %d: shared with other jobs", n.Slots, n.HostSlots)
 	}
 }
 

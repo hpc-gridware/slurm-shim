@@ -237,8 +237,8 @@ var _ = Describe("srun --mpi=pmix through a launcher", func() {
 				return
 			}
 			node := thisNode()
-			needs(!node.Restricted() && node.Cores >= 2, "needs an unrestricted mask with 2 cores")
-			Expect(bind(node.Cores, nil)).To(Equal(unset))
+			needs(!node.Restricted() && len(node.Allowed) >= 2, "needs an unrestricted mask with 2 CPUs")
+			Expect(bind(len(node.Allowed), nil)).To(Equal(unset))
 			Expect(bind(1, nil)).To(Equal(none))
 		})
 

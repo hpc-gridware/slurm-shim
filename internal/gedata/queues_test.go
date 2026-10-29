@@ -97,3 +97,72 @@ var _ = Describe("QueueInstances", func() {
 		Expect(err).To(HaveOccurred())
 	})
 })
+
+// The slots a host offers any job (CS-2945): a job holding all of them has the
+// host to itself, whatever its CPU topology.
+var _ = Describe("HostSlotCapacity", func() {
+	// Two queues on ocs-worker1 (14 + 14), one on ocs-master; worker1's own
+	// limit is 14 (complex_values slots=14, the captured qconf -se).
+	const twoQueues = `queuename                      qtype resv/used/tot. load_avg arch          states
+---------------------------------------------------------------------------------
+all.q@ocs-master               BIP   0/2/14         0.90     lx-arm64
+---------------------------------------------------------------------------------
+all.q@ocs-worker1.example      BIP   0/2/14         0.90     lx-arm64
+---------------------------------------------------------------------------------
+gpu.q@ocs-worker1.example      BIP   0/0/14         0.90     lx-arm64
+`
+	exechost := func() []byte {
+		data, err := os.ReadFile("testdata/qconf_se_gpu_9.1.6.txt")
+		Expect(err).NotTo(HaveOccurred())
+		return data
+	}
+
+	It("sums a host's queue instances and caps them at its own slots limit", func() {
+		r := &fake.Runner{Responder: func(name string, args []string) fake.Response {
+			switch {
+			case name == "qstat":
+				return fake.Response{Stdout: []byte(twoQueues)}
+			case name == "qconf" && args[1] == "ocs-worker1.example":
+				return fake.Response{Stdout: exechost()}
+			default:
+				return fake.Response{Exit: 1, Stderr: []byte("no limit")}
+			}
+		}}
+		got, err := gedata.HostSlotCapacity(context.Background(), r, []string{"ocs-master", "ocs-worker1.example"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(map[string]int{"ocs-master": 14, "ocs-worker1": 14}),
+			"28 queue slots, but the host lets only 14 run; names are short")
+
+		Expect(r.Calls[0].Args).To(Equal([]string{"-f", "-q", "*@ocs-master,*@ocs-worker1.example"}),
+			"only the job's hosts, not the whole cluster")
+	})
+
+	It("counts every queue on a host without a slots limit", func() {
+		r := &fake.Runner{Responder: func(name string, _ []string) fake.Response {
+			if name == "qstat" {
+				return fake.Response{Stdout: []byte(twoQueues)}
+			}
+			return fake.Response{Stdout: []byte("hostname ocs-worker1\ncomplex_values NONE\n")}
+		}}
+		got, err := gedata.HostSlotCapacity(context.Background(), r, []string{"ocs-worker1.example"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got["ocs-worker1"]).To(Equal(28))
+	})
+
+	It("leaves a host without queue instances unknown", func() {
+		r := &fake.Runner{Responder: func(string, []string) fake.Response {
+			return fake.Response{Stdout: []byte(twoQueues)}
+		}}
+		got, err := gedata.HostSlotCapacity(context.Background(), r, []string{"node999"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(HaveKey("node999"))
+	})
+
+	It("reports a failing qstat", func() {
+		r := &fake.Runner{Responder: func(string, []string) fake.Response {
+			return fake.Response{Exit: 1, Stderr: []byte("qmaster down")}
+		}}
+		_, err := gedata.HostSlotCapacity(context.Background(), r, []string{"ocs-master"})
+		Expect(err).To(MatchError(ContainSubstring("qmaster down")))
+	})
+})

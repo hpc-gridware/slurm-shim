@@ -9,7 +9,7 @@
 #   nodes    a 2-node bound job whose cores do not start at CPU 0 (a holder job
 #            takes that core first): on each node the pinned task's CPU lies in
 #            the job's cores there (reached through qrsh -inherit)
-#   owned    a job holding every slot of a node: one CPU per task, as before
+#   owned    a job holding every slot the host offers: one CPU per task
 #
 # Every case with OpenMPI also runs a plain mpirun from the job script, which
 # the job environment keeps within the job's CPUs the same way.
@@ -68,14 +68,19 @@ put() {
   rm -f "$tmpjob"
   echo "$d/$1.sh"
 }
-# submit <name> <script text> submits a job; echoes its id.
-submit() { sbatch_submit "$(put "$1" "$2")" "$d/$1.out"; }
+# submit <name> <script text> submits a job; echoes its id, empty when sbatch
+# refused it. Never fails: the harness runs under set -e (cluster/lib.sh), and
+# a refused job must be reported, not end the check without a summary.
+submit() { sbatch_submit "$(put "$1" "$2")" "$d/$1.out" || true; }
 
-# pairjob <header> is a job for a pair: the batch mask, then its steps.
+# pairjob <pair> <header> is a job for a pair: the batch mask, then a barrier
+# until both jobs of the pair run (TOGETHER yes/no), then its steps.
 pairjob() {
-  printf '#!/bin/bash\n%s\n' "$1"
+  printf '#!/bin/bash\n%s\n' "$2"
   echo 'echo "BATCH mask=$(grep Cpus_allowed_list /proc/self/status | cut -f2)"'
-  echo 'sleep 6   # both jobs of a pair on the node at once'
+  echo "touch $d/\$JOB_ID.$1.started"
+  echo "for _ in \$(seq 1 60); do [ \$(ls $d/*.$1.started | wc -l) -ge 2 ] && break; sleep 1; done"
+  echo "[ \$(ls $d/*.$1.started | wc -l) -ge 2 ] && echo TOGETHER yes || echo TOGETHER no"
   echo "STEP=plain srun -n 2 bash -c '$report'"
   for h in $ompi; do
     echo "PATH=$h/bin:\$PATH LD_LIBRARY_PATH=$h/lib:$h/lib64 PMIX_MCA_pcompress_base_silence_warning=1 STEP=$(basename "$h") srun --mpi=pmix -n 2 bash -c '$report'"
@@ -85,8 +90,8 @@ pairjob() {
 # pair <name> <header> runs two copies at once; outputs in pair_a and pair_b.
 pair() {
   local a b
-  a="$(submit "$1-a" "$(pairjob "$2")")"
-  b="$(submit "$1-b" "$(pairjob "$2")")"
+  a="$(submit "$1-a" "$(pairjob "$1" "$2")")"
+  b="$(submit "$1-b" "$(pairjob "$1" "$2")")"
   pair_a="$(jobout "$a" "$d/$1-a.out")"
   pair_b="$(jobout "$b" "$d/$1-b.out")"
 }
@@ -106,12 +111,23 @@ for out in "$pair_a" "$pair_b"; do
   done
 done
 
+# An unbound job's mask is every CPU of the host.
+wholehost="${batch:-}"
+
 # --- bound: Grid Engine core binding, two jobs on one node ------------------
 # check_bound <label> <output> checks one job of the bound pair and sets
 # bound_mask to its cores. Not run in $(...): the assertions must count.
 check_bound() {
   local label="$1" out="$2" mask plain bad line h ranks
   mask="$(printf '%s\n' "$out" | sed -n 's/^BATCH mask=//p')"
+  bound_mask=""
+  # Too few cores for the pair: Grid Engine grants the whole host, which is
+  # no restriction to stay in, and with half the slots the job shares the
+  # host -- unpinned is right, and there is nothing to check here.
+  if [ -n "$mask" ] && [ "$mask" = "$wholehost" ]; then
+    skip "bound ($label): binding granted the whole host ($mask), too few cores for the pair"
+    return
+  fi
   plain="$(printf '%s\n' "$out" | grep '^TASK step=plain' || true)"
   assert_eq "$(count "$plain")" "2" "bound ($label): 2 tasks ran"
   bad=0
@@ -149,7 +165,14 @@ else
   mask_a="$bound_mask"
   check_bound "second job" "$pair_b"
   mask_b="$bound_mask"
-  if [ -n "$mask_a" ] && [ -n "$mask_b" ]; then
+  # Grid Engine overlaps the grants when the host has fewer cores than the
+  # pair asks for (2 jobs x 2 cores); the CI runners have 2.
+  cores="$(node_sh "$host" "lscpu -p=core,socket | grep -v '^#' | sort -u | wc -l" | tr -d '[:space:]')"
+  if ! printf '%s\n%s\n' "$pair_a" "$pair_b" | grep -q "^TOGETHER yes"; then
+    skip "bound: the two jobs never ran at the same time, so their cores may legitimately match"
+  elif [ "${cores:-0}" -lt 4 ]; then
+    skip "bound: $host has ${cores:-?} cores, too few for two jobs of 2 cores without overlap"
+  elif [ -n "$mask_a" ] && [ -n "$mask_b" ]; then
     assert_eq "$(comm -12 <(cpus "$mask_a" | sort) <(cpus "$mask_b" | sort) | grep -c . || true)" "0" \
       "bound: the two jobs' cores ($mask_a, $mask_b) do not overlap"
   fi
@@ -177,6 +200,11 @@ sleep 120")"
 STEP=grant srun -N 2 --ntasks-per-node=1 --cpu-bind=none bash -c '$report'
 STEP=pinned srun -N 2 --ntasks-per-node=1 bash -c '$report'
 $(for h in $ompi; do echo "PATH=$h/bin:\$PATH LD_LIBRARY_PATH=$h/lib:$h/lib64 PMIX_MCA_pcompress_base_silence_warning=1 STEP=mpirun-$(basename "$h") mpirun -n 4 bash -c '$report'"; done)")"
+      if [ -z "$id" ]; then
+        # With the holder's core taken, a host needs 3 cores for this job; Grid
+        # Engine checks free cores at submit (-w e) and refuses it on 2.
+        skip "nodes: Grid Engine refused the bound 2-node job beside the holder (too few cores per host)"
+      else
       res="$(jobout "$id" "$d/nodes.out")"
       pinned="$(printf '%s\n' "$res" | grep '^TASK step=pinned' || true)"
       assert_eq "$(printf '%s\n' "$pinned" | awk '{print $4}' | sort -u | grep -c . || true)" "2" \
@@ -207,24 +235,27 @@ $(for h in $ompi; do echo "PATH=$h/bin:\$PATH LD_LIBRARY_PATH=$h/lib:$h/lib64 PM
         assert_eq "$(count "$ranks")/$bad" "4/0" \
           "nodes: plain mpirun ($(basename "$h")) -n 4 keeps every rank in the job's cores on its node"
       done
+      fi
     fi
     gridware "scancel '$holder'" >/dev/null 2>&1
     holder=""
   fi
 fi
 
-# --- owned: every slot of the node ------------------------------------------
-procs="$(manager "qconf -se $host 2>/dev/null | awk '/^processors/{print \$2}'" | tr -d '[:space:]')"
+# --- owned: every slot the host offers --------------------------------------
+# Grid Engine decides ownership: all slots of all queues on the host, not the
+# CPU count (a site may give a slot per core or per thread).
 qslots="$(manager "qstat -f -q $queue 2>/dev/null | awk '\$1 ~ /@$host([.]|\$)/ {split(\$3, s, \"/\"); print s[3]}'" | head -1 | tr -d '[:space:]')"
-if [ -z "$procs" ] || [ -z "$qslots" ] || [ "$qslots" -lt "$procs" ]; then
-  skip "owned: $queue@$host has ${qslots:-?} slots for ${procs:-?} CPUs (set E2E_QUEUE for another queue)"
+hslots="$(manager "qstat -f 2>/dev/null | awk '\$1 ~ /@$host([.]|\$)/ {split(\$3, s, \"/\"); t += s[3]} END {print t}'" | tr -d '[:space:]')"
+if [ -z "$qslots" ] || [ "${qslots:-0}" -lt 2 ] || [ "$qslots" != "$hslots" ]; then
+  skip "owned: $queue@$host offers ${qslots:-?} of the host's ${hslots:-?} slots (set E2E_QUEUE for another queue)"
 else
   id="$(submit owned "#!/bin/bash
-#SBATCH -w $host -n $procs
+#SBATCH -w $host -n $qslots
 STEP=owned srun -n 2 bash -c '$report'")"
   res="$(jobout "$id" "$d/owned.out")"
   masks="$(printf '%s\n' "$res" | grep '^TASK step=owned' | sed 's/.* mask=//' | sort -u)"
   assert_eq "$(printf '%s\n' "$masks" | grep -c '^[0-9]*$' || true)" "2" \
-    "owned: a job holding all $procs slots pins its 2 tasks to 2 different CPUs"
+    "owned: a job holding all $qslots slots of the host pins its 2 tasks to 2 different CPUs"
 fi
 finish

@@ -59,10 +59,19 @@ func hostfileFab(hostfile string, env map[string]string, runner *fake.Runner, cf
 	return r
 }
 
+// hostSlotsQuery reports the fabricator's host slot discovery (qstat -f, qconf
+// -se), which GPU specs answer empty: capacity unknown, no effect on GPUs.
+func hostSlotsQuery(name string, args []string) bool {
+	return (name == "qstat" && len(args) > 0 && args[0] == "-f") || name == "qconf"
+}
+
 func xmlResponder(fixture string, expectArgs []string) *fake.Runner {
 	xml, err := os.ReadFile("../gedata/testdata/" + fixture)
 	Expect(err).NotTo(HaveOccurred())
 	return &fake.Runner{Responder: func(name string, args []string) fake.Response {
+		if hostSlotsQuery(name, args) {
+			return fake.Response{}
+		}
 		Expect(name).To(Equal("qstat"))
 		if expectArgs != nil {
 			Expect(args).To(Equal(expectArgs))
@@ -153,6 +162,9 @@ var _ = Describe("nvidia-smi discovery [REQ-GPU-001]", func() {
 
 	It("reads local indices and warns they are physical, not granted", func() {
 		runner := &fake.Runner{Responder: func(name string, args []string) fake.Response {
+			if hostSlotsQuery(name, args) {
+				return fake.Response{}
+			}
 			Expect(name).To(Equal("nvidia-smi"))
 			return fake.Response{Stdout: []byte("0\n1\n")}
 		}}

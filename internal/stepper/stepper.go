@@ -219,7 +219,8 @@ func (s *stepper) rankCPUs() []string {
 			"; tasks run unpinned: "+err.Error())
 		return make([]string, len(positions))
 	}
-	cpus, warning := cpubind.Resolve(s.spec.CPUBind, positions, node, s.spec.NodeSlots)
+	cpus, warning := cpubind.Resolve(s.spec.CPUBind, positions, node,
+		cpubind.Holding{Slots: s.spec.NodeSlots, HostSlots: s.spec.HostSlots})
 	if warning != "" {
 		errln(s.stderr, "stepper: warning: "+s.host+": "+warning)
 	}

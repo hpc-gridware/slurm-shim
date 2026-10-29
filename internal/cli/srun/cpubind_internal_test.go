@@ -38,8 +38,8 @@ var _ = Describe("CPU binding", func() {
 				Nodes: []layout.Node{
 					// More slots than this step's tasks: NodeSlots must be the
 					// job's slots on the node, not the step's task count there.
-					{Index: 0, Host: "node001", Slots: 8, IsMaster: true},
-					{Index: 1, Host: "node002", Slots: 5},
+					{Index: 0, Host: "node001", Slots: 8, IsMaster: true, HostSlots: 8},
+					{Index: 1, Host: "node002", Slots: 5, HostSlots: 16},
 				},
 				Tasks: layout.Tasks{NTasks: 6, CPUsPerTask: 1, PerNode: []int{2, 4}},
 			}
@@ -57,6 +57,8 @@ var _ = Describe("CPU binding", func() {
 			Expect(first.CPUBind).To(Equal(cpubind.ModeAuto))
 			Expect(first.NodeSlots).To(Equal(8))
 			Expect(second.NodeSlots).To(Equal(5))
+			Expect(first.HostSlots).To(Equal(8), "the host's capacity from the layout")
+			Expect(second.HostSlots).To(Equal(16))
 			Expect(sup(cpubind.ModeExplicit).stepSpec(nil, 1).CPUBind).To(Equal(cpubind.ModeExplicit))
 		})
 
@@ -71,18 +73,19 @@ var _ = Describe("CPU binding", func() {
 
 		It("gives a hot-spare relaunch the spare's own slots", func() {
 			s := sup(cpubind.ModeAuto)
-			s.placeOnSpare(1, layout.Node{Index: 2, Host: "node003", Slots: 8})
+			s.placeOnSpare(1, layout.Node{Index: 2, Host: "node003", Slots: 8, HostSlots: 12})
 			spec := s.relaunchSpec(1)
 			Expect(spec.NodeSlots).To(Equal(8))
+			Expect(spec.HostSlots).To(Equal(12), "the spare's own capacity")
 			Expect(spec.CPUBind).To(Equal(cpubind.ModeAuto))
 		})
 	})
 
 	It("starts mpirun with the override over the caller's environment", func() {
 		p := &plan.StepPlan{Nodes: []plan.StepNode{{Host: "node001"}}}
-		bound := cpubind.Node{Allowed: []int{4, 5}, Cores: 2, Online: 14}
+		bound := cpubind.Node{Allowed: []int{4, 5}, Online: 14}
 		vars := append([]string{"SLURM_NTASKS=2"},
-			cpubind.OpenMPIOverride(cpubind.ModeAuto, bound, []int{2}, func(string) string { return "" })...)
+			cpubind.OpenMPIOverride(cpubind.ModeAuto, bound, []cpubind.Holding{{Slots: 2}}, func(string) string { return "" })...)
 		env := launcherEnv([]string{"HOME=/home/u"}, vars, p)
 		Expect(env).To(ContainElements(
 			"OMPI_MCA_hwloc_base_binding_policy=none",

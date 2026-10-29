@@ -350,6 +350,7 @@ func (s *supervisor) stepSpec(base []string, ni int) proto.StepSpec {
 		// pinned (CS-2945); a hot-spare relaunch gets the spare's own slots.
 		CPUBind:   s.opt.bindMode,
 		NodeSlots: node.Slots,
+		HostSlots: node.HostSlots,
 	}
 	for _, r := range s.plan.Ranks {
 		if r.StepNodeIndex != ni {
