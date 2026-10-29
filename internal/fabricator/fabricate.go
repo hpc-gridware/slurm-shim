@@ -110,6 +110,10 @@ func Fabricate(opts Options) (*Result, error) {
 	res.Warnings = append(res.Warnings,
 		discoverGPUs(qctx, opts.Runner, cfg, e, e.get("JOB_ID"), nodes.hosts)...)
 
+	// Before spares come off, so a spare brings its own value to the node it
+	// replaces.
+	res.Warnings = append(res.Warnings, discoverHostSlots(qctx, opts.Runner, cfg, e.get("JOB_ID"), nodes.hosts)...)
+
 	// Hot spares come off before any geometry is derived: the task policy, the
 	// rank map and every SLURM_* node variable describe the active nodes only.
 	nodes, spares, warn := splitSpares(e, nodes)
@@ -137,11 +141,11 @@ func Fabricate(opts Options) (*Result, error) {
 // still set either variable itself; one already in the job's environment
 // suppresses the override.
 func addOpenMPIBinding(res *Result, e envReader, node cpubind.Node) {
-	slots := make([]int, len(res.Layout.Nodes))
+	holdings := make([]cpubind.Holding, len(res.Layout.Nodes))
 	for i, n := range res.Layout.Nodes {
-		slots[i] = n.Slots
+		holdings[i] = cpubind.Holding{Slots: n.Slots, HostSlots: n.HostSlots}
 	}
-	for _, kv := range cpubind.OpenMPIOverride(cpubind.ModeFor(e.get("SLURM_CPU_BIND")), node, slots, e.get) {
+	for _, kv := range cpubind.OpenMPIOverride(cpubind.ModeFor(e.get("SLURM_CPU_BIND")), node, holdings, e.get) {
 		name, value, _ := strings.Cut(kv, "=")
 		res.Exports = append(res.Exports, KV{Key: name, Value: value})
 	}
@@ -195,6 +199,7 @@ func spareNodes(spares []nodeInfo) []layout.Node {
 			Slots:          h.Slots,
 			ProcessorRange: h.ProcessorRange,
 			GPUs:           h.gpus,
+			HostSlots:      h.hostSlots,
 		}
 	}
 	return nodes
@@ -253,8 +258,9 @@ type nodeSet struct {
 
 type nodeInfo struct {
 	gedata.Host
-	ip   string
-	gpus []string
+	ip        string
+	gpus      []string
+	hostSlots int
 }
 
 // resolveNodes parses PE_HOSTFILE (or fabricates a single-node layout when it is
@@ -322,6 +328,7 @@ func buildLayout(now int64, e envReader, cfg *config.Config, ns nodeSet, geom pl
 			Slots:          h.Slots,
 			ProcessorRange: h.ProcessorRange,
 			GPUs:           h.gpus,
+			HostSlots:      h.hostSlots,
 			IsMaster:       i == 0,
 		}
 	}

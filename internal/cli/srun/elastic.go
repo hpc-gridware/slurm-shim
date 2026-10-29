@@ -304,7 +304,7 @@ func (s *supervisor) acceptFrom(host string) (*proto.Conn, error) {
 // placeOnSpare moves step node ni onto spare: its host, and its own GPU grant
 // assigned to the node's ranks exactly as the step assigned the lost node's.
 func (s *supervisor) placeOnSpare(ni int, spare layout.Node) {
-	s.plan.Nodes[ni] = plan.StepNode{Host: spare.Host, LayoutIndex: spare.Index, Slots: spare.Slots, GPUs: spare.GPUs}
+	s.plan.Nodes[ni] = plan.StepNode{Host: spare.Host, LayoutIndex: spare.Index, Slots: spare.Slots, GPUs: spare.GPUs, HostSlots: spare.HostSlots}
 	var local []int
 	for i, r := range s.plan.Ranks {
 		if r.StepNodeIndex == ni {

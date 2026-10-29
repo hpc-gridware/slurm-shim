@@ -94,11 +94,13 @@ type StepSpec struct {
 	// already wrote rather than erasing it.
 	AppendOutput bool `json:"append_output,omitempty"`
 	// CPUBind is the step's binding mode (cpubind.ModeAuto, ModeNone,
-	// ModeCores) and NodeSlots the job's slots on this host: with the host's
-	// mask they decide whether the ranks are pinned (cpubind.ShouldPin). An
-	// older stepper ignores both and pins Cpuset as CPU numbers, as before.
+	// ModeExplicit), NodeSlots the job's slots on this host and HostSlots the
+	// slots the host offers any job (0 = unknown): with the host's mask they
+	// decide whether the ranks are pinned (cpubind.ShouldPin). An older
+	// stepper ignores them and pins Cpuset as CPU numbers, as before.
 	CPUBind   string `json:"cpu_bind,omitempty"`
 	NodeSlots int    `json:"node_slots,omitempty"`
+	HostSlots int    `json:"host_slots,omitempty"`
 }
 
 // DeviceIDs are one rank's granted device ids. They marshal as JSON numbers when

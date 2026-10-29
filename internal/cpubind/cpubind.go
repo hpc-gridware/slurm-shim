@@ -64,11 +64,9 @@ func ModeFor(spec string) string {
 // Node is what a node offers a step's tasks. Allowed are the CPUs the job may
 // use there (the inherited affinity mask), one hardware thread per core first,
 // so consecutive positions land on different cores before two share one.
-// Cores counts the cores they span and Online the node's online CPUs; either
-// is 0 when unknown.
+// Online is the node's online CPU count, 0 when unknown.
 type Node struct {
 	Allowed []int
-	Cores   int
 	Online  int
 }
 
@@ -76,30 +74,39 @@ type Node struct {
 // cgroup gave the job these CPUs.
 func (n Node) Restricted() bool { return n.Online > 0 && len(n.Allowed) < n.Online }
 
-// Owned reports whether the job holds the node whole: at least one slot per
-// core. Cores, not hardware threads: sites commonly give an SMT host one slot
-// per core. A queue with more slots than cores can make two jobs look like
-// owners of one node; that case stays pinned, as before.
-func (n Node) Owned(nodeSlots int) bool {
-	cores := n.Cores
-	if cores == 0 {
-		cores = len(n.Allowed)
+// Holding is what a job holds on a node: its granted slots, and the slots
+// the host offers any job (all its queue instances, capped by the host's own
+// slots limit; 0 when unknown).
+type Holding struct {
+	Slots     int
+	HostSlots int
+}
+
+// Owned reports whether the job holds the node whole, so no other job can
+// run there. Grid Engine says so when the host's slot capacity is known: the
+// job holds every slot. Otherwise the fallback counts CPUs, hardware threads
+// included -- counting cores let two jobs that each held half of an SMT node
+// with a slot per thread both look like owners and pin the same CPUs. The
+// fallback errs toward "shared": unpinned, slower, never colliding.
+func (n Node) Owned(h Holding) bool {
+	if h.HostSlots > 0 {
+		return h.Slots >= h.HostSlots
 	}
-	return nodeSlots >= cores
+	return h.Slots >= len(n.Allowed)
 }
 
 // ShouldPin reports whether a node's tasks get their own CPUs: never under
 // ModeNone or without CPU facts, always under ModeExplicit, and in auto mode
 // within a restricted mask or on a node the job owns. On a node shared with
 // other jobs and no binding, any CPU chosen could be another job's.
-func ShouldPin(mode string, n Node, nodeSlots int) bool {
+func ShouldPin(mode string, n Node, h Holding) bool {
 	switch {
 	case mode == ModeNone || len(n.Allowed) == 0:
 		return false
 	case mode == ModeExplicit:
 		return true
 	default:
-		return n.Restricted() || n.Owned(nodeSlots)
+		return n.Restricted() || n.Owned(h)
 	}
 }
 
@@ -112,7 +119,7 @@ func ShouldPin(mode string, n Node, nodeSlots int) bool {
 var openMPIBindingVars = []string{"OMPI_MCA_hwloc_base_binding_policy", "PRTE_MCA_hwloc_default_binding_policy"}
 
 // OpenMPIOverride returns the OpenMPI binding override ("NAME=none") for a
-// job or step on nodes holding nodeSlots slots each. OpenMPI picks its binding
+// job or step holding holdings on its nodes. OpenMPI picks its binding
 // once, in mpirun, for every node, so this is one decision, judged with the
 // facts of the node mpirun runs on (Grid Engine binding is job-wide): none
 // under a restricted mask (OpenMPI would bind outside it) and wherever srun
@@ -120,7 +127,7 @@ var openMPIBindingVars = []string{"OMPI_MCA_hwloc_base_binding_policy", "PRTE_MC
 // or asking for binding, keeps OpenMPI's per-core binding and its speed. A
 // variable already set (getenv) is the user's choice: nothing is returned.
 // Without CPU facts (non-Linux) neither.
-func OpenMPIOverride(mode string, master Node, nodeSlots []int, getenv func(string) string) []string {
+func OpenMPIOverride(mode string, master Node, holdings []Holding, getenv func(string) string) []string {
 	for _, name := range openMPIBindingVars {
 		if getenv(name) != "" {
 			return nil
@@ -130,8 +137,8 @@ func OpenMPIOverride(mode string, master Node, nodeSlots []int, getenv func(stri
 		return nil
 	}
 	pinned := !master.Restricted()
-	for _, slots := range nodeSlots {
-		pinned = pinned && ShouldPin(mode, master, slots)
+	for _, h := range holdings {
+		pinned = pinned && ShouldPin(mode, master, h)
 	}
 	if pinned {
 		return nil
@@ -164,9 +171,9 @@ func selectCPUs(positions string, allowed []int) (cpus string, ok bool) {
 // Resolve turns a node's planned task cpusets (positions, "" = unpinned) into
 // the CPU lists to apply, all "" when the node's tasks are not pinned. All or
 // nothing: a mask too small for every task pins none, and the warning says so.
-func Resolve(mode string, positions []string, n Node, nodeSlots int) (cpus []string, warning string) {
+func Resolve(mode string, positions []string, n Node, h Holding) (cpus []string, warning string) {
 	cpus = make([]string, len(positions))
-	if !ShouldPin(mode, n, nodeSlots) {
+	if !ShouldPin(mode, n, h) {
 		return cpus, ""
 	}
 	for i, p := range positions {
@@ -185,10 +192,9 @@ func Resolve(mode string, positions []string, n Node, nodeSlots int) (cpus []str
 }
 
 // CoreFirst orders allowed (sorted CPU numbers) one hardware thread per core
-// first, then the second threads, and so on, and counts the cores. coreOf maps
-// a CPU to its core's key (its first sibling); CPUs it does not name are cores
-// of their own.
-func CoreFirst(allowed []int, coreOf map[int]int) (ordered []int, cores int) {
+// first, then the second threads, and so on. coreOf maps a CPU to its core's
+// key (its first sibling); CPUs it does not name are cores of their own.
+func CoreFirst(allowed []int, coreOf map[int]int) []int {
 	var keys []int
 	threads := map[int][]int{}
 	for _, c := range allowed {
@@ -201,6 +207,7 @@ func CoreFirst(allowed []int, coreOf map[int]int) (ordered []int, cores int) {
 		}
 		threads[key] = append(threads[key], c)
 	}
+	var ordered []int
 	for t := 0; len(ordered) < len(allowed); t++ {
 		for _, key := range keys {
 			if t < len(threads[key]) {
@@ -208,7 +215,7 @@ func CoreFirst(allowed []int, coreOf map[int]int) (ordered []int, cores int) {
 			}
 		}
 	}
-	return ordered, len(keys)
+	return ordered
 }
 
 // ParseList parses a Linux/SLURM CPU list such as "0-3,5" into sorted,

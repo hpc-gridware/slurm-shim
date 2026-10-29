@@ -238,12 +238,12 @@ func runPMIx(cfg *config.Config, opt *options, lay *layout.Layout, p *plan.StepP
 	if err != nil {
 		errln(stderr, "srun: warning: cannot read the CPUs this job may use here; OpenMPI binds as it chooses: "+err.Error())
 	}
-	stepSlots := make([]int, len(p.Nodes))
+	holdings := make([]cpubind.Holding, len(p.Nodes))
 	for i, n := range p.Nodes {
-		stepSlots[i] = n.Slots
+		holdings[i] = cpubind.Holding{Slots: n.Slots, HostSlots: n.HostSlots}
 	}
 	launcherVars := append(append([]string{}, vars...),
-		cpubind.OpenMPIOverride(opt.bindMode, master, stepSlots, os.Getenv)...)
+		cpubind.OpenMPIOverride(opt.bindMode, master, holdings, os.Getenv)...)
 	if dry {
 		reportPMIx(stderr, l, p, stepID, argv, launcherEnv(nil, launcherVars, p))
 		return 0

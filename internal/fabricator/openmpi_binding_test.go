@@ -38,7 +38,7 @@ import (
 var _ = Describe("the OpenMPI binding override in the job environment", func() {
 	// fab fabricates a 2-node job holding slots on each node, on a master
 	// whose CPU facts are node.
-	fab := func(slots string, node cpubind.Node, env map[string]string) *fabricator.Result {
+	fab := func(slots string, node cpubind.Node, env map[string]string, runner ...*fake.Runner) *fabricator.Result {
 		path := filepath.Join(GinkgoT().TempDir(), "pe_hostfile")
 		hostfile := "node001 " + slots + " all.q@node001 UNDEFINED\nnode002 " + slots + " all.q@node002 UNDEFINED\n"
 		Expect(os.WriteFile(path, []byte(hostfile), 0o600)).To(Succeed())
@@ -46,13 +46,17 @@ var _ = Describe("the OpenMPI binding override in the job environment", func() {
 		for k, v := range env {
 			m[k] = v
 		}
-		res, err := fabricator.Fabricate(fabricator.Options{
+		opts := fabricator.Options{
 			Env:      func(k string) string { return m[k] },
 			Config:   config.Default(),
 			Identity: fake.Identity{HostnameVal: "node001", UserName: "alice", UID: 1000, GID: 1000},
 			NowUnix:  1754481600,
 			Node:     node,
-		})
+		}
+		if len(runner) > 0 {
+			opts.Runner = runner[0]
+		}
+		res, err := fabricator.Fabricate(opts)
 		Expect(err).NotTo(HaveOccurred())
 		return res
 	}
@@ -71,10 +75,10 @@ var _ = Describe("the OpenMPI binding override in the job environment", func() {
 		}
 		return out
 	}
-	shared := cpubind.Node{Allowed: all(14), Cores: 14, Online: 14}
+	shared := cpubind.Node{Allowed: all(14), Online: 14}
 
 	It("exports policy none for a job bound by Grid Engine", func() {
-		bound := cpubind.Node{Allowed: []int{2, 3}, Cores: 2, Online: 14}
+		bound := cpubind.Node{Allowed: []int{2, 3}, Online: 14}
 		got := exports(fab("2", bound, nil))
 		Expect(got).To(HaveKeyWithValue(ompi, "none"))
 		Expect(got).To(HaveKeyWithValue(prte, "none"))
@@ -88,6 +92,20 @@ var _ = Describe("the OpenMPI binding override in the job environment", func() {
 		got := exports(fab("14", shared, nil))
 		Expect(got).NotTo(HaveKey(ompi))
 		Expect(got).NotTo(HaveKey(prte))
+	})
+
+	It("leaves OpenMPI's binding to a job Grid Engine says holds its hosts whole, fewer slots than CPUs or not", func() {
+		// 8 slots on 14-CPU hosts that offer 8: slot per core, say.
+		qstatF := "queuename qtype resv/used/tot. load_avg arch states\n" +
+			"-----\nall.q@node001 BIP 0/8/8 0.10 lx-amd64\n-----\nall.q@node002 BIP 0/8/8 0.10 lx-amd64\n"
+		grid := &fake.Runner{Responder: func(name string, args []string) fake.Response {
+			if name == "qstat" && args[0] == "-f" {
+				return fake.Response{Stdout: []byte(qstatF)}
+			}
+			return fake.Response{Exit: 1}
+		}}
+		Expect(exports(fab("8", shared, nil, grid))).NotTo(HaveKey(prte))
+		Expect(exports(fab("8", shared, nil))).To(HaveKeyWithValue(prte, "none"), "capacity unknown: counted in CPUs, shared")
 	})
 
 	It("follows SLURM_CPU_BIND from sbatch", func() {

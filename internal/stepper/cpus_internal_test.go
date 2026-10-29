@@ -36,7 +36,7 @@ var _ = Describe("the CPUs a stepper gives its ranks", func() {
 	// host stands in for a 14-CPU node whose job may use allowed.
 	host := func(allowed ...int) func() (cpubind.Node, error) {
 		return func() (cpubind.Node, error) {
-			return cpubind.Node{Allowed: allowed, Cores: len(allowed), Online: 14}, nil
+			return cpubind.Node{Allowed: allowed, Online: 14}, nil
 		}
 	}
 	all := func() []int {
@@ -70,6 +70,18 @@ var _ = Describe("the CPUs a stepper gives its ranks", func() {
 	It("pins from the first CPU on a node the job owns, as before", func() {
 		s, _ := stepperFor(cpubind.ModeAuto, 14, host(all()...), "0-1", "2-3")
 		Expect(s.rankCPUs()).To(Equal([]string{"0-1", "2-3"}))
+	})
+
+	It("pins on a node Grid Engine says the job holds whole, fewer slots than CPUs or not", func() {
+		s, _ := stepperFor(cpubind.ModeAuto, 8, host(all()...), "0-0", "1-1")
+		s.spec.HostSlots = 8
+		Expect(s.rankCPUs()).To(Equal([]string{"0", "1"}))
+	})
+
+	It("leaves the ranks unpinned where Grid Engine says the host has more slots", func() {
+		s, _ := stepperFor(cpubind.ModeAuto, 14, host(all()...), "0-0", "1-1")
+		s.spec.HostSlots = 28
+		Expect(s.rankCPUs()).To(Equal([]string{"", ""}), "a second queue on the host")
 	})
 
 	It("pins on a shared node when the step asked for binding", func() {

@@ -79,6 +79,19 @@ var _ = Describe("Layout IO", func() {
 		Expect(got).To(Equal(sample()))
 	})
 
+	It("keeps a node's host slot capacity, and writes none when it is unknown", func() {
+		l := sample()
+		l.Nodes[0].HostSlots = 16
+		Expect(layout.Write(dir, l)).To(Succeed())
+		got, err := layout.Read(filepath.Join(dir, layout.LayoutFile))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.Nodes[0].HostSlots).To(Equal(16))
+
+		raw, err := json.Marshal(sample().Nodes[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(raw)).NotTo(ContainSubstring("host_slots"), "an older reader sees the file it knows")
+	})
+
 	It("writes the layout file with mode 0600 [REQ-LAY-004]", func() {
 		Expect(layout.Write(dir, sample())).To(Succeed())
 		info, err := os.Stat(filepath.Join(dir, layout.LayoutFile))

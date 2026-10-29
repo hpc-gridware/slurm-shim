@@ -103,6 +103,11 @@ type Node struct {
 	ProcessorRange string   `json:"processor_range"`
 	GPUs           []string `json:"gpus"`
 	IsMaster       bool     `json:"is_master"`
+	// HostSlots is the slots the host offers any job (all its queue
+	// instances, capped by its own slots limit), or Slots for a job that asked
+	// for the host exclusively; 0 when unknown. Slots >= HostSlots means no
+	// other job can run there (cpubind.Holding). Additive, omitted when 0.
+	HostSlots int `json:"host_slots,omitempty"`
 }
 
 // Tasks is the job-level task geometry and default block rank map.

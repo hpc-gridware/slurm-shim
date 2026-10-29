@@ -60,6 +60,7 @@ type StepNode struct {
 	LayoutIndex int
 	Slots       int
 	GPUs        []string
+	HostSlots   int // the host's slot capacity (layout.Node.HostSlots)
 }
 
 // PlacedRank is one rank's placement (Table B geometry).
@@ -140,7 +141,7 @@ func Place(lay *layout.Layout, req StepRequest) (*StepPlan, error) {
 func selectNodes(lay *layout.Layout, req StepRequest) ([]StepNode, error) {
 	toStep := func(idx int) StepNode {
 		n := lay.Nodes[idx]
-		return StepNode{Host: n.Host, LayoutIndex: idx, Slots: n.Slots, GPUs: n.GPUs}
+		return StepNode{Host: n.Host, LayoutIndex: idx, Slots: n.Slots, GPUs: n.GPUs, HostSlots: n.HostSlots}
 	}
 	excluded := map[string]bool{}
 	for _, h := range req.Exclude {

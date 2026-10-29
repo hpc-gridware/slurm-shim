@@ -90,15 +90,48 @@ var _ = Describe("srun CPU binding", func() {
 
 	It("leaves the task of a job that shares the node unpinned", func() {
 		unrestricted()
-		needs(node.Cores >= 2, "needs 2 cores, so 1 slot is part of the node")
+		needs(len(node.Allowed) >= 2, "needs 2 CPUs, so 1 slot is part of the node")
 		out, _ := masks(runSrun(oneNode(1), "-n", "1", "sh", "-c", report))
 		Expect(out).To(Equal([]string{"rank=0 allowed=" + whole()}))
 	})
 
+	It("leaves 2 tasks unpinned for a job holding half the node's slots", func() {
+		// The CI runners have 4 hardware threads on 2 cores and a slot per
+		// thread: 2 slots equal the core count but are half the node, and a
+		// second job can hold the other half (CS-2945 e2e, 2026-10-29).
+		unrestricted()
+		needs(len(node.Allowed) >= 4, "needs 4 CPUs")
+		out, _ := masks(runSrun(oneNode(len(node.Allowed)/2), "-n", "2", "sh", "-c", report))
+		Expect(out).To(Equal([]string{"rank=0 allowed=" + whole(), "rank=1 allowed=" + whole()}))
+	})
+
+	It("pins when Grid Engine says the job holds the host whole, with fewer slots than CPUs", func() {
+		// A site with a slot per core, or an exclusive job: the layout's host
+		// capacity decides, not the CPU count.
+		unrestricted()
+		needs(len(node.Allowed) >= 3, "needs 3 CPUs, so 2 slots are fewer")
+		job := writeAlloc([]layout.Node{{Index: 0, Host: "node001", Slots: 2, HostSlots: 2, IsMaster: true}}, []int{2})
+		out, _ := masks(runSrun(job, "-n", "2", "sh", "-c", report))
+		Expect(out).To(Equal([]string{
+			"rank=0 allowed=" + cpubind.FormatList(node.Allowed[0:1]),
+			"rank=1 allowed=" + cpubind.FormatList(node.Allowed[1:2]),
+		}))
+	})
+
+	It("leaves the tasks unpinned when Grid Engine says the host offers more slots", func() {
+		unrestricted()
+		needs(len(node.Allowed) >= 2, "needs 2 CPUs")
+		n := len(node.Allowed)
+		job := writeAlloc([]layout.Node{{Index: 0, Host: "node001", Slots: n, HostSlots: 2 * n, IsMaster: true}}, []int{n})
+		out, _ := masks(runSrun(job, "-n", "2", "sh", "-c", report))
+		Expect(out).To(Equal([]string{"rank=0 allowed=" + whole(), "rank=1 allowed=" + whole()}),
+			"every CPU's slot, but a second queue on the host")
+	})
+
 	It("pins one CPU per task, on different cores, on a node the job owns", func() {
 		unrestricted()
-		needs(node.Cores >= 2, "needs 2 cores")
-		out, _ := masks(runSrun(oneNode(node.Cores), "-n", "2", "sh", "-c", report))
+		needs(len(node.Allowed) >= 2, "needs 2 CPUs")
+		out, _ := masks(runSrun(oneNode(len(node.Allowed)), "-n", "2", "sh", "-c", report))
 		Expect(out).To(Equal([]string{
 			"rank=0 allowed=" + cpubind.FormatList(node.Allowed[0:1]),
 			"rank=1 allowed=" + cpubind.FormatList(node.Allowed[1:2]),
@@ -129,7 +162,7 @@ var _ = Describe("srun CPU binding", func() {
 
 	It("pins on a shared node when --cpu-bind asks for it", func() {
 		unrestricted()
-		needs(node.Cores >= 2, "needs 2 cores, so 1 slot is part of the node")
+		needs(len(node.Allowed) >= 2, "needs 2 CPUs, so 1 slot is part of the node")
 		out, _ := masks(runSrun(oneNode(1), "--cpu-bind=cores", "-n", "1", "sh", "-c", report))
 		Expect(out).To(Equal([]string{"rank=0 allowed=" + cpubind.FormatList(node.Allowed[0:1])}))
 	})
@@ -157,6 +190,20 @@ var _ = Describe("srun CPU binding in the dry run", func() {
 		Expect(report).To(ContainSubstring("rank 10 on node001: local 10, cpu #10-10"))
 		Expect(report).To(MatchRegexp(`cpu binding\s+auto\b`))
 		Expect(strings.Count(report, "cpu binding")).To(Equal(1))
+	})
+
+	It("says per node whether the job holds the host", func() {
+		tmp := writeAlloc([]layout.Node{
+			{Index: 0, Host: "node001", Slots: 4, HostSlots: 4, IsMaster: true},
+			{Index: 1, Host: "node002", Slots: 4, HostSlots: 8},
+			{Index: 2, Host: "node003", Slots: 4},
+		}, []int{4, 4, 4})
+		sess := runSrunEnv(tmp, []string{"SLURM_SHIM_DRY_RUN=1"}, "-n", "12", "true")
+		Eventually(sess, "30s").Should(gexec.Exit(0))
+		report := string(sess.Err.Contents())
+		Expect(report).To(MatchRegexp(`slots node001\s+4 of 4: the job holds the host`))
+		Expect(report).To(MatchRegexp(`slots node002\s+4 of 8: shared with other jobs`))
+		Expect(report).To(MatchRegexp(`slots node003\s+4 held, host total unknown`))
 	})
 
 	It("names an explicit or disabled binding", func() {
