@@ -68,8 +68,10 @@ put() {
   rm -f "$tmpjob"
   echo "$d/$1.sh"
 }
-# submit <name> <script text> submits a job; echoes its id.
-submit() { sbatch_submit "$(put "$1" "$2")" "$d/$1.out"; }
+# submit <name> <script text> submits a job; echoes its id, empty when sbatch
+# refused it. Never fails: the harness runs under set -e (cluster/lib.sh), and
+# a refused job must be reported, not end the check without a summary.
+submit() { sbatch_submit "$(put "$1" "$2")" "$d/$1.out" || true; }
 
 # pairjob <pair> <header> is a job for a pair: the batch mask, then a barrier
 # until both jobs of the pair run (TOGETHER yes/no), then its steps.
@@ -198,6 +200,11 @@ sleep 120")"
 STEP=grant srun -N 2 --ntasks-per-node=1 --cpu-bind=none bash -c '$report'
 STEP=pinned srun -N 2 --ntasks-per-node=1 bash -c '$report'
 $(for h in $ompi; do echo "PATH=$h/bin:\$PATH LD_LIBRARY_PATH=$h/lib:$h/lib64 PMIX_MCA_pcompress_base_silence_warning=1 STEP=mpirun-$(basename "$h") mpirun -n 4 bash -c '$report'"; done)")"
+      if [ -z "$id" ]; then
+        # With the holder's core taken, a host needs 3 cores for this job; Grid
+        # Engine checks free cores at submit (-w e) and refuses it on 2.
+        skip "nodes: Grid Engine refused the bound 2-node job beside the holder (too few cores per host)"
+      else
       res="$(jobout "$id" "$d/nodes.out")"
       pinned="$(printf '%s\n' "$res" | grep '^TASK step=pinned' || true)"
       assert_eq "$(printf '%s\n' "$pinned" | awk '{print $4}' | sort -u | grep -c . || true)" "2" \
@@ -228,6 +235,7 @@ $(for h in $ompi; do echo "PATH=$h/bin:\$PATH LD_LIBRARY_PATH=$h/lib:$h/lib64 PM
         assert_eq "$(count "$ranks")/$bad" "4/0" \
           "nodes: plain mpirun ($(basename "$h")) -n 4 keeps every rank in the job's cores on its node"
       done
+      fi
     fi
     gridware "scancel '$holder'" >/dev/null 2>&1
     holder=""
