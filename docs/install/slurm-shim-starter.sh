@@ -138,4 +138,16 @@ start_as_command)
 	[ -n "${SGE_STARTER_SHELL_PATH:-}" ] && slurm_shim_start_shell "$SGE_STARTER_SHELL_PATH" -c "$1"
 	;;
 esac
+# The qrsh path (no shell path) runs the command itself, word for word. Without
+# a starter_method the scheduler instead hands the joined command line to a
+# shell. Callers that count on that shell pass several words as one: OpenMPI's
+# Grid Engine launcher runs qrsh -inherit <host> " orted" ..., or with a prefix
+# " PATH=...:$PATH ; export PATH ; ... /prefix/bin/orted" ... A command name
+# containing a blank is such a line, so give it to the shell as the scheduler
+# would have; any other command keeps its words as they were given.
+if [ -z "${SGE_STARTER_SHELL_PATH:-}" ]; then
+	case "$1" in
+	*[[:space:]]*) exec "${SHELL:-/bin/sh}" -c "$*" ;;
+	esac
+fi
 exec "$@"

@@ -62,6 +62,39 @@ var _ = Describe("srun starting an MPI launcher's daemons", func() {
 		Expect(string(sess.Err.Contents())).NotTo(ContainSubstring("warning"))
 	})
 
+	// OpenMPI 4.1 built --with-sge --with-slurm: ORTE's Grid Engine allocator
+	// wins in a shim job, so the srun line has no node list, and ORTE never
+	// says --external-launcher. A daemon on the master next to mpirun left
+	// the last node without one and the MPI job hung.
+	It("puts ORTE 4.1's daemons on the nodes other than the master when no node list is given", func() {
+		tmp := threeNodes()
+		orted := filepath.Join(tmp, "orted")
+		Expect(os.WriteFile(orted, []byte("#!/bin/sh\n"+report+"\n"), 0o755)).To(Succeed())
+		sess := runSrun(tmp, "--ntasks-per-node=1", "--kill-on-bad-exit", "--mpi=none", "--ntasks=2",
+			orted, "-mca", "ess", "slurm")
+		Eventually(sess, "30s").Should(gexec.Exit(0))
+		Expect(sortedLines(sess)).To(Equal([]string{
+			"node002 procid=0 nodeid=0",
+			"node003 procid=1 nodeid=1",
+		}))
+		Expect(string(sess.Err.Contents())).NotTo(ContainSubstring("arning"))
+	})
+
+	It("does not take a program named orted for a daemon step without ORTE's options", func() {
+		tmp := threeNodes()
+		orted := filepath.Join(tmp, "orted")
+		Expect(os.WriteFile(orted, []byte("#!/bin/sh\n"+report+"\n"), 0o755)).To(Succeed())
+		sess := runSrun(tmp, "--mpi=none", "-N", "2", "-n", "2", orted)
+		Eventually(sess, "30s").Should(gexec.Exit(0))
+		Expect(sortedLines(sess)).To(ContainElement(HavePrefix("node001 ")))
+	})
+
+	It("keeps a step that is not an MPI daemon on the master", func() {
+		sess := runSrun(threeNodes(), "--ntasks-per-node=1", "--mpi=none", "--ntasks=2", "sh", "-c", report)
+		Eventually(sess, "30s").Should(gexec.Exit(0))
+		Expect(sortedLines(sess)).To(ContainElement(HavePrefix("node001 ")))
+	})
+
 	It("numbers PRRTE master's daemons in the order of its node file", func() {
 		tmp := threeNodes()
 		nodes := filepath.Join(tmp, "nodes")

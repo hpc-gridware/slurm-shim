@@ -78,7 +78,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	applyCPUBind(opt, os.Getenv("SLURM_CPU_BIND"))
 	// A daemon step ignores SLURM_MPI_TYPE: the launcher's environment may
 	// carry any value, and the step is never handed to mpirun again.
-	if opt.externalLauncher {
+	if opt.launchesDaemons() {
 		applyExternalLauncher(opt)
 	} else if opt.mpi, err = resolveMPI(opt.mpi, os.Getenv("SLURM_MPI_TYPE")); err != nil {
 		errln(stderr, err.Error())

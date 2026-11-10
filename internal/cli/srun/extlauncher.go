@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -153,14 +154,15 @@ func applyCPUBind(opt *options, envBind string) {
 	}
 }
 
-// applyExternalLauncher shapes an --external-launcher step, whose tasks are
+// applyExternalLauncher shapes a daemon step (--external-launcher, or ORTE's
+// orted line), whose tasks are
 // an MPI launcher's daemons: never pinned (every rank would inherit one CPU),
 // never handed to mpirun again (that would start mpirun from mpirun), and,
 // without a node list, kept off the host srun runs on (the job's master),
 // which the launcher serves itself. PRRTE 3.0 omits the list when its Grid
 // Engine allocator is active.
 func applyExternalLauncher(opt *options) {
-	if !opt.externalLauncher {
+	if !opt.launchesDaemons() {
 		return
 	}
 	opt.bindMode = cpubind.ModeNone
@@ -168,6 +170,33 @@ func applyExternalLauncher(opt *options) {
 	if len(opt.req.Nodelist) == 0 && opt.req.Nodes == 0 {
 		opt.req.AvoidMaster = true
 	}
+}
+
+// isORTEDaemonStep reports whether the step starts the daemons of OpenMPI
+// 4.1's mpirun. ORTE runs
+//
+//	srun --ntasks-per-node=1 --kill-on-bad-exit --mpi=none
+//	     [--nodes=2 --nodelist=a,b] --ntasks=2 orted ...
+//
+// and, unlike PRRTE, does not say --external-launcher. An OpenMPI built with
+// both Grid Engine and SLURM support (--with-sge --with-slurm) selects its
+// Grid Engine allocator in a shim job, which leaves the node list out; the
+// step must then stay off the master as an --external-launcher one does, or
+// a daemon lands next to mpirun and the last node gets none.
+//
+// The match is ORTE's whole line shape, not the name alone: --mpi=none, one
+// task per node and a command named orted. A site's own launch agent
+// (orte_launch_agent) is not recognized; OMPI_MCA_ras=slurm makes ORTE pass
+// the node list again.
+func isORTEDaemonStep(opt *options) bool {
+	return opt.mpi == config.MPINone && opt.req.TasksPerNode == 1 &&
+		len(opt.command) > 0 && filepath.Base(opt.command[0]) == "orted"
+}
+
+// launchesDaemons reports whether the step starts an MPI launcher's daemons:
+// --external-launcher (PRRTE), or ORTE's orted line, which does not say so.
+func (opt *options) launchesDaemons() bool {
+	return opt.externalLauncher || isORTEDaemonStep(opt)
 }
 
 // applyMPINodes places the daemon step of an srun --mpi=pmix step that left

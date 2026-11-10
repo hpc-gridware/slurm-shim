@@ -115,6 +115,41 @@ var _ = Describe("starter_method / qrsh argv contract [REQ-RUN-009]", func() {
 			"an argument containing a stepper-shaped path must not short-circuit the hook")
 	})
 
+	// OpenMPI's Grid Engine launcher passes several words as one, counting on
+	// the shell the scheduler uses without a starter_method: " orted", or with
+	// a prefix " PATH=... ; export PATH ; ... /prefix/bin/orted".
+	Describe("a qrsh command (no shell path)", func() {
+		runQrsh := func(args ...string) string {
+			cmd := exec.Command("/bin/sh", append([]string{starter}, args...)...)
+			cmd.Env = append(os.Environ(),
+				"SGE_STARTER_SHELL_START_MODE=unix_behavior",
+				"SGE_STARTER_SHELL_PATH=",
+				"SHELL=/bin/sh",
+			)
+			// Stdout only: the test tree has no hook, which the starter says
+			// on stderr.
+			out, err := cmd.Output()
+			Expect(err).NotTo(HaveOccurred(), string(out))
+			return string(out)
+		}
+
+		It("runs a command whose name has a leading blank", func() {
+			Expect(runQrsh(" echo", "QRSH-RAN")).To(Equal("QRSH-RAN\n"))
+		})
+
+		It("runs a command line given as one word through the shell", func() {
+			Expect(runQrsh("  X=QRSH ; export X ;   echo", "$X-RAN")).To(Equal("QRSH-RAN\n"))
+		})
+
+		It("skips a blank first word, as the shell would", func() {
+			Expect(runQrsh(" ", "echo", "QRSH-RAN")).To(Equal("QRSH-RAN\n"))
+		})
+
+		It("keeps the words of an ordinary command as they were given", func() {
+			Expect(runQrsh("printf", "%s|", "x y", "z")).To(Equal("x y|z|"))
+		})
+	})
+
 	It("does not short-circuit the shim binary without the stepper subcommand", func() {
 		Expect(runStarter(stub, "rank-exec")).NotTo(ContainSubstring("STEPPER-RAN"),
 			"only the stepper subcommand is a shim-internal launch")
