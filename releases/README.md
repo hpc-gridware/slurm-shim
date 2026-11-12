@@ -1,7 +1,7 @@
-# slurm-shim v0.10.1
+# slurm-shim v0.11.0
 
 This directory holds the latest slurm-shim release, the same files as on the
-[GitHub release page](https://github.com/hpc-gridware/slurm-shim/releases/tag/v0.10.1):
+[GitHub release page](https://github.com/hpc-gridware/slurm-shim/releases/tag/v0.11.0):
 
 | File | |
 |---|---|
