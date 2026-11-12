@@ -12,6 +12,21 @@ The shim is for the many tools that only speak SLURM — `submitit`, JAX, workfl
 
 *A live session on a 3-node Open Cluster Scheduler cluster, recorded with [`test/cluster/demo-cast.sh`](test/cluster/demo-cast.sh).*
 
+## Recipes
+
+Start from a working example. Each recipe is a complete job you can submit, with a short README.
+
+| What you run | Recipes |
+|---|---|
+| PyTorch training | [torchrun](docs/recipes/torchrun/) · [Lightning](docs/recipes/lightning/) · [DeepSpeed](docs/recipes/deepspeed/) · [HF Accelerate](docs/recipes/accelerate/) |
+| JAX | [JAX](docs/recipes/jax/) · [Flax](docs/recipes/flax/) |
+| Workflows and sweeps | [submitit](docs/recipes/submitit/) · [Hydra](docs/recipes/hydra/) · [Dagster](docs/recipes/dagster-slurm/) · [ClearML](docs/recipes/clearml/) |
+| Ray and vLLM | [Ray](docs/recipes/ray/) |
+| MPI | [OpenMPI](docs/recipes/openmpi/) |
+| A first GPU check | [gpu-check](docs/recipes/gpu-check/) |
+
+[All recipes, with GPU notes](docs/recipes/README.md)
+
 ---
 
 ## Why
