@@ -167,7 +167,9 @@ func parse(args []string, stderr io.Writer) (request, error) {
 				// SLURM takes "4711,4712" as well as "4711 4712".
 				for _, id := range strings.Split(a, ",") {
 					if !validJobID.MatchString(id) {
-						return req, fmt.Errorf("Invalid job id %s", id)
+						// Capitalized because it is SLURM's own message, which
+						// callers match on.
+						return req, fmt.Errorf("Invalid job id %s", id) //nolint:staticcheck
 					}
 					req.ids = append(req.ids, id)
 				}
