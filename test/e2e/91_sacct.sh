@@ -116,8 +116,14 @@ assert_eq "$(field "$got" AllocCPUS)" "1" "AllocCPUS is the granted slot count"
 # node hours from it.
 # Literals, not a comparison with NNodes: two empty answers would agree.
 assert_eq "$(gridware "sacct -n -P -j '$ok_id' -o AllocNodes")" "1" "AllocNodes is 1 for a serial job"
-assert_eq "$(gridware "sacct -n -P -j '$n2_id' -o AllocNodes")" "2" "AllocNodes is 2 for a 2-node job"
-assert_eq "$(gridware "sacct -n -P -j '$n2_id' -o NNodes,AllocNodes")" "2|2" "AllocNodes and NNodes agree"
+# A finished job's node count is read from the -par request in its record. OCS
+# 9.0 has no -par, so the record of a multi-node job there does not say.
+if version_ge "$(ocs_version)" 9.1.5; then
+  assert_eq "$(gridware "sacct -n -P -j '$n2_id' -o AllocNodes")" "2" "AllocNodes is 2 for a 2-node job"
+  assert_eq "$(gridware "sacct -n -P -j '$n2_id' -o NNodes,AllocNodes")" "2|2" "AllocNodes and NNodes agree"
+else
+  skip "the node count of a finished multi-node job needs -par (OCS 9.1.5)"
+fi
 for f in Partition NodeList MaxRSS; do
   if [ -n "$(field "$got" "$f")" ]; then
     pass "$f is populated from the accounting record"
@@ -292,7 +298,13 @@ for _ in $(seq 1 90); do
   to="$(gridware "sacct -X -n -P -j '$to_id' -o State,Timelimit")"
   case "$to" in ""|RUNNING*|PENDING*) sleep 1 ;; *) break ;; esac
 done
-assert_eq "$to" "TIMEOUT|00:00:10" "a multi-node job that runs into its limit is TIMEOUT"
+# Before 9.1.5 a parallel job's exit status is lost, so the record reads as a
+# clean exit and nothing tells it from a job that finished in time.
+if version_ge "${ocs:-0}" 9.1.5; then
+  assert_eq "$to" "TIMEOUT|00:00:10" "a multi-node job that runs into its limit is TIMEOUT"
+else
+  skip "a multi-node time limit reads COMPLETED on OCS ${ocs:-unknown} (exit status lost before 9.1.5)"
+fi
 
 gridware "qdel '$live_id'" >/dev/null 2>&1
 finish
