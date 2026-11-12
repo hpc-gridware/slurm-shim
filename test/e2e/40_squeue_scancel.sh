@@ -142,4 +142,40 @@ for _ in $(seq 1 20); do
 done
 if [ -n "$gone" ]; then pass "scancel removed the job from the queue"; else fail "job still present after scancel"; fi
 gridware "qdel '$id' >/dev/null 2>&1 || true"
+
+# A job that is already gone is not an error: SLURM's scancel exits 0 and says
+# nothing for a finished job and for an unknown id alike, and tools cancel
+# defensively (dagster-slurm cancels a job it has just seen fail).
+for gone_id in "$id" 99999999; do
+  out="$(gridware "scancel '$gone_id' 2>&1; echo rc=\$?")"
+  assert_eq "$out" "rc=0" "scancel of job $gone_id, which is not there, exits 0 silently"
+done
+
+out="$(gridware "scancel --signal=KILL 99999999 2>&1; echo rc=\$?")"
+assert_eq "$out" "rc=0" "scancel --signal=KILL of a job that is not there exits 0 silently"
+
+# The control: a refusal that is NOT "the job is gone" must still fail, with
+# the reason, which Grid Engine prints on stdout. Suspending a job that does
+# not exist is one a plain user can trigger.
+out="$(gridware "scancel --signal=STOP 99999999 2>&1; echo rc=\$?")"
+assert_contains "$out" "scancel: error:" "a refused suspend names its reason"
+case "$out" in
+  *rc=0) fail "a refused suspend exits 0: $out" ;;
+  *)     pass "a refused suspend exits non-zero" ;;
+esac
+
+# A user with no jobs: qdel -u refuses, SLURM's scancel -u does not.
+gridware "scancel --me >/dev/null 2>&1; qdel -u $JOB_USER >/dev/null 2>&1; true"
+for _ in $(seq 1 20); do
+  gridware "squeue -h -u $JOB_USER 2>/dev/null | grep -q ." || break
+  sleep 2
+done
+out="$(gridware "scancel -u $JOB_USER 2>&1; echo rc=\$?")"
+assert_eq "$out" "rc=0" "scancel -u for a user with no jobs exits 0 silently"
+
+# Not a job id: refused before qdel sees it. qdel would read it as a job name,
+# answer "does not exist", and the typo would pass for a cancelled job.
+out="$(gridware "scancel 47l1 2>&1; echo rc=\$?")"
+assert_contains "$out" "Invalid job id 47l1" "scancel names an argument that is not a job id"
+assert_contains "$out" "rc=1" "scancel of an argument that is not a job id fails"
 finish

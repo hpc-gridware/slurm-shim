@@ -29,6 +29,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -94,7 +95,7 @@ func run(runner gedata.Runner, args []string, stdout, stderr io.Writer) int {
 	// Only -u, no ids, plain cancel: qdel -u is the same and atomic.
 	if req.user != "" && len(req.ids) == 0 && req.name == "" && len(req.states) == 0 &&
 		len(req.partitions) == 0 && len(req.nodes) == 0 && req.signal == "" {
-		return qdel(runner, stderr, "-u", req.user)
+		return cancelUser(runner, stderr, req.user)
 	}
 	targets, err := matching(runner, req)
 	if err != nil {
@@ -163,7 +164,13 @@ func parse(args []string, stderr io.Writer) (request, error) {
 			// No effect here: every signal goes to the whole job (see signalAction).
 		default:
 			if !strings.HasPrefix(a, "-") || a == "-" {
-				req.ids = append(req.ids, a)
+				// SLURM takes "4711,4712" as well as "4711 4712".
+				for _, id := range strings.Split(a, ",") {
+					if !validJobID.MatchString(id) {
+						return req, fmt.Errorf("Invalid job id %s", id)
+					}
+					req.ids = append(req.ids, id)
+				}
 				continue
 			}
 			fmt.Fprintf(stderr, "scancel: warning: option %s ignored (slurm-shim)\n", a)
@@ -177,6 +184,17 @@ func parse(args []string, stderr io.Writer) (request, error) {
 	}
 	return req, nil
 }
+
+// validJobID is what scancel accepts as a job: a number, optionally with an
+// array element or range ("4711", "4711_2", "4711_[0-3]").
+//
+// Anything else is refused before qdel sees it, as SLURM refuses it before
+// contacting its controller. qdel would read it as a job NAME or pattern:
+// "scancel train" deleted every job called train, "scancel '*'" every job of
+// the caller, and a typo such as "47l1" came back "does not exist", which
+// cancel reports as success. Cancelling by name is "scancel -n <name>". A step
+// id ("4711.batch") is refused too: a step is not something qdel can address.
+var validJobID = regexp.MustCompile(`^[0-9]+(_([0-9]+|\[[0-9,:%-]+\]))?$`)
 
 // action applies a cancel or a signal to one SLURM job id ("4711", "4711_2").
 type action func(runner gedata.Runner, stderr io.Writer, id string) int
@@ -194,7 +212,7 @@ type action func(runner gedata.Runner, stderr io.Writer, id string) int
 // Any other signal is an error rather than a guess.
 func signalAction(sig string) (action, error) {
 	if sig == "" {
-		return func(r gedata.Runner, e io.Writer, id string) int { return qdel(r, e, qdelArgs(id)...) }, nil
+		return cancel, nil
 	}
 	switch name := signalName(sig); name {
 	case "TERM", "USR1", "USR2":
@@ -204,7 +222,7 @@ func signalAction(sig string) (action, error) {
 	case "CONT":
 		return func(r gedata.Runner, e io.Writer, id string) int { return qmod(r, e, "-usj", id) }, nil
 	case "KILL":
-		return func(r gedata.Runner, e io.Writer, id string) int { return qdel(r, e, qdelArgs(id)...) }, nil
+		return cancel, nil
 	default:
 		return nil, fmt.Errorf("signal %s has no Grid Engine equivalent; "+
 			"supported: TERM, USR1, USR2 (reschedule), STOP, CONT (suspend, resume), KILL (cancel)", sig)
@@ -386,15 +404,13 @@ func reschedule(runner gedata.Runner, stderr io.Writer, id string) int {
 			target = id[:i] + "." + task
 		}
 	}
-	_, errOut, exit, err := runner.Run(context.Background(), "qmod", "-rj", target)
+	said, exit, err := client(runner, "qmod", "-rj", target)
 	if err != nil {
-		fmt.Fprintf(stderr, "scancel: error: running qmod: %v\n", err)
+		fmt.Fprintf(stderr, "scancel: error: %v\n", err)
 		return 1
 	}
-	if exit != 0 {
-		if msg := strings.TrimSpace(string(errOut)); msg != "" {
-			fmt.Fprintf(stderr, "scancel: warning: %s\n", msg)
-		}
+	if exit != 0 && said != "" {
+		fmt.Fprintf(stderr, "scancel: warning: %s\n", said)
 	}
 	return 0
 }
@@ -420,19 +436,87 @@ func qdelArgs(id string) []string {
 	return []string{id}
 }
 
-func qdel(runner gedata.Runner, stderr io.Writer, args ...string) int {
-	_, errOut, exit, err := runner.Run(context.Background(), "qdel", args...)
+// client runs a Grid Engine client and returns what it said. qdel and qmod
+// report a refusal on stdout ("denied: job ... does not exist") and other
+// trouble on stderr, so both are read. They are joined line by line: run
+// together, an error on stderr ending without a newline would fuse with a "does
+// not exist" on stdout into one line that reads as a job that is merely gone.
+func client(runner gedata.Runner, name string, args ...string) (said string, exit int, err error) {
+	out, errOut, exit, err := runner.Run(context.Background(), name, args...)
 	if err != nil {
-		fmt.Fprintf(stderr, "scancel: error: running qdel: %v\n", err)
+		return "", 1, fmt.Errorf("running %s: %v", name, err)
+	}
+	var parts []string
+	for _, stream := range [][]byte{errOut, out} {
+		if text := strings.TrimSpace(string(stream)); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n"), exit, nil
+}
+
+// refused reports a client's refusal and passes its exit status on.
+func refused(stderr io.Writer, said string, exit int) int {
+	if said != "" {
+		fmt.Fprintf(stderr, "scancel: error: %s\n", said)
+	}
+	return exit
+}
+
+// cancel deletes one SLURM job id. A job that is already gone -- finished, or
+// never there -- is not an error: SLURM's scancel exits 0 and prints nothing
+// for both when it sends the default KILL, and callers rely on it. dagster-slurm
+// cancels a job it has just seen fail, and a non-zero exit there is reported as
+// a failed cleanup.
+//
+// Only what qdel itself said can mean "gone". A qdel that could not be started
+// said nothing about any job, whatever the operating system's error reads like.
+func cancel(runner gedata.Runner, stderr io.Writer, id string) int {
+	said, exit, err := client(runner, "qdel", qdelArgs(id)...)
+	if err != nil {
+		fmt.Fprintf(stderr, "scancel: error: %v\n", err)
 		return 1
 	}
-	if exit != 0 {
-		if msg := strings.TrimSpace(string(errOut)); msg != "" {
-			fmt.Fprintf(stderr, "scancel: error: %s\n", msg)
-		}
-		return exit
+	if exit == 0 || jobGone(said) {
+		return 0
 	}
-	return 0
+	return refused(stderr, said, exit)
+}
+
+// jobGone reports whether qdel refused only because the job does not exist,
+// which is what it says for a finished job as much as for an unknown id:
+//
+//	denied: job "4711" does not exist
+//
+// Every line has to say so, and say it about a job: one line about anything
+// else is a real failure and must not be hidden.
+func jobGone(said string) bool {
+	for _, line := range strings.Split(said, "\n") {
+		if !strings.Contains(line, `job "`) || !strings.Contains(line, "does not exist") {
+			return false
+		}
+	}
+	return true
+}
+
+// cancelUser deletes every job of a user with one atomic qdel -u. qdel fails
+// when the user has no job; SLURM's scancel -u does not, and neither does this
+// shim's filtered path, which finds nothing to cancel and exits 0. So a failed
+// qdel -u is an error only if the user still has jobs. That is asked of qstat
+// rather than read out of qdel's wording.
+func cancelUser(runner gedata.Runner, stderr io.Writer, user string) int {
+	said, exit, err := client(runner, "qdel", "-u", user)
+	if err != nil {
+		fmt.Fprintf(stderr, "scancel: error: %v\n", err)
+		return 1
+	}
+	if exit == 0 {
+		return 0
+	}
+	if left, err := matching(runner, request{user: user}); err == nil && len(left) == 0 {
+		return 0
+	}
+	return refused(stderr, said, exit)
 }
 
 // qmod suspends or resumes one SLURM job id (an array element as N.<k+1>).
@@ -443,16 +527,13 @@ func qmod(runner gedata.Runner, stderr io.Writer, flag, id string) int {
 			target = id[:i] + "." + task
 		}
 	}
-	_, errOut, exit, err := runner.Run(context.Background(), "qmod", flag, target)
+	said, exit, err := client(runner, "qmod", flag, target)
 	if err != nil {
-		fmt.Fprintf(stderr, "scancel: error: running qmod: %v\n", err)
+		fmt.Fprintf(stderr, "scancel: error: %v\n", err)
 		return 1
 	}
 	if exit != 0 {
-		if msg := strings.TrimSpace(string(errOut)); msg != "" {
-			fmt.Fprintf(stderr, "scancel: error: %s\n", msg)
-		}
-		return exit
+		return refused(stderr, said, exit)
 	}
 	return 0
 }

@@ -132,6 +132,7 @@ Grounded in the [compatibility matrix](#compatibility-matrix) below:
 - The full per-rank `SLURM_*` environment, including compressed nodelists and the per-rank device mask from GE RSMAP grants -- `CUDA_VISIBLE_DEVICES`, or `ROCR_VISIBLE_DEVICES` under `gpu.vendor: amd`.
 
 - **submitit** (submit Python functions and arrays) via [`docs/recipes/submitit/`](docs/recipes/submitit/) — `sacct`, `sbatch --array`, and 0-based array tracking are implemented and verified live on the OCS test cluster.
+- **dagster-slurm** (Dagster assets as cluster jobs) via [`docs/recipes/dagster-slurm/`](docs/recipes/dagster-slurm/) — submits over SSH with `sbatch`, tracks with `squeue`/`sacct`; verified live with multi-node and multi-CPU assets, a partitioned parameter sweep, retries, cancellation, time limits and the Dagster UI ([examples](docs/recipes/dagster-slurm/examples/README.md)).
 - **Hydra** (`--multirun` parameter sweeps) via [`docs/recipes/hydra/`](docs/recipes/hydra/) — `hydra/launcher: submitit_slurm` turns each sweep config into a cluster job; verified live fanning a sweep across 3 nodes.
 - **JAX** (multi-process, multi-node) via [`docs/recipes/jax/`](docs/recipes/jax/) — `jax.distributed.initialize()` auto-detects the shim's environment with no glue and no PMI; verified live forming a 3-node process group on the OCS test cluster.
 - **Flax** (data-parallel training, multi-node) via [`docs/recipes/flax/`](docs/recipes/flax/) — the same auto-detect, then a real optimizer over one global `jax.sharding` mesh spanning every process's devices, so a wrong environment fails loudly instead of training alone; verified live forming a 6-device mesh across the 3-node OCS test cluster with gradients reduced across hosts every step.
@@ -172,10 +173,10 @@ This section is the contract. `✅` implemented (unit-tested) / `⚠️` partial
 | `srun --pty` (interactive) | ✅ | Outside an allocation, `srun --pty [flags] <cmd>` becomes an interactive `qrsh -now no -pty y` session on a compute node, with the full `SLURM_*` environment; `srun` inside it launches steps. See [Interactive sessions](#interactive-sessions). |
 | `srun` (outside an allocation, no `--pty`) | ✅ | Creates an allocation, runs the command as one step over it, and returns the step's exit status, as SLURM does: `srun -N 2 -n 8 ./a.out` from a login node. Output streams back; the tasks get no stdin. `-I/--immediate` starts at once or fails (`qrsh -now yes`). Ctrl-C, SIGTERM or SIGHUP cancel a waiting job and stop a running one; srun then exits 128+signal. See [Interactive sessions](#interactive-sessions). |
 | `squeue` | ✅ | Backed by `qstat -xml`, plus one `qstat -xml -j` for the listed jobs when a column or filter needs it. Filters `--me`, `-u`, `-j` (list, `N_k`), `-n`, `-A`, `-p`, `-w`, `-t` combine as in SLURM; formats: the default, `-l`, `-r` (one line per array element), `-o` (incl. `%l %S %V %Q %a %c %m %b %r`) and `-O`, with SLURM's column sizing. Pending reasons: `JobHeldUser`, `JobHeldAdmin`, `Dependency`, `BeginTime`, `launch failed requeued held`; `Resources`/`Priority` when the scheduler publishes job info (`schedd_job_info`), else `None`. `SQUEUE_FORMAT`, `SQUEUE_FORMAT2`, `SQUEUE_USERS`, `SQUEUE_STATES`, `SQUEUE_PARTITION`, `SQUEUE_ACCOUNT` are honoured. Array elements carry SLURM's 0-based index (`4711_0`), a pending range reads `4711_[0-9]`. `NODES`/`NODELIST` describe the granted allocation, in grant order. No `--json`, no `-S` sorting. |
-| `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based). Filters `-u`, `--me`, `-n/--name`, `-t/--state`, `-p/--partition`, `-w/--nodelist` all have to match, as in SLURM: `scancel -u alice 4711` cancels 4711 only if it is alice's, and `-t PENDING` on a half-running array cancels only its pending elements. `-s/--signal`: `TERM`/`USR1`/`USR2` reschedule (`qmod -rj`: a `-notify` job gets SIGUSR2 and restarts -- submitit's checkpoint-preempt), `STOP`/`CONT` suspend and resume, `KILL` cancels; other signals are refused. Honors [dry run](#dry-run). |
+| `scancel` | ✅ | Cancel maps to `qdel` (array `scancel N_k` -> `qdel N -t k+1`, 0-based). A job that has already finished, or an unknown numeric id, exits 0 silently, as in SLURM; an argument that is not a job id (`4711`, `4711_2`, `4711_[0-3]`, comma lists) is refused as `Invalid job id` and never reaches `qdel`, which would take it for a job name or pattern -- cancel by name with `-n`. Filters `-u`, `--me`, `-n/--name`, `-t/--state`, `-p/--partition`, `-w/--nodelist` all have to match, as in SLURM: `scancel -u alice 4711` cancels 4711 only if it is alice's, and `-t PENDING` on a half-running array cancels only its pending elements. `-s/--signal`: `TERM`/`USR1`/`USR2` reschedule (`qmod -rj`: a `-notify` job gets SIGUSR2 and restarts -- submitit's checkpoint-preempt), `STOP`/`CONT` suspend and resume, `KILL` cancels; other signals are refused. Honors [dry run](#dry-run). |
 | `scontrol` | ✅ | `show hostnames`; `show job` (JobState, Reason, TimeLimit, RunTime, Submit/StartTime, StdOut/StdErr, Command, WorkDir, NumNodes/NumCPUs, TRES; `-o` one line), `show node` (state, CPUs, memory, features from BOOL complexes, GPUs), `show partition`; `hold`/`uhold`/`release` -> `qhold`/`qrls`; `suspend`/`resume` -> `qmod -sj`/`-usj`; `update job TimeLimit=`/`JobName=` -> one `qalter` that keeps the job's other resource requests (TimeLimit of a pending job; other fields are refused by name); `requeue` -> `qmod -rj`. Array ids `<id>_<k>` are GE task k+1. Honors [dry run](#dry-run). |
 | `sinfo` | ⚠️ | Bare `sinfo` prints the partition table with live node counts, states (idle/mix/allocated/drain/down), and a compressed nodelist from `qstat -f`; `-V`. Flags are ignored; degrades to a config-only listing when GE is unreachable. |
-| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-a`, `--name`, `-s/--state`, `-S`/`-E`, `-D` (every run of a requeued job); `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NNodes, NodeList, ReqMem, Timelimit, WorkDir, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`); `-b`, `SACCT_FORMAT`; SLURM's default columns otherwise; `-p`/`-P`/`--delimiter`/`-n`/`-X`. A job killed at its `--time` is `TIMEOUT`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
+| `sacct` | ✅ | Selection by `-j` (repeatable/comma ids), `-u` (comma list), `-a`, `--name`, `-s/--state`, `-S`/`-E`, `-D` (every run of a requeued job); `-o/--format` over JobID, JobName, State, ExitCode, Elapsed, Start, End, Submit, User, Partition, Account, AllocCPUS, NNodes, NodeList, ReqMem, Timelimit, WorkDir, MaxRSS, TotalCPU (+ aliases like `JobIDRaw`, `NCPUS`, `AllocNodes`); `-b`, `SACCT_FORMAT`; SLURM's default columns otherwise; `-p`/`-P`/`--delimiter`/`-n`/`-X`. A job killed at its `--time` is `TIMEOUT`; a job the scheduler is still removing reads `RUNNING` until its accounting record exists, never `COMPLETING`. Data from `qstat -xml` (live) + `qacct` (finished, via go-clusterscheduler). No accounting DB behind it: no job-step rows, associations/QOS, or `--json`. Read [sacct fidelity](#sacct-fidelity) before relying on it. |
 | `salloc` | ✅ | Creates an allocation and runs one command on its first node -- the user's shell when none is given, with a terminal when salloc runs on one. `srun` inside it launches steps across the allocation; salloc returns the command's exit status. This is SLURM's `LaunchParameters=use_interactive_step` behaviour: the shell runs on the allocation, not on the submit host. `--no-shell` is refused. |
 
 ### `sbatch` flags
@@ -348,7 +349,7 @@ Notes and limits:
 
 ### `sacct` fidelity
 
-`sacct` reports what GE records, not a SLURM accounting database. Five
+`sacct` reports what GE records, not a SLURM accounting database. Seven
 differences are worth knowing:
 
 - **A selector is required.** Real `sacct` with no arguments reports today's jobs
@@ -364,11 +365,23 @@ differences are worth knowing:
 - **`ExitCode` needs OCS 9.1.5.** On earlier releases a job that exited non-zero
   was reported `COMPLETED` / `0:0`
   ([why](docs/solutions/integration-issues/pe-jobs-lose-exit-status-in-accounting.md)).
-- **`TIMEOUT` is read from the request.** GE's execd records a `--time` expiry
-  with the same `failed` code as a `qdel`; `sacct` reports `TIMEOUT` when the run
-  lasted as long as the job's `h_rt`. A limit set outside the submit command line
-  (an `#$` line, `sge_request`, a queue limit) is not visible to it, so such a job
-  reads `CANCELLED` and its `Timelimit` is empty.
+- **`TIMEOUT` is read from the request.** GE has no accounting code for a
+  `--time` expiry: a killed job is recorded like a `qdel`, and a multi-node job
+  whose tasks are killed first is recorded as an ordinary non-zero exit. `sacct`
+  reports `TIMEOUT` for both when the run lasted as long as the job's `h_rt`. A
+  limit set outside the submit command line (an `#$` line, `sge_request`, a
+  queue limit) is not visible to it, so such a job reads `CANCELLED` or `FAILED`
+  and its `Timelimit` is empty.
+- **A finished job appears when GE writes its record.** GE buffers accounting
+  records (`reporting_params`, `flush_time`, 15 seconds by default). Until the
+  record is written, a job that has left `qstat` is in neither `squeue` nor
+  `sacct`. A poller that reads "no row" as "done" needs
+  `accounting_flush_time=00:00:00`, which writes each record at once.
+- **A final state comes only from the accounting record.** While GE removes a
+  job (after `scancel`, at its time limit) it does not say why, so `sacct`
+  reports the job as `RUNNING` for those seconds and as `CANCELLED` or `TIMEOUT`
+  once `qacct` has the record. SLURM records `CANCELLED` at the `scancel`. A
+  poller never sees a terminal state that the final record contradicts.
 
 ### Memory requests
 

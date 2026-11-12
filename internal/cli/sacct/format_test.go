@@ -140,20 +140,31 @@ var _ = Describe("sacct --format", func() {
 		Expect(lines[0]).To(Equal("JobID|State|ExitCode"))
 	})
 
+	// An alias that is a sacct field of its own is titled as asked for, so a
+	// caller that finds its column by the header finds it; a shorthand sacct
+	// does not know is titled by the field it resolves to.
 	DescribeTable("resolves field aliases",
-		func(alias, canonical string) {
+		func(alias, canonical, title string) {
 			_, lines := runSacct(oneJob("4711"), "-o", alias, "--parsable2", "-j", "4711")
-			Expect(lines[0]).To(Equal(canonical))
+			Expect(lines[0]).To(Equal(title))
 			_, want := runSacct(oneJob("4711"), "-o", canonical, "--parsable2", "-j", "4711")
 			Expect(lines[1]).To(Equal(want[1]))
 		},
-		Entry("JobIDRaw", "JobIDRaw", "JobID"),
-		Entry("NCPUS", "NCPUS", "AllocCPUS"),
-		Entry("ReqCPUS", "ReqCPUS", "AllocCPUS"),
-		Entry("Nodes", "Nodes", "NodeList"),
-		Entry("CPUTime", "CPUTime", "TotalCPU"),
-		Entry("UserName", "UserName", "User"),
+		Entry("JobIDRaw", "JobIDRaw", "JobID", "JobIDRaw"),
+		Entry("NCPUS", "NCPUS", "AllocCPUS", "NCPUS"),
+		Entry("ReqCPUS", "ReqCPUS", "AllocCPUS", "ReqCPUS"),
+		Entry("AllocNodes", "AllocNodes", "NNodes", "AllocNodes"),
+		Entry("CPUTime", "CPUTime", "TotalCPU", "CPUTime"),
+		Entry("in any case", "allocnodes", "NNodes", "AllocNodes"),
+		Entry("with a width suffix", "AllocNodes%5", "NNodes", "AllocNodes"),
+		Entry("Nodes, a shorthand", "Nodes", "NodeList", "NodeList"),
+		Entry("UserName, a shorthand", "UserName", "User", "User"),
 	)
+
+	It("titles NNodes and AllocNodes each by its own name in one report", func() {
+		_, lines := runSacct(oneJob("4711"), "-o", "NNodes,AllocNodes", "--parsable2", "-j", "4711")
+		Expect(lines[0]).To(Equal("NNodes|AllocNodes"))
+	})
 
 	It("accepts a display-width suffix and ignores it", func() {
 		_, lines := runSacct(oneJob("4711"), "-o", "JobID%20,State%-15", "--parsable2", "-j", "4711")

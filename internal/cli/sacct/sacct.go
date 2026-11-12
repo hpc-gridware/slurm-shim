@@ -156,6 +156,10 @@ func runWith(runner gedata.Runner, memComplex string, args []string, stdout, std
 		return 1
 	}
 
+	if wantsNodeCount(fields) {
+		countNodes(runner, active, opt.ids)
+	}
+
 	var rows []row
 	if len(opt.ids) > 0 {
 		// Cache qacct per base id: submitit batches every tracked element of an
@@ -558,6 +562,8 @@ type activeRow struct {
 	start   time.Time
 	submit  time.Time
 	isArray bool
+	// nnodes is the number of hosts the job runs on, "" when not known.
+	nnodes string
 }
 
 // row builds the output row for a live job. Only what qstat actually knows is
@@ -568,7 +574,7 @@ func (a activeRow) row() row {
 	r := row{
 		jobName: a.name, partition: a.queue, allocCPUS: a.slots,
 		state: a.state, nodeList: a.node, user: a.user,
-		start: a.start, submit: a.submit,
+		start: a.start, submit: a.submit, nnodes: a.nnodes,
 	}
 	if !a.start.IsZero() {
 		if d := time.Since(a.start); d > 0 {
@@ -608,6 +614,63 @@ func loadActive(runner gedata.Runner) ([]activeRow, error) {
 		}
 	}
 	return active, nil
+}
+
+// wantsNodeCount reports whether the format asks for NNodes or an alias of it.
+func wantsNodeCount(fields []string) bool {
+	for _, f := range fields {
+		if canonicalField(f) == "nnodes" {
+			return true
+		}
+	}
+	return false
+}
+
+// countNodes fills in NNodes for the running jobs among active. The plain qstat
+// listing names only a job's master queue instance, so the granted hosts cost
+// one more qstat; it is made only when the column is asked for and a running
+// job is in the report. ids are the -j selectors, empty for a listing. A job
+// whose hosts cannot be read is one node when it holds one slot and is left
+// empty otherwise, as is a job that has not started.
+func countNodes(runner gedata.Runner, active []activeRow, ids []string) {
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		base, _, _ := strings.Cut(id, "_")
+		wanted[base] = true
+	}
+	running := map[string]bool{}
+	for _, a := range active {
+		if a.state == "RUNNING" && (len(ids) == 0 || wanted[a.base]) {
+			running[a.base] = true
+		}
+	}
+	if len(running) == 0 {
+		return
+	}
+	selector := ""
+	if len(running) == 1 {
+		for base := range running {
+			selector = base
+		}
+	}
+	// A failed lookup is not worth failing the report over: the fallback below
+	// still answers for single-slot jobs.
+	allocs, _ := gedata.JobAllocations(context.Background(), runner, selector)
+	for i, a := range active {
+		if !running[a.base] || a.state != "RUNNING" {
+			continue
+		}
+		task := ""
+		if a.isArray {
+			task = strconv.FormatInt(a.geTask, 10)
+		}
+		switch n := len(allocs[gedata.JobKey(a.base, task)].Hosts); {
+		case n > 0:
+			active[i].nnodes = strconv.Itoa(n)
+		case a.slots == 1:
+			active[i].nnodes = "1"
+		}
+	}
 }
 
 // expandTasks turns a qstat "tasks" field into the GE task ids it covers. An
@@ -828,15 +891,27 @@ func acctRow(rec gedata.AccountingRecord, memComplex string) row {
 	}
 }
 
-// finishedState refines GE's CANCELLED into SLURM's TIMEOUT for a job killed at
-// its wall-clock limit. Verified on OCS 9.1.6: a job submitted -l h_rt=5 that
-// sleeps 60 is recorded failed=100, exit_status=137 -- exactly what a qdel
-// leaves -- and only its run time (ru_wallclock 6) tells the two apart. A qdel
-// can only land before the limit, so a run that reached the requested h_rt was
-// ended by it.
+// finishedState refines what GE recorded into SLURM's TIMEOUT for a job that
+// ran into its wall-clock limit. GE has no accounting code for that, so it is
+// read from the run time: a run that lasted as long as the requested h_rt was
+// ended by it. Two records look like this, both verified on OCS 9.1.6.
+//
+// A job killed at the limit is recorded failed=100, exit_status=137 -- exactly
+// what a qdel leaves -- and a qdel can only land before the limit.
+//
+// A parallel job whose tasks are killed first is recorded failed=0 with the
+// script's own non-zero exit status: the script (an srun, an mpirun) saw its
+// tasks die and returned before the kill reached it. Which of the two a job
+// gets is a race (CS-3087). A task starts after the job script, so it is never
+// killed before the script's own limit has passed. A serial job has no tasks
+// and stays FAILED.
 func finishedState(rec gedata.AccountingRecord, req jobRequest) string {
-	if rec.State == "CANCELLED" && req.hasTimeLimit && req.timeLimit > 0 &&
-		rec.Elapsed >= req.timeLimit {
+	if !req.hasTimeLimit || req.timeLimit <= 0 || rec.Elapsed < req.timeLimit {
+		return rec.State
+	}
+	killed := rec.State == "CANCELLED"
+	tasksKilled := rec.GrantedPE != "" && rec.Failed == 0 && rec.ExitStatus != 0
+	if killed || tasksKilled {
 		return "TIMEOUT"
 	}
 	return rec.State

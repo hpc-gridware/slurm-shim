@@ -245,7 +245,7 @@ var _ = Describe("qacct arguments", func() {
 })
 
 var _ = Describe("AcctActiveState", func() {
-	DescribeTable("maps GE state codes without ever returning SUSPENDED",
+	DescribeTable("maps GE state codes without ever returning SUSPENDED, COMPLETING or a terminal state",
 		func(ge, want string) { Expect(gedata.AcctActiveState(ge)).To(Equal(want)) },
 		Entry("running", "r", "RUNNING"),
 		Entry("transferring", "t", "RUNNING"),
@@ -255,7 +255,13 @@ var _ = Describe("AcctActiveState", func() {
 		Entry("queued", "qw", "PENDING"),
 		Entry("held", "hqw", "PENDING"),
 		Entry("error stays incomplete", "Eqw", "PENDING"),
-		Entry("deleting", "dr", "COMPLETING"),
+		Entry("being deleted is still RUNNING: only the accounting record knows why", "dr", "RUNNING"),
+		Entry("being deleted while transferring", "dt", "RUNNING"),
+		// A deletion takes precedence over every other flag in the state.
+		Entry("being deleted while suspended", "ds", "RUNNING"),
+		Entry("being deleted while pending", "dqw", "RUNNING"),
+		Entry("being deleted while in error state", "dEqw", "RUNNING"),
+		Entry("being deleted while rescheduled", "dRr", "RUNNING"),
 		Entry("empty stays incomplete (never COMPLETED)", "", "PENDING"),
 	)
 })

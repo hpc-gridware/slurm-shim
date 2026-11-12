@@ -57,6 +57,13 @@ e3_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2eexit3 --wrap='exit 3'" \
   | awk '/Submitted batch job/{print $NF}')"
 [ -n "$e3_id" ] || fail "sbatch returned no job id for the exit-3 job"
 
+# ------------------------------------------------------------- a 2-node job
+# Two tasks on two nodes: its node count (2) differs from its CPU count per node,
+# so a column that only happens to be 1 cannot stand in for AllocNodes.
+n2_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2en2 -p batch -N 2 --ntasks-per-node=1 --wrap='sleep 1'" \
+  | awk '/Submitted batch job/{print $NF}')"
+[ -n "$n2_id" ] || fail "sbatch returned no job id for the 2-node job"
+
 # ------------------------------------------------------- a long job, still live
 live_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2elive --wrap='sleep 45'" \
   | awk '/Submitted batch job/{print $NF}')"
@@ -81,7 +88,7 @@ case "$(field "$live" Elapsed)" in
   *) fail "live Elapsed should be a few seconds, got '$(field "$live" Elapsed)'" ;;
 esac
 
-for id in "$ok_id" "$bad_id" "$e3_id"; do
+for id in "$ok_id" "$bad_id" "$e3_id" "$n2_id"; do
   waitgone "$id" || fail "job $id never left the queue"
   waitacct "$id" || fail "job $id never reached the accounting file"
 done
@@ -105,6 +112,12 @@ assert_eq "$(field "$got" State)" "COMPLETED" "a clean job is COMPLETED"
 assert_eq "$(field "$got" ExitCode)" "0:0" "a clean job exits 0:0"
 assert_eq "$(field "$got" User)" "gridware" "User is the submitting user"
 assert_eq "$(field "$got" AllocCPUS)" "1" "AllocCPUS is the granted slot count"
+# AllocNodes is SLURM's other name for the node count; dagster-slurm derives
+# node hours from it.
+# Literals, not a comparison with NNodes: two empty answers would agree.
+assert_eq "$(gridware "sacct -n -P -j '$ok_id' -o AllocNodes")" "1" "AllocNodes is 1 for a serial job"
+assert_eq "$(gridware "sacct -n -P -j '$n2_id' -o AllocNodes")" "2" "AllocNodes is 2 for a 2-node job"
+assert_eq "$(gridware "sacct -n -P -j '$n2_id' -o NNodes,AllocNodes")" "2|2" "AllocNodes and NNodes agree"
 for f in Partition NodeList MaxRSS; do
   if [ -n "$(field "$got" "$f")" ]; then
     pass "$f is populated from the accounting record"
@@ -235,6 +248,51 @@ fi
 al="$(gridware "sacct -n -j '$ok_id' -o JobIDRaw,NCPUS,Nodes --parsable2")"
 assert_eq "$al" "$(gridware "sacct -n -j '$ok_id' -o JobID,AllocCPUS,NodeList --parsable2")" \
   "field aliases resolve to their canonical fields"
+
+# ------------------------------------------------- a job that is being removed
+# While GE removes a job (qstat state dr) it does not say why, so sacct must not
+# name a final state before the accounting record does: a poller keeps the first
+# terminal state it sees. And never COMPLETING, which dagster-slurm reads as
+# success. Poll through the removal and keep every distinct answer.
+del_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2edel --wrap='sleep 300'" \
+  | awk '/Submitted batch job/{print $NF}')"
+for _ in $(seq 1 60); do
+  [ "$(gridware "squeue -h -j '$del_id' -o %T")" = "RUNNING" ] && break
+  sleep 1
+done
+seen="$(gridware "scancel '$del_id'; last=
+  for i in \$(seq 1 300); do
+    s=\$(sacct -X -n -P -j '$del_id' -o State)
+    if [ -n \"\$s\" ] && [ \"\$s\" != \"\$last\" ]; then printf '%s ' \"\$s\"; last=\$s; fi
+    [ \"\$s\" = CANCELLED ] && break
+    sleep 0.1
+  done")"
+case "$(printf '%s' "$seen" | xargs)" in
+  "RUNNING CANCELLED" | "CANCELLED")
+    pass "a job being removed reads RUNNING until its record says CANCELLED ($(printf '%s' "$seen" | xargs))" ;;
+  *) fail "states seen while job $del_id was removed: '$seen'" ;;
+esac
+
+# ------------------------------------------ a multi-node job at its time limit
+# At the limit GE kills the job script or its tasks first, a race. When the
+# tasks go first the script leaves by itself and the record says failed=0 with
+# its exit status (CS-3087). Either way the job ran into its limit.
+to_id="$(gridware "cd $JOB_HOME && sbatch --job-name=e2eto -p batch -N 2 --ntasks-per-node=1 -t 0:10 -o /dev/null --wrap='srun sleep 300'" \
+  | awk '/Submitted batch job/{print $NF}')"
+# While it runs, its node count comes from the granted hosts (qstat -j): the
+# plain listing names the master queue instance only.
+for _ in $(seq 1 30); do
+  [ "$(gridware "squeue -h -j '$to_id' -o %T")" = "RUNNING" ] && break
+  sleep 0.5
+done
+assert_eq "$(gridware "sacct -P -j '$to_id' -o NNodes,AllocNodes" | xargs)" "NNodes|AllocNodes 2|2" \
+  "a running multi-node job reports its node count, each column under its own title"
+to=""
+for _ in $(seq 1 90); do
+  to="$(gridware "sacct -X -n -P -j '$to_id' -o State,Timelimit")"
+  case "$to" in ""|RUNNING*|PENDING*) sleep 1 ;; *) break ;; esac
+done
+assert_eq "$to" "TIMEOUT|00:00:10" "a multi-node job that runs into its limit is TIMEOUT"
 
 gridware "qdel '$live_id'" >/dev/null 2>&1
 finish

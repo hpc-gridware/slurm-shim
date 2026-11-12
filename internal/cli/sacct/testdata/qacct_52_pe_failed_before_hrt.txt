@@ -1,0 +1,48 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-master          
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            wrap.sh             
+jobnumber                          52                  
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-11-12 13:16:19.153706
+submit_cmd_line                    qsub -terse -q all.q -pe make 3 -par 1 -w e -o /dev/null -j y -cwd -V -l h_rt=60 /tmp/slurm-shim-sbatch-157972833/wrap.sh
+start_time                         2026-11-12 13:16:20.581869
+end_time                           2026-11-12 13:16:27.715333
+granted_pe                         make                
+slots                              3                   
+failed                             0    
+exit_status                        3                   
+ru_wallclock                       7            
+ru_utime                           0.143        
+ru_stime                           0.198        
+ru_maxrss                          24216               
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          10864               
+ru_majflt                          1                   
+ru_nswap                           0                   
+ru_inblock                         4328                
+ru_oublock                         88                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           702                 
+ru_nivcsw                          369                 
+wallclock                          8.025        
+cpu                                0.341        
+mem                                0.081             
+io                                 0.000             
+ioops                              844          
+iow                                0.000             
+maxvmem                            13892308992       
+maxrss                             61640704          

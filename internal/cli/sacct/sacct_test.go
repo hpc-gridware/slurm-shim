@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -224,6 +225,111 @@ var _ = Describe("sacct", func() {
 	})
 })
 
+// A job Grid Engine is deleting (qstat dr, dt, ...) is still in qstat for a few
+// seconds, longer when its node does not answer. Grid Engine does not say why
+// it is being deleted, so sacct reports no terminal state before the accounting
+// record exists: a poller that latches the first terminal state (submitit)
+// would keep CANCELLED for a job that really ran into its time limit.
+// COMPLETING is ruled out as well: dagster-slurm reads every state starting
+// with "COMPLET" as COMPLETED, which turned a cancelled job into a successful
+// Dagster run.
+var _ = Describe("sacct for a job that is being deleted", func() {
+	deleting := func(state string) *fake.Runner {
+		return runner(qstatXML(jobList("4711", state, "all.q@node01", "")), nil)
+	}
+
+	DescribeTable("reports it as RUNNING",
+		func(geState string) {
+			_, lines := runSacct(deleting(geState), "-o", "JobID,State,NodeList", "--parsable2", "-j", "4711")
+			Expect(lines).To(Equal([]string{"JobID|State|NodeList", "4711|RUNNING|node01"}))
+		},
+		Entry("deleted while running", "dr"),
+		Entry("deleted while transferring", "dt"),
+		Entry("deleted while rescheduled", "dRr"),
+		Entry("deleted while suspended", "ds"),
+		Entry("deleted while pending", "dqw"),
+		Entry("deleted while in error state", "dEqw"),
+	)
+
+	It("answers dagster-slurm's state query with RUNNING", func() {
+		_, lines := runSacct(deleting("dr"), "-X", "-n", "-j", "4711", "-o", "State%20")
+		Expect(lines).To(HaveLen(1))
+		Expect(strings.TrimSpace(lines[0])).To(Equal("RUNNING"))
+	})
+
+	It("answers dagster-slurm's final accounting query with RUNNING in the State column", func() {
+		_, lines := runSacct(deleting("dr"), "-j", "4711", "-n", "-P",
+			"--format=JobID,Elapsed,TotalCPU,MaxRSS,AllocNodes,AllocCPUS,State,ExitCode")
+		Expect(lines).To(HaveLen(1))
+		fields := strings.Split(lines[0], "|")
+		Expect(fields).To(HaveLen(8))
+		Expect(fields[0]).To(Equal("4711"))
+		Expect(fields[6]).To(Equal("RUNNING"))
+	})
+
+	It("is selected by -s R and by -s RUNNING", func() {
+		for _, state := range []string{"R", "RUNNING"} {
+			_, lines := runSacct(deleting("dr"), "-o", "JobID,State", "--parsable2", "-s", state, "-j", "4711")
+			Expect(lines).To(ContainElement("4711|RUNNING"), state)
+		}
+	})
+
+	DescribeTable("is not selected by a state it is not in",
+		func(state string) {
+			_, lines := runSacct(deleting("dr"), "-o", "JobID,State", "--parsable2", "-s", state, "-j", "4711")
+			Expect(lines).To(Equal([]string{"JobID|State"}))
+		},
+		Entry("COMPLETING, which sacct never reports", "CG"),
+		Entry("CANCELLED, which only the accounting record can say", "CA"),
+		Entry("TIMEOUT", "TO"),
+		Entry("COMPLETED", "CD"),
+	)
+
+	It("wins over an accounting record of an earlier, clean run of the same id", func() {
+		acct := map[string]string{"4711": acctRecord("4711", "undefined", "0", "0")}
+		r := runner(qstatXML(jobList("4711", "dr", "all.q@node01", "")), acct)
+		_, lines := runSacct(r, "-o", "JobID,State", "--parsable2", "-j", "4711")
+		Expect(lines).To(ContainElement("4711|RUNNING"))
+		Expect(lines).NotTo(ContainElement("4711|COMPLETED"))
+	})
+
+	It("reports a deleting array element 0-based", func() {
+		r := runner(qstatXML(jobList("4712", "dr", "all.q@node01", "1")), nil)
+		_, lines := runSacct(r, "-o", "JobID,State", "--parsable2", "-j", "4712")
+		Expect(lines).To(ContainElement("4712_0|RUNNING"))
+	})
+
+	// A poller such as submitit keeps the first terminal state it sees, so a
+	// job still in qstat must never carry one: only qacct knows the outcome.
+	DescribeTable("never reports a terminal state for a job still in qstat",
+		func(geState string) {
+			_, lines := runSacct(deleting(geState), "-X", "-n", "-P", "-j", "4711", "-o", "State")
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).To(BeElementOf("RUNNING", "PENDING"), "GE state %q", geState)
+		},
+		Entry("running", "r"), Entry("transferring", "t"), Entry("pending", "qw"),
+		Entry("held", "hqw"), Entry("error", "Eqw"), Entry("suspended", "s"),
+		Entry("rescheduled", "Rr"), Entry("deleting", "dr"), Entry("deleting in transfer", "dt"),
+		Entry("deleting while suspended", "ds"), Entry("deleting while pending", "dqw"),
+		Entry("deleting in error state", "dEqw"), Entry("deleting while rescheduled", "dRr"),
+	)
+
+	// The property dagster-slurm depends on, whatever a live state is called:
+	// a job still in qstat must never read as finished successfully.
+	DescribeTable("never reports a live job with a state that starts with COMPLET",
+		func(geState string) {
+			_, lines := runSacct(deleting(geState), "-X", "-n", "-P", "-j", "4711", "-o", "State")
+			Expect(lines).To(HaveLen(1))
+			Expect(lines[0]).NotTo(BeEmpty())
+			Expect(lines[0]).NotTo(HavePrefix("COMPLET"), "GE state %q", geState)
+		},
+		Entry("running", "r"), Entry("transferring", "t"), Entry("pending", "qw"),
+		Entry("held", "hqw"), Entry("error", "Eqw"), Entry("suspended", "s"),
+		Entry("rescheduled", "Rr"), Entry("deleting", "dr"), Entry("deleting in transfer", "dt"),
+		Entry("deleting while suspended", "ds"), Entry("deleting while pending", "dqw"),
+	)
+})
+
 var _ = Describe("sacct options it does not translate [REQ-RUN-005]", func() {
 	It("warns, steps over the value, and keeps the options it does translate", func() {
 		// --clusters takes a value (SLURM arity) and --units too; -L takes none.
@@ -286,6 +392,63 @@ var _ = Describe("sacct request columns and TIMEOUT (live OCS 9.1.6 records)", f
 			"1382|COMPLETED|0:0|2|||"),
 	)
 
+	// At its limit a parallel job is either killed (failed=100) or, when its
+	// tasks die first, leaves by itself with the script's exit status and
+	// failed=0. Which one is a race (CS-3087); both ran into the limit.
+	Describe("a parallel job whose tasks were killed at the limit before the job script", func() {
+		state := func(acct, id string) []string {
+			r := runner(emptyQstat, map[string]string{id: acct})
+			_, lines := runSacct(r, "-o", "JobID,State,ExitCode,Elapsed,Timelimit", "-P", "-n", "-j", id)
+			return lines
+		}
+
+		It("is TIMEOUT from the one record of accounting_summary TRUE", func() {
+			Expect(state(fixture("qacct_47_pe_tasks_hit_hrt_summary.txt"), "47")).
+				To(Equal([]string{"47|TIMEOUT|1:0|00:01:00|00:01:00"}))
+		})
+
+		It("is TIMEOUT with the task records of accounting_summary FALSE", func() {
+			Expect(state(fixture("qacct_54_pe_tasks_hit_hrt.txt"), "54")).
+				To(Equal([]string{"54|TIMEOUT|1:0|00:01:00|00:01:00"}))
+		})
+
+		It("is selected by -s TO and not by -s F", func() {
+			r := runner(emptyQstat, map[string]string{"47": fixture("qacct_47_pe_tasks_hit_hrt_summary.txt")})
+			_, lines := runSacct(r, "-o", "JobID,State", "-P", "-n", "-s", "TO", "-j", "47")
+			Expect(lines).To(Equal([]string{"47|TIMEOUT"}))
+			_, lines = runSacct(r, "-o", "JobID,State", "-P", "-n", "-s", "F", "-j", "47")
+			Expect(lines).NotTo(ContainElement(ContainSubstring("47")))
+		})
+
+		It("stays FAILED when the job failed before its limit", func() {
+			Expect(state(fixture("qacct_52_pe_failed_before_hrt.txt"), "52")).
+				To(Equal([]string{"52|FAILED|3:0|00:00:07|00:01:00"}))
+		})
+
+		It("stays FAILED one second short of the limit", func() {
+			acct := strings.ReplaceAll(fixture("qacct_47_pe_tasks_hit_hrt_summary.txt"), "-l h_rt=60 ", "-l h_rt=61 ")
+			Expect(state(acct, "47")).To(Equal([]string{"47|FAILED|1:0|00:01:00|00:01:01"}))
+		})
+
+		It("stays FAILED without a time limit on the command line", func() {
+			acct := strings.ReplaceAll(fixture("qacct_47_pe_tasks_hit_hrt_summary.txt"), "-l h_rt=60 ", "")
+			Expect(state(acct, "47")).To(Equal([]string{"47|FAILED|1:0|00:01:00|"}))
+		})
+
+		It("stays COMPLETED when the job finished cleanly as its limit passed", func() {
+			acct := strings.ReplaceAll(fixture("qacct_47_pe_tasks_hit_hrt_summary.txt"),
+				"exit_status                        1 ", "exit_status                        0 ")
+			Expect(state(acct, "47")).To(Equal([]string{"47|COMPLETED|0:0|00:01:00|00:01:00"}))
+		})
+
+		It("stays FAILED for a serial job, which has no tasks to lose", func() {
+			acct := fixture("qacct_1380_hrt_timeout.txt")
+			acct = strings.ReplaceAll(acct, "failed                             100 : assumedly after job", "failed                             0    ")
+			acct = strings.ReplaceAll(acct, "exit_status                        137", "exit_status                        1  ")
+			Expect(state(acct, "1380")).To(Equal([]string{"1380|FAILED|1:0|00:00:06|00:00:05"}))
+		})
+	})
+
 	It("counts NNodes from the PE task hosts when no -par fixes the geometry", func() {
 		acct := strings.ReplaceAll(fixture("qacct_1391_pe_tasks.txt"), " -par 2", "")
 		r := runner(emptyQstat, map[string]string{"1391": acct})
@@ -302,8 +465,105 @@ var _ = Describe("sacct request columns and TIMEOUT (live OCS 9.1.6 records)", f
 
 	It("leaves the request columns empty for a live job (qstat carries no requests)", func() {
 		q := qstatXML(jobList("4711", "r", "all.q@node01", ""))
-		_, lines := runSacct(runner(q, nil), "-o", "JobID,NNodes,ReqMem,Timelimit,WorkDir", "-P", "-n", "-j", "4711")
-		Expect(lines).To(Equal([]string{"4711||||"}))
+		_, lines := runSacct(runner(q, nil), "-o", "JobID,ReqMem,Timelimit,WorkDir", "-P", "-n", "-j", "4711")
+		Expect(lines).To(Equal([]string{"4711|||"}))
+	})
+})
+
+// The plain qstat listing names only a job's master queue instance. SLURM
+// always prints a node count, and dagster-slurm turns AllocNodes into node
+// hours, so a running job's hosts are read from qstat -j when the column is
+// asked for.
+var _ = Describe("sacct NNodes of a live job", func() {
+	// live answers the listing with one job and `qstat -xml -j` with detail.
+	live := func(list, detail string) *fake.Runner {
+		return &fake.Runner{Responder: func(name string, args []string) fake.Response {
+			if name == "qstat" && slices.Contains(args, "-j") {
+				if detail == "" {
+					return fake.Response{Exit: 1}
+				}
+				return fake.Response{Stdout: []byte(detail)}
+			}
+			if name == "qstat" {
+				return fake.Response{Stdout: []byte(list)}
+			}
+			return fake.Response{}
+		}}
+	}
+	detailCalls := func(r *fake.Runner) [][]string {
+		var out [][]string
+		for _, c := range r.Calls {
+			if c.Name == "qstat" && slices.Contains(c.Args, "-j") {
+				out = append(out, c.Args)
+			}
+		}
+		return out
+	}
+	twoHosts := func() string {
+		b, err := os.ReadFile(filepath.Join("..", "..", "gedata", "testdata", "qstat_j_signal_multinode_9.1.6.xml"))
+		Expect(err).NotTo(HaveOccurred())
+		return string(b)
+	}
+	multiSlot := func(id, state string) string {
+		return strings.ReplaceAll(jobList(id, state, "all.q@ocs-master", ""), "<slots>1</slots>", "<slots>2</slots>")
+	}
+
+	DescribeTable("counts the granted hosts of a running job (live OCS 9.1.6 detail)",
+		func(field string) {
+			r := live(qstatXML(multiSlot("1400", "r")), twoHosts())
+			_, lines := runSacct(r, "-o", "JobID,"+field+",State", "-P", "-n", "-j", "1400")
+			Expect(lines).To(Equal([]string{"1400|2|RUNNING"}))
+			Expect(detailCalls(r)).To(Equal([][]string{{"-xml", "-j", "1400"}}))
+		},
+		Entry("NNodes", "NNodes"),
+		Entry("AllocNodes, which dagster-slurm asks for", "AllocNodes"),
+	)
+
+	It("counts them for a job that is being removed", func() {
+		r := live(qstatXML(multiSlot("1400", "dr")), twoHosts())
+		_, lines := runSacct(r, "-o", "JobID,NNodes", "-P", "-n", "-j", "1400")
+		Expect(lines).To(Equal([]string{"1400|2"}))
+	})
+
+	It("asks for every job at once when several running jobs are reported", func() {
+		list := qstatXML(multiSlot("1400", "r") + jobList("1401", "r", "all.q@ocs-master", ""))
+		r := live(list, twoHosts())
+		_, lines := runSacct(r, "-o", "JobID,NNodes", "-P", "-n", "-j", "1400,1401")
+		Expect(lines).To(Equal([]string{"1400|2", "1401|1"}))
+		Expect(detailCalls(r)).To(Equal([][]string{{"-xml", "-j", "*"}}))
+	})
+
+	It("says 1 for a single-slot job when the hosts cannot be read", func() {
+		r := live(qstatXML(jobList("4711", "r", "all.q@node01", "")), "")
+		code, lines := runSacct(r, "-o", "JobID,NNodes", "-P", "-n", "-j", "4711")
+		Expect(code).To(Equal(0))
+		Expect(lines).To(Equal([]string{"4711|1"}))
+	})
+
+	It("leaves it empty for a multi-slot job when the hosts cannot be read", func() {
+		r := live(qstatXML(multiSlot("1400", "r")), "")
+		code, lines := runSacct(r, "-o", "JobID,NNodes", "-P", "-n", "-j", "1400")
+		Expect(code).To(Equal(0))
+		Expect(lines).To(Equal([]string{"1400|"}))
+	})
+
+	It("leaves it empty for a pending job and does not ask", func() {
+		r := live(qstatXML(jobList("4711", "qw", "", "")), twoHosts())
+		_, lines := runSacct(r, "-o", "JobID,NNodes", "-P", "-n", "-j", "4711")
+		Expect(lines).To(Equal([]string{"4711|"}))
+		Expect(detailCalls(r)).To(BeEmpty())
+	})
+
+	It("does not ask when the column is not in the format", func() {
+		r := live(qstatXML(multiSlot("1400", "r")), twoHosts())
+		runSacct(r, "-o", "JobID,State", "-P", "-n", "-j", "1400")
+		Expect(detailCalls(r)).To(BeEmpty())
+	})
+
+	It("does not ask for a running job that is not in the report", func() {
+		r := live(qstatXML(multiSlot("1400", "r")), twoHosts())
+		runSacct(r, "-o", "JobID,NNodes", "-P", "-n", "-j", "4711")
+		Expect(detailCalls(r)).To(BeEmpty())
 	})
 })
 

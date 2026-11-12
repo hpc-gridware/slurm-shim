@@ -282,18 +282,30 @@ func acctExitCode(failed, exit int64) string {
 
 // AcctActiveState maps a GE state code (from qstat) to the SLURM state sacct
 // should report for a still-live job. It reuses the canonical MapState/FullState
-// vocabulary and applies the one sacct-specific override: it never returns
-// SUSPENDED (a consumer like submitit treats SUSPENDED as terminal and would stop
-// polling), so GE-suspended jobs map to RUNNING. An empty state (which MapState
-// would read as COMPLETED) is treated as PENDING, since a live qstat row always
-// carries a state and reporting a terminal state here would wrongly stop polling.
+// vocabulary and applies two sacct-specific overrides.
+//
+// It never returns SUSPENDED (a consumer like submitit treats SUSPENDED as
+// terminal and would stop polling), so GE-suspended jobs map to RUNNING.
+//
+// A job being deleted (dr, dt, ...) is RUNNING too. While Grid Engine removes a
+// job it does not say why: a cancel, a time limit and a forced delete all look
+// the same, and the accounting record that follows names the real outcome
+// (CANCELLED, TIMEOUT, ...). Guessing a terminal state here would be latched by
+// a poller such as submitit before that record exists. COMPLETING is no option
+// either: dagster-slurm reads any state starting with "COMPLET" as COMPLETED,
+// so a cancelled job passed as a success while GE was removing it.
+//
+// An empty state (which MapState would read as COMPLETED) is treated as PENDING,
+// since a live qstat row always carries a state and reporting a terminal state
+// here would wrongly stop polling.
 func AcctActiveState(ge string) string {
 	if strings.TrimSpace(ge) == "" {
 		return "PENDING"
 	}
-	s := FullState(MapState(ge))
-	if s == "SUSPENDED" {
+	switch s := FullState(MapState(ge)); s {
+	case "SUSPENDED", "COMPLETING":
 		return "RUNNING"
+	default:
+		return s
 	}
-	return s
 }

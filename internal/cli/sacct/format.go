@@ -65,17 +65,29 @@ type row struct {
 // as an id under the wrong column title, since header() resolves the alias
 // before choosing one. It falls through to an empty column instead.
 var fieldAliases = map[string]string{
-	"jobidraw": "jobid",
-	"job":      "jobid",
-	"name":     "jobname",
-	"ncpus":    "alloccpus",
-	"reqcpus":  "alloccpus",
-	"cpus":     "alloccpus",
-	"nodes":    "nodelist",
-	"exit":     "exitcode",
-	"time":     "elapsed",
-	"cputime":  "totalcpu",
-	"username": "user",
+	"jobidraw":   "jobid",
+	"job":        "jobid",
+	"name":       "jobname",
+	"ncpus":      "alloccpus",
+	"reqcpus":    "alloccpus",
+	"cpus":       "alloccpus",
+	"nodes":      "nodelist",
+	"allocnodes": "nnodes",
+	"exit":       "exitcode",
+	"time":       "elapsed",
+	"cputime":    "totalcpu",
+	"username":   "user",
+}
+
+// aliasTitles are the aliases that are real sacct fields, with SLURM's spelling.
+// The other aliases are shorthands sacct does not know and are titled by the
+// field they resolve to.
+var aliasTitles = map[string]string{
+	"jobidraw":   "JobIDRaw",
+	"ncpus":      "NCPUS",
+	"reqcpus":    "ReqCPUS",
+	"allocnodes": "AllocNodes",
+	"cputime":    "CPUTime",
 }
 
 // value renders one field of a row. An unknown field yields an empty column
@@ -154,15 +166,20 @@ func header(field string) string {
 		"nnodes": "NNodes", "reqmem": "ReqMem", "timelimit": "Timelimit",
 		"workdir": "WorkDir",
 	}
+	f := strings.TrimSpace(field)
+	if i := strings.IndexByte(f, '%'); i >= 0 {
+		f = f[:i]
+	}
+	// An alias that is a sacct field of its own keeps its own title: a caller
+	// that finds its column by the header looks for what it asked for.
+	if t, ok := aliasTitles[strings.ToLower(f)]; ok {
+		return t
+	}
 	if t, ok := titles[canonicalField(field)]; ok {
 		return t
 	}
 	// Unknown field: echo back what was asked for, minus the width suffix, so it
 	// is titled the same way a known field would be.
-	f := strings.TrimSpace(field)
-	if i := strings.IndexByte(f, '%'); i >= 0 {
-		f = f[:i]
-	}
 	return f
 }
 

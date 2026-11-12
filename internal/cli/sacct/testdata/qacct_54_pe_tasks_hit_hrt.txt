@@ -1,0 +1,144 @@
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker2         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            wrap.sh             
+jobnumber                          54                  
+taskid                             undefined
+pe_taskid                          1.ocs-worker2
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-11-12 13:17:39.863481
+submit_cmd_line                    qsub -terse -q all.q -pe make 3 -par 1 -w e -o /dev/null -j y -cwd -V -l h_rt=60 /tmp/slurm-shim-sbatch-3498869886/wrap.sh
+start_time                         2026-11-12 13:17:39.871987
+end_time                           2026-11-12 13:18:39.858529
+granted_pe                         make                
+slots                              3                   
+failed                             100 : assumedly after job
+exit_status                        137                 
+ru_wallclock                       59           
+ru_utime                           0.039        
+ru_stime                           0.047        
+ru_maxrss                          8084                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1005                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         0                   
+ru_oublock                         32                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           74                  
+ru_nivcsw                          11                  
+wallclock                          60.987       
+cpu                                0.086        
+mem                                0.035             
+io                                 0.000             
+ioops                              113          
+iow                                0.000             
+maxvmem                            2378653696        
+maxrss                             13881344          
+==============================================================
+qname                              all.q               
+hostname                           ocs-worker1         
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            wrap.sh             
+jobnumber                          54                  
+taskid                             undefined
+pe_taskid                          1.ocs-worker1
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-11-12 13:17:39.865276
+submit_cmd_line                    qsub -terse -q all.q -pe make 3 -par 1 -w e -o /dev/null -j y -cwd -V -l h_rt=60 /tmp/slurm-shim-sbatch-3498869886/wrap.sh
+start_time                         2026-11-12 13:17:39.878606
+end_time                           2026-11-12 13:18:39.857516
+granted_pe                         make                
+slots                              3                   
+failed                             100 : assumedly after job
+exit_status                        137                 
+ru_wallclock                       59           
+ru_utime                           0.049        
+ru_stime                           0.045        
+ru_maxrss                          8236                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          1025                
+ru_majflt                          0                   
+ru_nswap                           0                   
+ru_inblock                         0                   
+ru_oublock                         64                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           64                  
+ru_nivcsw                          22                  
+wallclock                          60.980       
+cpu                                0.094        
+mem                                0.040             
+io                                 0.000             
+ioops                              113          
+iow                                0.000             
+maxvmem                            2378653696        
+maxrss                             14036992          
+==============================================================
+qname                              all.q               
+hostname                           ocs-master          
+group                              gridware            
+owner                              gridware            
+project                            NONE                
+department                         defaultdepartment   
+jobname                            wrap.sh             
+jobnumber                          54                  
+taskid                             undefined
+pe_taskid                          NONE
+arid                               undefined
+account                            sge                 
+priority                           0                   
+qsub_time                          2026-11-12 13:17:38.402607
+submit_cmd_line                    qsub -terse -q all.q -pe make 3 -par 1 -w e -o /dev/null -j y -cwd -V -l h_rt=60 /tmp/slurm-shim-sbatch-3498869886/wrap.sh
+start_time                         2026-11-12 13:17:39.753582
+end_time                           2026-11-12 13:18:39.862927
+granted_pe                         make                
+slots                              3                   
+failed                             0    
+exit_status                        1                   
+ru_wallclock                       60           
+ru_utime                           0.062        
+ru_stime                           0.072        
+ru_maxrss                          9528                
+ru_ixrss                           0                   
+ru_ismrss                          0                   
+ru_idrss                           0                   
+ru_isrss                           0                   
+ru_minflt                          9171                
+ru_majflt                          1                   
+ru_nswap                           0                   
+ru_inblock                         2464                
+ru_oublock                         24                  
+ru_msgsnd                          0                   
+ru_msgrcv                          0                   
+ru_nsignals                        0                   
+ru_nvcsw                           620                 
+ru_nivcsw                          168                 
+wallclock                          61.237       
+cpu                                0.134        
+mem                                0.000             
+io                                 0.000             
+ioops                              620          
+iow                                0.000             
+maxvmem                            9067556864        
+maxrss                             37826560          
